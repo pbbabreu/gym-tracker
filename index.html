@@ -174,21 +174,29 @@ const round   = (v,step) => Math.round(v/step)*step;
 // ║  5. STORAGE — localStorage · window.storage · GitHub Gist
 // ║
 // ║  Three-layer storage strategy:
-// ║    1. localStorage  — fast, survives refresh, works on GitHub Pages
+// ║    1. localStorage   — fast, survives refresh, works on GitHub Pages
 // ║    2. window.storage — Claude artifact fallback
-// ║    3. GitHub Gist  — cross-device sync source of truth
+// ║    3. GitHub Gist    — cross-device sync source of truth
 // ║
-// ║  Read order: localStorage → window.storage → Gist
-// ║  Write order: localStorage + window.storage (sync) → Gist (async, fire-and-forget)
+// ║  The Gist stores FOUR independent files, each with its own lastModified:
+// ║    gym-tracker-sessions.json  — sessions + memory
+// ║    gym-tracker-library.json   — exercises
+// ║    gym-tracker-plans.json     — plans
+// ║    gym-tracker-weights.json   — bodyweight log
 // ║
-// ║  Config (token, gistId) is stored separately from data and never exported.
+// ║  Merge logic per file:
+// ║    sessions  — newer lastModified wins (one device logs at a time)
+// ║    library   — always union (never lose exercises from either device)
+// ║    plans     — always union (same reasoning)
+// ║    weights   — always union by id (additive log)
+// ║
+// ║  Config (token, gistId) stored separately, never exported.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 // Safe localStorage wrapper — returns null instead of throwing in sandboxed envs
 const LS = {
-  get(k)    { try { return localStorage.getItem(k); }    catch(e) { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); }       catch(e) {} },
-  del(k)    { try { localStorage.removeItem(k); }        catch(e) {} },
+  get(k)    { try { return localStorage.getItem(k); }  catch(e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); }     catch(e) {} },
 };
 
 // ── Config (token + gistId) ───────────────────────────────────────────────────
@@ -196,9 +204,9 @@ const LS = {
 async function loadConfig() {
   try {
     const raw = LS.get('gym:config');
-    if (raw) { const c = JSON.parse(raw); CFG.token = c.token||''; CFG.gistId = c.gistId||''; return; }
+    if (raw) { const c=JSON.parse(raw); CFG.token=c.token||''; CFG.gistId=c.gistId||''; return; }
     const r = await window.storage.get('gym:config');
-    if (r?.value) { const c = JSON.parse(r.value); CFG.token = c.token||''; CFG.gistId = c.gistId||''; }
+    if (r?.value) { const c=JSON.parse(r.value); CFG.token=c.token||''; CFG.gistId=c.gistId||''; }
   } catch(e) {}
 }
 
@@ -208,11 +216,11 @@ async function saveConfig() {
   try { await window.storage.set('gym:config', s); } catch(e) {}
 }
 
-// ── Data (exercises, plans, sessions, memory, weights) ────────────────────────
+// ── Local cache (all four data slices) ───────────────────────────────────────
 
 async function loadLocalData() {
-  try { const raw = LS.get('gym:data'); if (raw) return JSON.parse(raw); } catch(e) {}
-  try { const r = await window.storage.get('gym:data'); if (r?.value) return JSON.parse(r.value); } catch(e) {}
+  try { const raw=LS.get('gym:data'); if (raw) return JSON.parse(raw); } catch(e) {}
+  try { const r=await window.storage.get('gym:data'); if (r?.value) return JSON.parse(r.value); } catch(e) {}
   return null;
 }
 
@@ -222,116 +230,179 @@ async function persistLocal() {
   try { await window.storage.set('gym:data', s); } catch(e) {}
 }
 
-// persist() is called after every mutation — saves locally and kicks off Gist sync
-async function persist() {
-  D.lastModified = Date.now();
-  await persistLocal();
-  gistSave(); // fire-and-forget — keeps UI snappy
-}
+// ── Gist helpers ──────────────────────────────────────────────────────────────
 
-function applyData(p) {
-  D.exercises    = p.exercises    || [];
-  D.plans        = p.plans        || [];
-  D.sessions     = p.sessions     || [];
-  D.memory       = p.memory       || {};
-  D.weights      = p.weights      || [];
-  D.lastModified = p.lastModified || 0;
-  rebuildMemory();
-}
-
-// ── GitHub Gist sync ──────────────────────────────────────────────────────────
-
-async function gistFetch() {
+// Read one file from the Gist; returns parsed object or null
+async function gistReadFile(filename) {
   if (!CFG.token || !CFG.gistId) return null;
   try {
     const r = await fetch(`https://api.github.com/gists/${CFG.gistId}`, {
-      headers: { Authorization: `token ${CFG.token}`, Accept: 'application/vnd.github.v3+json' }
+      headers: { Authorization:`token ${CFG.token}`, Accept:'application/vnd.github.v3+json' }
     });
     if (!r.ok) return null;
     const g = await r.json();
-    const content = g.files?.['gym-tracker.json']?.content;
+    const content = g.files?.[filename]?.content;
     return content ? JSON.parse(content) : null;
   } catch(e) { return null; }
 }
 
-async function gistSave() {
-  if (!CFG.token) return;
-  setSyncStatus('syncing');
-  const content = JSON.stringify(D, null, 2);
+// Write one or more files to the Gist in a single PATCH call
+async function gistWriteFiles(files) {
+  if (!CFG.token) return false;
   try {
     if (CFG.gistId) {
       const r = await fetch(`https://api.github.com/gists/${CFG.gistId}`, {
         method: 'PATCH',
-        headers: { Authorization: `token ${CFG.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ files: { 'gym-tracker.json': { content } } })
+        headers: { Authorization:`token ${CFG.token}`, 'Content-Type':'application/json' },
+        body: JSON.stringify({ files })
       });
-      if (!r.ok) throw new Error();
+      return r.ok;
     } else {
+      // First run — create the Gist
       const r = await fetch('https://api.github.com/gists', {
         method: 'POST',
-        headers: { Authorization: `token ${CFG.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ description:'Gym Tracker Data', public:false, files:{'gym-tracker.json':{content}} })
+        headers: { Authorization:`token ${CFG.token}`, 'Content-Type':'application/json' },
+        body: JSON.stringify({ description:'Gym Tracker Data', public:false, files })
       });
-      if (!r.ok) throw new Error();
+      if (!r.ok) return false;
       const g = await r.json();
       CFG.gistId = g.id;
       await saveConfig();
+      return true;
     }
-    setSyncStatus('ok');
-  } catch(e) { setSyncStatus('error'); }
+  } catch(e) { return false; }
 }
 
-// Force-pull from Gist — called from the sync modal "Forçar download" button
+// ── Gist sync — four independent files ───────────────────────────────────────
+
+// Fetch all four files from the Gist in parallel
+async function gistFetchAll() {
+  if (!CFG.token || !CFG.gistId) return null;
+  try {
+    const r = await fetch(`https://api.github.com/gists/${CFG.gistId}`, {
+      headers: { Authorization:`token ${CFG.token}`, Accept:'application/vnd.github.v3+json' }
+    });
+    if (!r.ok) return null;
+    const g = await r.json();
+    const parse = name => {
+      const c = g.files?.[name]?.content;
+      return c ? JSON.parse(c) : null;
+    };
+    return {
+      sessions: parse('gym-tracker-sessions.json'),
+      library:  parse('gym-tracker-library.json'),
+      plans:    parse('gym-tracker-plans.json'),
+      weights:  parse('gym-tracker-weights.json'),
+    };
+  } catch(e) { return null; }
+}
+
+// Push all four files to the Gist (fire-and-forget from persist())
+async function gistSave() {
+  if (!CFG.token) return;
+  setSyncStatus('syncing');
+  const ts = D.lastModified;
+  const ok = await gistWriteFiles({
+    'gym-tracker-sessions.json': { content: JSON.stringify({ sessions:D.sessions, memory:D.memory, lastModified:ts }, null,2) },
+    'gym-tracker-library.json':  { content: JSON.stringify({ exercises:D.exercises, lastModified:ts }, null,2) },
+    'gym-tracker-plans.json':    { content: JSON.stringify({ plans:D.plans, lastModified:ts }, null,2) },
+    'gym-tracker-weights.json':  { content: JSON.stringify({ weights:D.weights, lastModified:ts }, null,2) },
+  });
+  setSyncStatus(ok ? 'ok' : 'error');
+}
+
+// Force-pull — called from "Forçar download" button in sync modal
 async function gistPull() {
   if (!CFG.token) { alert('Configure o token do GitHub primeiro.'); return; }
   setSyncStatus('syncing');
-  const remote = await gistFetch();
+  const remote = await gistFetchAll();
   if (!remote) { setSyncStatus('error'); return; }
-  applyData(remote);
+  mergeRemote(remote, true); // force=true → remote always wins
   await persistLocal();
   setSyncStatus('ok');
   render();
 }
 
+// Merge remote Gist data into D using per-file rules
+function mergeRemote(remote, force=false) {
+  const localTs = D.lastModified || 0;
+
+  // Sessions — newer wins
+  if (remote.sessions) {
+    const rTs = remote.sessions.lastModified || 0;
+    if (force || rTs > localTs) {
+      D.sessions = remote.sessions.sessions || [];
+      D.memory   = remote.sessions.memory   || {};
+    }
+  }
+
+  // Library — always union; remote entry wins on id conflict
+  if (remote.library?.exercises) {
+    const map = new Map();
+    D.exercises.forEach(e => map.set(e.id, e));
+    remote.library.exercises.forEach(e => map.set(e.id, e));
+    D.exercises = [...map.values()];
+  }
+
+  // Plans — always union; remote entry wins on id conflict
+  if (remote.plans?.plans) {
+    const map = new Map();
+    D.plans.forEach(p => map.set(p.id, p));
+    remote.plans.plans.forEach(p => map.set(p.id, p));
+    D.plans = [...map.values()];
+  }
+
+  // Weights — always union by id
+  if (remote.weights?.weights) {
+    const map = new Map();
+    D.weights.forEach(w => map.set(w.id, w));
+    remote.weights.weights.forEach(w => map.set(w.id, w));
+    D.weights = [...map.values()];
+  }
+
+  rebuildMemory();
+}
+
+// ── persist() — called after every mutation ───────────────────────────────────
+
+async function persist() {
+  D.lastModified = Date.now();
+  await persistLocal();
+  gistSave(); // fire-and-forget
+}
+
 // ── Load sequence ─────────────────────────────────────────────────────────────
-// 1. Load config (token, gistId)
-// 2. Load local data → render immediately so the app is usable
-// 3. Fetch Gist in background → merge → re-render if anything changed
+// 1. Load config
+// 2. Load local cache → render immediately (app is usable offline)
+// 3. Fetch all four Gist files in background → merge → re-render
 
 async function loadData() {
   await loadConfig();
 
+  // Step 2 — local cache
   const local = await loadLocalData();
-  if (local) applyData(local);
-  else rebuildMemory();
+  if (local) {
+    D.exercises    = local.exercises    || [];
+    D.plans        = local.plans        || [];
+    D.sessions     = local.sessions     || [];
+    D.memory       = local.memory       || {};
+    D.weights      = local.weights      || [];
+    D.lastModified = local.lastModified || 0;
+    rebuildMemory();
+  }
   render();
 
   if (!CFG.token || !CFG.gistId) return;
 
+  // Step 3 — background Gist fetch
   setSyncStatus('syncing');
-  const remote = await gistFetch();
-
+  const remote = await gistFetchAll();
   if (!remote) { setSyncStatus('error'); return; }
 
-  // Conflict resolution: newer lastModified wins for sessions/weights
-  const localTs  = local?.lastModified || 0;
-  const remoteTs = remote.lastModified || 0;
-  const base = remoteTs >= localTs ? remote : (local || remote);
-
-  // Library and plans are always unioned — never lose entries from either device
-  const exMap = new Map();
-  (local?.exercises||[]).forEach(e => exMap.set(e.id, e));
-  (remote.exercises||[]).forEach(e => exMap.set(e.id, e)); // remote wins on conflict
-  base.exercises = [...exMap.values()];
-
-  const plMap = new Map();
-  (local?.plans||[]).forEach(p => plMap.set(p.id, p));
-  (remote.plans||[]).forEach(p => plMap.set(p.id, p));
-  base.plans = [...plMap.values()];
-
-  applyData(base);
+  mergeRemote(remote);
   await persistLocal();
-  gistSave(); // push merged result back so both devices converge
+  gistSave(); // push merged result back so all devices converge
+  setSyncStatus('ok');
   render();
 }
 
