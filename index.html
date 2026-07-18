@@ -438,12 +438,18 @@ async function loadData() {
 // ║                          don't suggest more weight until the whole
 // ║                          prescribed session can be done at it.
 // ║
-// ║  Warm-up generation rules (unchanged, but now scale off the SUGGESTED
-// ║  weight for today, not last session's actual heaviest set):
+// ║  Warm-up generation rules (weight scales off the SUGGESTED weight for
+// ║  today, not last session's actual heaviest set; reps ramp 10-8-6 as the
+// ║  sets get heavier/closer to work weight — see WU_REPS in
+// ║  buildSetsFromMemory()):
 // ║    Compound + weighted  → 3 WU sets at 25 / 55 / 85% of suggested weight
 // ║    Compound + assisted  → 3 WU sets at 175 / 145 / 115% (more assist = easier)
-// ║    Isolation + weighted → 1 WU set at 50% of suggested weight
+// ║    Isolation + weighted → 1 WU set at 50% of suggested weight (6 reps —
+// ║                           the "closest to work weight" step, not 10)
 // ║    Bodyweight           → no warm-ups
+// ║  Every set (warm-up and work) gets a completed checkbox — checking it
+// ║  confirms whatever's currently shown as accurate, same as editing it by
+// ║  hand (see toggleCompleted()).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 const memKey = (exId, type, regime) => `${exId}:${type}:${regime||'weighted'}`;
@@ -556,12 +562,22 @@ function buildSetsFromMemory(ex) {
 
   // Generate warm-up sets — scaled off TODAY'S suggested weight, not last
   // session's actual weight, so warm-ups prep you for the target you're
-  // actually about to attempt.
+  // actually about to attempt. Reps ramp down (10-8-6) as the sets get
+  // heavier/closer to work weight — more reps to prime lightly-loaded early
+  // sets, fewer as it gets harder. A single isolation warm-up takes the LAST
+  // step (6) since it plays the same role as the final, closest-to-work step
+  // of the compound ramp, not the first.
+  const WU_REPS = [10, 8, 6];
   if (regime !== 'bodyweight' && sug.suggestedKg != null) {
     const mults = isComp
       ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : [0.25, 0.55, 0.85])
       : [0.5];
-    mults.forEach(m => sets.push({ intent:'warmup', reps:'', kg:round(sug.suggestedKg*m, 0.5), lastReps:null, lastKg:null, sugReps:null, sugKg:null }));
+    mults.forEach((m,idx) => sets.push({
+      intent: 'warmup',
+      reps: WU_REPS[WU_REPS.length - mults.length + idx],
+      kg: round(sug.suggestedKg*m, 0.5),
+      lastReps:null, lastKg:null, sugReps:null, sugKg:null, completed:false,
+    }));
   }
 
   // Work rows: always start from what actually happened last time (never
@@ -880,11 +896,12 @@ function buildExBlock(ex, i) {
       chips = `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:2px">${parts.join('')}</div>`;
     }
 
-    // Completed checkbox — work rows only. Warm-ups were never part of
-    // memory/volume tracking, so there's nothing for them to confirm.
-    const checkCell = isWork
-      ? `<button onclick="toggleCompleted(${i},${j})" aria-label="Concluído" style="width:100%;min-height:38px;border-radius:7px;border:1px solid ${s.completed?CG:BD};background:${s.completed?CG:'transparent'};color:#fff;font-size:14px;font-weight:700;cursor:pointer;padding:0">${s.completed?'✓':''}</button>`
-      : `<span></span>`;
+    // Completed checkbox — every row, warm-ups included. Warm-up completion
+    // doesn't feed memory/volume (those already filter to intent==='work'
+    // upstream), it's purely for the user's own tracking — but checking it
+    // still confirms whatever's in the fields, same as a work row (see
+    // toggleCompleted()).
+    const checkCell = `<button onclick="toggleCompleted(${i},${j})" aria-label="Concluído" style="width:100%;min-height:38px;border-radius:7px;border:1px solid ${s.completed?CG:BD};background:${s.completed?CG:'transparent'};color:#fff;font-size:14px;font-weight:700;cursor:pointer;padding:0">${s.completed?'✓':''}</button>`;
 
     return `<div style="margin-bottom:8px">
       ${chips}
@@ -1615,11 +1632,21 @@ function applyChip(i, j, which) {
   render();
 }
 
-// Marks a work set as actually performed. Separate from just having numbers
-// in the fields, since those numbers might just be an autofilled suggestion
-// the user hasn't attempted yet — only completed sets count toward future
-// suggestions/warm-ups (getRecentWorkHistory) and volume (volEx).
-function toggleCompleted(i,j) { const s=S.exercises[i].sets[j]; s.completed=!s.completed; render(); }
+// Marks a set (work OR warm-up) as actually performed. Separate from just
+// having numbers in the fields, since those numbers might just be an
+// autofilled/computed suggestion the user hasn't attempted yet — only
+// completed work sets count toward future suggestions/warm-ups
+// (getRecentWorkHistory) and volume (volEx). Checking the box also counts as
+// confirming whatever's currently shown: if the user never touched the
+// suggested reps/kg, checking "done" is itself an implicit "yes, that's what
+// I did," so the fields flip from dim to normal same as typing would.
+// One-directional on purpose — unchecking doesn't undo that confirmation.
+function toggleCompleted(i,j) {
+  const s = S.exercises[i].sets[j];
+  s.completed = !s.completed;
+  if (s.completed) { s.repsEdited = true; s.kgEdited = true; }
+  render();
+}
 
 // Type/regime changes re-run auto-population from memory
 function setExType(i,t)       { S.exercises[i].type=t;   S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
