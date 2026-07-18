@@ -1543,6 +1543,20 @@ function downloadBackup(fn) {
   const a=document.createElement('a'); a.href=url; a.download=fn;
   document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
 }
+// Applies an imported backup object (same shape as D, see downloadBackup()/
+// the export textarea above — both are just JSON.stringify(D)) onto live
+// state. Mirrors the local-cache assignment in loadData() (section 5) so the
+// two code paths that hydrate D from a plain object stay consistent.
+// Deliberately does NOT touch CFG — token/gistId are never part of a backup.
+function applyData(p) {
+  D.exercises    = p.exercises    || [];
+  D.plans        = p.plans        || [];
+  D.sessions     = p.sessions     || [];
+  D.weights      = p.weights      || [];
+  D.lastModified = p.lastModified || 0;
+  rebuildMemory(); // derive memory from imported sessions rather than trusting p.memory
+}
+
 function importBackup() {
   const ta=document.getElementById('imp-area'), err=document.getElementById('imp-err');
   const json=(ta?ta.value:'').trim(); if(!json)return;
