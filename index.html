@@ -405,16 +405,44 @@ async function loadData() {
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  6. MEMORY SYSTEM
 // ║
-// ║  Tracks the last work sets for each unique exercise+type+regime combination.
+// ║  Tracks the last work sets for each unique exercise+type+regime combination,
+// ║  and computes progressive-overload suggestions from recent session history.
 // ║  Key format: "exId:type:regime"  e.g. "abc123:strength:weighted"
 // ║
-// ║  rebuildMemory()       — scans all sessions, rebuilds D.memory from scratch
+// ║  rebuildMemory()       — scans all sessions, rebuilds D.memory from scratch.
+// ║                          NOTE: no longer read by buildSetsFromMemory() below
+// ║                          (that now goes through computeSuggestion(), which
+// ║                          reads D.sessions directly — see that function for
+// ║                          why). D.memory itself is kept computed/synced since
+// ║                          other code paths may still expect it to exist and
+// ║                          be accurate, but nothing currently reads it back.
 // ║  buildSetsFromMemory() — generates pre-populated set rows for a session exercise
 // ║
-// ║  Warm-up generation rules:
-// ║    Compound + weighted  → 3 WU sets at 25 / 55 / 85% of heaviest work set
+// ║  TRAINING_PROFILES     — the two baseline rep-range/target-set-count
+// ║                          profiles currently in use. Per-exercise custom
+// ║                          profiles are a deliberately deferred future
+// ║                          feature (see the project Log) — this only
+// ║                          formalizes what's already implicit today.
+// ║  getRecentWorkHistory()— last N sessions' completed work sets for a key,
+// ║                          newest first. Independent of D.memory, which only
+// ║                          ever tracked a single latest snapshot — detecting
+// ║                          a multi-session stall needs a short window.
+// ║  computeSuggestion()   — the actual progression algorithm. NOT a simple
+// ║                          per-number trend: "graduated" (ready for more
+// ║                          weight) requires the FULL target work-set count
+// ║                          to be completed at the top of the rep range, all
+// ║                          at the same (working) weight. A set performed
+// ║                          below that weight — e.g. a fatigue drop-off
+// ║                          partway through a session — fails the check on
+// ║                          its own, which is exactly the desired behavior:
+// ║                          don't suggest more weight until the whole
+// ║                          prescribed session can be done at it.
+// ║
+// ║  Warm-up generation rules (unchanged, but now scale off the SUGGESTED
+// ║  weight for today, not last session's actual heaviest set):
+// ║    Compound + weighted  → 3 WU sets at 25 / 55 / 85% of suggested weight
 // ║    Compound + assisted  → 3 WU sets at 175 / 145 / 115% (more assist = easier)
-// ║    Isolation + weighted → 1 WU set at 50% of heaviest work set
+// ║    Isolation + weighted → 1 WU set at 50% of suggested weight
 // ║    Bodyweight           → no warm-ups
 // ╚══════════════════════════════════════════════════════════════════════════════
 
@@ -427,45 +455,127 @@ function rebuildMemory() {
     .forEach(sess => {
       (sess.exercises||[]).forEach(ex => {
         const key = memKey(ex.exId, ex.type, ex.regime||'weighted');
-        const ws = (ex.sets||[]).filter(s => s.intent==='work' && (s.reps||s.kg));
+        // Only completed sets count as real performed work.
+        // completed !== false (not === true): sets saved before this field
+        // existed have no `completed` at all (undefined) and must still
+        // count as real performed work — only a row explicitly left
+        // unchecked under the new system should be excluded.
+        const ws = (ex.sets||[]).filter(s => s.intent==='work' && s.completed!==false && (s.reps||s.kg));
         if (ws.length) mem[key] = { date: sess.date, workSets: ws.map(s => ({reps:s.reps, kg:s.kg})) };
       });
     });
   D.memory = mem;
 }
 
-function buildSetsFromMemory(ex) {
-  const key    = memKey(ex.exId, ex.type, ex.regime||'weighted');
-  const mem    = D.memory[key];
-  const regime = ex.regime || 'weighted';
-  const isComp = ex.compound !== false;
-  const sets   = [];
+const TRAINING_PROFILES = {
+  strength:    { targetWorkSets: 3, repLow: 3, repHigh: 5  },
+  hypertrophy: { targetWorkSets: 2, repLow: 6, repHigh: 10 },
+};
 
-  // No memory → return empty default rows based on type
-  if (!mem) {
-    const count = ex.type === 'strength' ? 3 : 2;
-    const ph    = ex.type === 'strength' ? '2–5' : regime === 'assisted' ? '6–12' : '6–10';
-    for (let i=0; i<count; i++) sets.push({ intent:'work', reps:'', kg:'', refReps:null, refKg:null, phReps:ph });
+// Returns up to n most recent sessions' completed work sets for this exact
+// exercise+type+regime, newest first — e.g. [[{reps,kg},...], [{reps,kg},...]].
+// Sessions where this exercise had no completed work sets are skipped
+// entirely rather than counted as a zero — there's simply no data from that
+// attempt to reason about.
+function getRecentWorkHistory(exId, type, regime, n=3) {
+  const key = memKey(exId, type, regime);
+  const out = [];
+  [...D.sessions]
+    .sort((a,b) => b.date.localeCompare(a.date))
+    .some(sess => {
+      const ex = (sess.exercises||[]).find(e => memKey(e.exId, e.type, e.regime||'weighted') === key);
+      if (ex) {
+        // completed !== false (not === true): sets saved before this field
+        // existed have no `completed` at all (undefined) and must still
+        // count as real performed work — only a row explicitly left
+        // unchecked under the new system should be excluded.
+        const ws = (ex.sets||[]).filter(s => s.intent==='work' && s.completed!==false && (s.reps||s.kg));
+        if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
+      }
+      return out.length >= n; // stop early once we have enough
+    });
+  return out;
+}
+
+// Default weight increment on graduation. Flipped for assisted regimes:
+// less assistance is *harder*, so "heavier" there means a smaller
+// counterweight number, not a larger one. Hardcoded for now — an easy
+// config point once custom profiles exist.
+function bumpWeight(kg, isAssisted) {
+  const inc = 2.5;
+  return isAssisted ? Math.max(0, round(kg - inc, 0.5)) : round(kg + inc, 0.5);
+}
+
+// The progression algorithm. See the section banner above for why
+// "graduated" requires the full target work-set count, not just one set.
+function computeSuggestion(exId, type, regime, profile) {
+  const history = getRecentWorkHistory(exId, type, regime, 3);
+  if (!history.length) return null;
+
+  const isAsst = regime === 'assisted';
+  const graduatedAt = (sets) => {
+    const vals = sets.map(s => Number(s.kg)).filter(v => v > 0);
+    if (!vals.length) return false;
+    const workingKg = isAsst ? Math.min(...vals) : Math.max(...vals);
+    return sets.length >= profile.targetWorkSets
+      && sets.every(s => Number(s.kg) === workingKg && Number(s.reps) >= profile.repHigh);
+  };
+
+  const last     = history[0];
+  const lastVals = last.map(s => Number(s.kg)).filter(v => v > 0);
+  const workingKg = lastVals.length ? (isAsst ? Math.min(...lastVals) : Math.max(...lastVals)) : null;
+  const graduated = graduatedAt(last);
+
+  const suggestedKg = (graduated && workingKg != null) ? bumpWeight(workingKg, isAsst) : workingKg;
+  const repsTarget   = graduated ? profile.repLow : profile.repHigh;
+
+  // Stall streak — consecutive most-recent sessions that did NOT graduate.
+  // 0 if the last session graduated (no stall, they just progressed).
+  let stallStreak = 0;
+  for (const sets of history) {
+    if (graduatedAt(sets)) break;
+    stallStreak++;
+  }
+
+  return { last, workingKg, suggestedKg, repsTarget, graduated, stallStreak };
+}
+
+function buildSetsFromMemory(ex) {
+  const regime  = ex.regime || 'weighted';
+  const isComp  = ex.compound !== false;
+  const profile = TRAINING_PROFILES[ex.type] || TRAINING_PROFILES.hypertrophy;
+  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile);
+  const sets    = [];
+
+  // No history yet → return empty default rows based on type
+  if (!sug) {
+    const ph = ex.type === 'strength' ? `${profile.repLow}–${profile.repHigh}` : `${profile.repLow}–${profile.repHigh}`;
+    for (let i=0; i<profile.targetWorkSets; i++) sets.push({ intent:'work', reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null, completed:false, phReps:ph });
     return sets;
   }
 
-  const ws = mem.workSets || [];
-
-  // Find base weight for warm-up calculation (heaviest = hardest)
-  const vals = ws.map(s => Number(s.kg)).filter(v => v > 0);
-  let baseKg = null;
-  if (vals.length) baseKg = regime === 'assisted' ? Math.min(...vals) : Math.max(...vals);
-
-  // Generate warm-up sets
-  if (regime !== 'bodyweight' && baseKg != null) {
+  // Generate warm-up sets — scaled off TODAY'S suggested weight, not last
+  // session's actual weight, so warm-ups prep you for the target you're
+  // actually about to attempt.
+  if (regime !== 'bodyweight' && sug.suggestedKg != null) {
     const mults = isComp
       ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : [0.25, 0.55, 0.85])
       : [0.5];
-    mults.forEach(m => sets.push({ intent:'warmup', reps:'', kg:round(baseKg*m, 0.5), refReps:null, refKg:null }));
+    mults.forEach(m => sets.push({ intent:'warmup', reps:'', kg:round(sug.suggestedKg*m, 0.5), lastReps:null, lastKg:null, sugReps:null, sugKg:null }));
   }
 
-  // Replicate last work sets with reference values (shown as ghost text)
-  ws.forEach(s => sets.push({ intent:'work', reps:s.reps, kg:s.kg, refReps:s.reps, refKg:s.kg }));
+  // Work rows: always start from what actually happened last time (never
+  // silently replaced by the suggestion) — lastReps/lastKg feed the "repeat
+  // last time" chip and the dimmed starting value; sugReps/sugKg feed the
+  // "apply suggestion" chip, only meaningfully different when a row fell
+  // short of target or the exercise just graduated.
+  sug.last.forEach(s => sets.push({
+    intent: 'work',
+    reps: s.reps, kg: s.kg,
+    lastReps: s.reps, lastKg: s.kg,
+    sugReps: sug.repsTarget, sugKg: sug.suggestedKg,
+    completed: false,
+  }));
   return sets;
 }
 
@@ -499,8 +609,11 @@ function actualLoad(set, regime) {
 }
 
 function volEx(sets, regime) {
+  // completed !== false, not === true — see the matching comment in
+  // rebuildMemory(): sessions saved before this field existed must still
+  // count toward volume, only an explicitly-unchecked row is excluded.
   return (sets||[])
-    .filter(s => s.intent === 'work')
+    .filter(s => s.intent === 'work' && s.completed!==false)
     .reduce((a,s) => {
       const l = actualLoad(s, regime||'weighted');
       return a + (l && s.reps ? Number(s.reps)*l : 0);
@@ -719,50 +832,75 @@ function buildExBlock(ex, i) {
   const isFirst = i===0, isLast=i===S.exercises.length-1;
   const bw = currentBW();
 
+  // Recomputed at render time (cheap — small dataset, and keeps the banner
+  // correct if type/regime changes mid-session) purely to drive the stall
+  // banner below; buildSetsFromMemory() already computed the same thing once
+  // when the exercise was added, to populate each row's sug*/last* fields.
+  const profile = TRAINING_PROFILES[ex.type] || TRAINING_PROFILES.hypertrophy;
+  const sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile);
+  const stallBanner = (sug && sug.stallStreak >= 2) ? `
+    <div style="background:#2d1010;border:1px solid #5c1a1a;border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:#e57373">
+      Mesma carga há ${sug.stallStreak} treinos — foque em completar todas as séries no topo da faixa de reps antes de aumentar a carga.
+    </div>` : '';
+
   const setHeader = ex.sets.length ? `
-    <div style="display:grid;grid-template-columns:54px 1fr 1fr 38px;gap:6px;margin-bottom:6px">
+    <div style="display:grid;grid-template-columns:28px 54px 1fr 1fr 38px;gap:6px;margin-bottom:6px">
+      <span></span>
       <span style="font-size:11px;color:${DM};text-align:center">Tipo</span>
       <span style="font-size:11px;color:${DM};text-align:center">Reps</span>
       <span style="font-size:11px;color:${DM};text-align:center">${isAs?'Assist.':isBW?'BW':'Kg'}</span>
       <span></span>
     </div>` : '';
 
+  // Formats a reps/kg pair for a quick-fill chip label. BW rows have no
+  // meaningful kg (it's always just current bodyweight, not user-entered),
+  // so they only ever show reps.
+  const fmtPair = (r,k) => isBW ? `${r??'–'} reps` : `${r??'–'} × ${k??'–'} ${isAs?'assist.':'kg'}`;
+
   const setRows = ex.sets.map((s,j) => {
     const isWork = s.intent === 'work';
     const rv = (s.reps===''||s.reps==null) ? '' : s.reps;
     const kv = (s.kg===''  ||s.kg==null)   ? '' : s.kg;
+    const repsColor = s.repsEdited ? TX : DM;
+    const kgColor   = s.kgEdited   ? TX : DM;
 
-    // Reference chip — shows last session's value above the inputs
-    let refLabel = '';
-    if (isWork && (s.refReps!=null||s.refKg!=null)) {
-      if (isAs && bw && s.refKg!=null)
-        refLabel = `${s.refReps||'–'} × ${s.refKg} assist. (${Math.max(0,bw-Number(s.refKg))}kg real)`;
-      else if (isBW && bw)
-        refLabel = `${s.refReps||'–'} × ${bw}kg (BW)`;
-      else
-        refLabel = `${s.refReps!=null?s.refReps:'–'} × ${s.refKg!=null?s.refKg:'–'} ${isAs?'assist.':'kg'}`;
+    // Quick-fill chips — up to two per work row. "Repeat last time" always
+    // shows when there's history; "apply suggestion" only shows when it
+    // actually differs from last time (nothing to offer otherwise). Tapping
+    // either fills both reps+kg at once and marks the row edited, same as
+    // typing — see applyChip().
+    let chips = '';
+    if (isWork && (s.lastReps!=null || s.lastKg!=null)) {
+      const parts = [`<button onclick="applyChip(${i},${j},'last')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${DM}">↺ ${fmtPair(s.lastReps,s.lastKg)}</button>`];
+      const sameAsLast = s.sugReps===s.lastReps && s.sugKg===s.lastKg;
+      if ((s.sugReps!=null || s.sugKg!=null) && !sameAsLast) {
+        const isReset = s.sugReps!=null && s.lastReps!=null && s.sugReps < s.lastReps;
+        parts.push(`<button onclick="applyChip(${i},${j},'sug')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${isReset?CA:CG}">${isReset?'▼':'▲'} ${fmtPair(s.sugReps,s.sugKg)}</button>`);
+      }
+      chips = `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:2px">${parts.join('')}</div>`;
     }
-    const refChip = refLabel
-      ? `<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px;padding:0 2px">
-           <span style="font-size:11px;color:${DM}">↺</span>
-           <span style="font-size:11px;color:${DM}">${refLabel}</span>
-         </div>`
-      : '';
+
+    // Completed checkbox — work rows only. Warm-ups were never part of
+    // memory/volume tracking, so there's nothing for them to confirm.
+    const checkCell = isWork
+      ? `<button onclick="toggleCompleted(${i},${j})" aria-label="Concluído" style="width:100%;min-height:38px;border-radius:7px;border:1px solid ${s.completed?CG:BD};background:${s.completed?CG:'transparent'};color:#fff;font-size:14px;font-weight:700;cursor:pointer;padding:0">${s.completed?'✓':''}</button>`
+      : `<span></span>`;
 
     return `<div style="margin-bottom:8px">
-      ${refChip}
-      <div style="display:grid;grid-template-columns:54px 1fr 1fr 38px;gap:6px;align-items:center">
+      ${chips}
+      <div style="display:grid;grid-template-columns:28px 54px 1fr 1fr 38px;gap:6px;align-items:center">
+        ${checkCell}
         <button onclick="toggleIntent(${i},${j})" style="padding:10px 0;border:none;border-radius:7px;
           background:${isWork?CG:'#555'};color:#fff;font-weight:700;font-size:11px;cursor:pointer;
           font-family:inherit;text-align:center;width:100%">${isWork?'W':'WU'}</button>
-        <input type="number" inputmode="decimal" placeholder="${s.phReps||'Reps'}" value="${rv}"
+        <input id="s-reps-${i}-${j}" type="number" inputmode="decimal" placeholder="${s.phReps||'Reps'}" value="${rv}"
           oninput="setVal(${i},${j},'reps',this.value)"
-          style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
+          style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
         ${isBW
           ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
-          : `<input type="number" inputmode="decimal" placeholder="${isAs?'Assist.':'Kg'}" step="0.5" value="${kv}"
+          : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${isAs?'Assist.':'Kg'}" step="0.5" value="${kv}"
                oninput="setVal(${i},${j},'kg',this.value)"
-               style="background:${BG3};border:1px solid ${isAs?CA:BD};border-radius:7px;color:${TX};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
+               style="background:${BG3};border:1px solid ${isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
         <button onclick="rmSet(${i},${j})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;text-align:center;width:100%">×</button>
       </div>
     </div>`;
@@ -790,6 +928,7 @@ function buildExBlock(ex, i) {
       </div>
       <!-- Set rows -->
       <div style="padding:12px 16px">
+        ${stallBanner}
         ${!ex.sets.length ? `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma série. Adicione abaixo.</div>` : ''}
         ${setHeader}${setRows}
         ${B(BG3,TX,'+ Série',`addSet(${i})`,';margin-bottom:0;margin-top:4px')}
@@ -1434,7 +1573,10 @@ function saveSession() {
 
 function editSess(id) {
   const s = D.sessions.find(x=>x.id===id); if(!s)return;
-  S = { ...s, exercises:s.exercises.map(ex=>({...ex,sets:ex.sets.map(set=>({...set}))})), _editId:s.id };
+  // repsEdited/kgEdited force to true here (never false, unlike a fresh
+  // prefill from buildSetsFromMemory): this is real saved history, not a
+  // suggestion the user hasn't looked at yet, so it should never render dim.
+  S = { ...s, exercises:s.exercises.map(ex=>({...ex,sets:ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true}))})), _editId:s.id };
   TAB='log'; EXP=null; render();
 }
 
@@ -1442,10 +1584,42 @@ function delSess(id)     { D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null;
 function toggleExp(id)   { EXP=EXP===id?null:id; render(); }
 
 // Per-set mutations — called from inline event handlers in buildExBlock()
-function addSet(i)            { S.exercises[i].sets.push({intent:'work',reps:'',kg:'',refReps:null,refKg:null}); render(); }
+function addSet(i)            { S.exercises[i].sets.push({intent:'work',reps:'',kg:'',lastReps:null,lastKg:null,sugReps:null,sugKg:null,completed:false}); render(); }
 function rmSet(i,j)           { S.exercises[i].sets.splice(j,1); render(); }
 function toggleIntent(i,j)    { const s=S.exercises[i].sets[j]; s.intent=s.intent==='work'?'warmup':'work'; render(); }
-function setVal(i,j,f,v)      { const s=S.exercises[i].sets[j]; s[f]=f==='reps'?(parseInt(v)||''):(parseFloat(v)||''); }
+
+// Deliberately does NOT call render() — this fires on every keystroke, and a
+// full re-render would blow away the input's focus/cursor position mid-type.
+// Instead it flips the field straight from "carried over" (dim) to
+// "confirmed today" (normal) via a direct style tweak on the element itself,
+// same pattern used elsewhere in the file (exF(), setNewType(), etc.) for
+// in-place UI updates that shouldn't trigger a full rebuild.
+function setVal(i,j,f,v) {
+  const s = S.exercises[i].sets[j];
+  s[f] = f==='reps' ? (parseInt(v)||'') : (parseFloat(v)||'');
+  s[f==='reps' ? 'repsEdited' : 'kgEdited'] = true;
+  const el = document.getElementById(`s-${f}-${i}-${j}`);
+  if (el) el.style.color = TX;
+}
+
+// Quick-fill from a chip tap — "last" repeats last session's actual values,
+// "sug" applies today's suggested target. Both fields fill together (a
+// suggestion is a reps+weight pair, not independent numbers) and the row is
+// marked edited exactly like manual typing. Button-triggered, not a
+// keystroke, so a full render() is fine here (no focus to preserve).
+function applyChip(i, j, which) {
+  const s = S.exercises[i].sets[j];
+  if (which === 'last') { s.reps = s.lastReps; s.kg = s.lastKg; }
+  else                  { s.reps = s.sugReps;  s.kg = s.sugKg;  }
+  s.repsEdited = true; s.kgEdited = true;
+  render();
+}
+
+// Marks a work set as actually performed. Separate from just having numbers
+// in the fields, since those numbers might just be an autofilled suggestion
+// the user hasn't attempted yet — only completed sets count toward future
+// suggestions/warm-ups (getRecentWorkHistory) and volume (volEx).
+function toggleCompleted(i,j) { const s=S.exercises[i].sets[j]; s.completed=!s.completed; render(); }
 
 // Type/regime changes re-run auto-population from memory
 function setExType(i,t)       { S.exercises[i].type=t;   S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
