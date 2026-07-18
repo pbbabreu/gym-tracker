@@ -103,7 +103,6 @@ let D = {
   exercises:    [],  // library entries: { id, name, type, compound, regime }
   plans:        [],  // training plans:  { id, name, exercises:[exId,...] }
   sessions:     [],  // history:         { id, date, planId, planName, exercises:[...] }
-  memory:       {},  // last-session cache per exercise+type+regime key
   weights:      [],  // bodyweight log:  { id, date, kg }
   lastModified: 0,   // unix timestamp — used for sync conflict resolution
 };
@@ -163,13 +162,15 @@ const round   = (v,step) => Math.round(v/step)*step;
 // ║    3. GitHub Gist    — cross-device sync source of truth
 // ║
 // ║  The Gist stores FOUR independent files, each with its own lastModified:
-// ║    gym-tracker-sessions.json  — sessions + memory
+// ║    gym-tracker-sessions.json  — sessions
 // ║    gym-tracker-library.json   — exercises
 // ║    gym-tracker-plans.json     — plans
 // ║    gym-tracker-weights.json   — bodyweight log
 // ║
-// ║  Merge logic per file:
-// ║    sessions  — newer lastModified wins (one device logs at a time)
+// ║  Merge logic per file — all four union by id, remote wins per-id on
+// ║  conflict (never destructive, safe regardless of write order across
+// ║  devices):
+// ║    sessions  — union by id, remote wins on conflict
 // ║    library   — always union (never lose exercises from either device)
 // ║    plans     — always union (same reasoning)
 // ║    weights   — always union by id (additive log)
@@ -287,7 +288,7 @@ async function gistSave() {
   setSyncStatus('syncing');
   const ts = D.lastModified;
   const ok = await gistWriteFiles({
-    'gym-tracker-sessions.json': { content: JSON.stringify({ sessions:D.sessions, memory:D.memory, lastModified:ts }, null,2) },
+    'gym-tracker-sessions.json': { content: JSON.stringify({ sessions:D.sessions, lastModified:ts }, null,2) },
     'gym-tracker-library.json':  { content: JSON.stringify({ exercises:D.exercises, lastModified:ts }, null,2) },
     'gym-tracker-plans.json':    { content: JSON.stringify({ plans:D.plans, lastModified:ts }, null,2) },
     'gym-tracker-weights.json':  { content: JSON.stringify({ weights:D.weights, lastModified:ts }, null,2) },
@@ -320,9 +321,6 @@ function mergeRemote(remote) {
     D.sessions.forEach(s => map.set(s.id, s));
     remote.sessions.sessions.forEach(s => map.set(s.id, s));
     D.sessions = [...map.values()].sort((a,b) => b.date.localeCompare(a.date));
-    // Also take remote memory if it has more entries
-    const remoteMem = remote.sessions.memory || {};
-    D.memory = { ...D.memory, ...remoteMem };
   }
 
   // Library — always union; remote entry wins on id conflict
@@ -348,8 +346,6 @@ function mergeRemote(remote) {
     remote.weights.weights.forEach(w => map.set(w.id, w));
     D.weights = [...map.values()];
   }
-
-  rebuildMemory();
 }
 
 // ── persist() — called after every mutation ───────────────────────────────────
@@ -375,10 +371,8 @@ async function loadData() {
     D.exercises    = local.exercises    || [];
     D.plans        = local.plans        || [];
     D.sessions     = local.sessions     || [];
-    D.memory       = local.memory       || {};
     D.weights      = local.weights      || [];
     D.lastModified = local.lastModified || 0;
-    rebuildMemory();
   }
   render();
 
@@ -405,28 +399,28 @@ async function loadData() {
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  6. MEMORY SYSTEM
 // ║
-// ║  Tracks the last work sets for each unique exercise+type+regime combination,
-// ║  and computes progressive-overload suggestions from recent session history.
+// ║  Computes progressive-overload suggestions directly from D.sessions —
+// ║  there is no separate cached-memory layer (an earlier D.memory/
+// ║  rebuildMemory() snapshot cache was removed as dead code: it only ever
+// ║  held a single latest entry per key, nothing read it back once history-
+// ║  aware suggestions shipped, and its own remote merge was provably
+// ║  overwritten by its own rebuild in the same function).
 // ║  Key format: "exId:type:regime"  e.g. "abc123:strength:weighted"
 // ║
-// ║  rebuildMemory()       — scans all sessions, rebuilds D.memory from scratch.
-// ║                          NOTE: no longer read by buildSetsFromMemory() below
-// ║                          (that now goes through computeSuggestion(), which
-// ║                          reads D.sessions directly — see that function for
-// ║                          why). D.memory itself is kept computed/synced since
-// ║                          other code paths may still expect it to exist and
-// ║                          be accurate, but nothing currently reads it back.
-// ║  buildSetsFromMemory() — generates pre-populated set rows for a session exercise
-// ║
-// ║  TRAINING_PROFILES     — the two baseline rep-range/target-set-count
-// ║                          profiles currently in use. Per-exercise custom
-// ║                          profiles are a deliberately deferred future
-// ║                          feature (see the project Log) — this only
-// ║                          formalizes what's already implicit today.
-// ║  getRecentWorkHistory()— last N sessions' completed work sets for a key,
-// ║                          newest first. Independent of D.memory, which only
-// ║                          ever tracked a single latest snapshot — detecting
-// ║                          a multi-session stall needs a short window.
+// ║  isCountedWork()       — a set counts as real performed work only if
+// ║                          intent==='work' and it wasn't explicitly left
+// ║                          unchecked (completed!==false, not ===true —
+// ║                          sets saved before the checkbox existed, or a
+// ║                          freshly-added row nobody has touched yet, have
+// ║                          no `completed` at all and must still count).
+// ║  profileFor()          — the baseline rep-range/target-set-count profile,
+// ║                          by type and (for hypertrophy) regime. Per-
+// ║                          exercise custom profiles are a deliberately
+// ║                          deferred future feature (see the project Log).
+// ║  getRecentWorkHistory()— last N sessions' counted work sets for a key,
+// ║                          newest first — a short window, not a single
+// ║                          snapshot, since detecting a multi-session stall
+// ║                          needs more than the latest session alone.
 // ║  computeSuggestion()   — the actual progression algorithm. NOT a simple
 // ║                          per-number trend: "graduated" (ready for more
 // ║                          weight) requires the FULL target work-set count
@@ -436,7 +430,10 @@ async function loadData() {
 // ║                          partway through a session — fails the check on
 // ║                          its own, which is exactly the desired behavior:
 // ║                          don't suggest more weight until the whole
-// ║                          prescribed session can be done at it.
+// ║                          prescribed session can be done at it. Bodyweight
+// ║                          is excluded from graduation/stall entirely (see
+// ║                          below) — there's no adjustable resistance to
+// ║                          progress in this data model.
 // ║
 // ║  Warm-up generation rules (weight scales off the SUGGESTED weight for
 // ║  today, not last session's actual heaviest set; reps ramp 10-8-6 as the
@@ -446,6 +443,8 @@ async function loadData() {
 // ║    Compound + assisted  → 3 WU sets at 175 / 145 / 115% (more assist = easier)
 // ║    Isolation + weighted → 1 WU set at 50% of suggested weight (6 reps —
 // ║                           the "closest to work weight" step, not 10)
+// ║    Isolation + assisted → 1 WU set at 150% (the complement of 50%, same
+// ║                           inversion the compound ramp uses)
 // ║    Bodyweight           → no warm-ups
 // ║  Every set (warm-up and work) gets a completed checkbox — checking it
 // ║  confirms whatever's currently shown as accurate, same as editing it by
@@ -454,33 +453,18 @@ async function loadData() {
 
 const memKey = (exId, type, regime) => `${exId}:${type}:${regime||'weighted'}`;
 
-function rebuildMemory() {
-  const mem = {};
-  [...D.sessions]
-    .sort((a,b) => a.date.localeCompare(b.date)) // process oldest first so newest wins
-    .forEach(sess => {
-      (sess.exercises||[]).forEach(ex => {
-        const key = memKey(ex.exId, ex.type, ex.regime||'weighted');
-        // Only completed sets count as real performed work.
-        // completed !== false (not === true): sets saved before this field
-        // existed have no `completed` at all (undefined) and must still
-        // count as real performed work — only a row explicitly left
-        // unchecked under the new system should be excluded.
-        const ws = (ex.sets||[]).filter(s => s.intent==='work' && s.completed!==false && (s.reps||s.kg));
-        if (ws.length) mem[key] = { date: sess.date, workSets: ws.map(s => ({reps:s.reps, kg:s.kg})) };
-      });
-    });
-  D.memory = mem;
+const isCountedWork = s => s.intent === 'work' && s.completed !== false;
+
+function profileFor(type, regime) {
+  if (type === 'strength') return { targetWorkSets: 3, repLow: 2, repHigh: 5 };
+  return regime === 'assisted'
+    ? { targetWorkSets: 2, repLow: 6, repHigh: 12 }
+    : { targetWorkSets: 2, repLow: 6, repHigh: 10 };
 }
 
-const TRAINING_PROFILES = {
-  strength:    { targetWorkSets: 3, repLow: 3, repHigh: 5  },
-  hypertrophy: { targetWorkSets: 2, repLow: 6, repHigh: 10 },
-};
-
-// Returns up to n most recent sessions' completed work sets for this exact
+// Returns up to n most recent sessions' counted work sets for this exact
 // exercise+type+regime, newest first — e.g. [[{reps,kg},...], [{reps,kg},...]].
-// Sessions where this exercise had no completed work sets are skipped
+// Sessions where this exercise had no counted work sets are skipped
 // entirely rather than counted as a zero — there's simply no data from that
 // attempt to reason about.
 function getRecentWorkHistory(exId, type, regime, n=3) {
@@ -491,11 +475,7 @@ function getRecentWorkHistory(exId, type, regime, n=3) {
     .some(sess => {
       const ex = (sess.exercises||[]).find(e => memKey(e.exId, e.type, e.regime||'weighted') === key);
       if (ex) {
-        // completed !== false (not === true): sets saved before this field
-        // existed have no `completed` at all (undefined) and must still
-        // count as real performed work — only a row explicitly left
-        // unchecked under the new system should be excluded.
-        const ws = (ex.sets||[]).filter(s => s.intent==='work' && s.completed!==false && (s.reps||s.kg));
+        const ws = (ex.sets||[]).filter(s => isCountedWork(s) && (s.reps||s.kg));
         if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
       }
       return out.length >= n; // stop early once we have enough
@@ -519,18 +499,46 @@ function computeSuggestion(exId, type, regime, profile) {
   if (!history.length) return null;
 
   const isAsst = regime === 'assisted';
+  const isBW   = regime === 'bodyweight';
+
+  // "Was a kg value actually entered" — NOT "is it > 0". A real 0kg assisted
+  // set (full graduation — no counterweight left, the hardest possible
+  // state) must count; a genuinely untouched field must not. Number() can't
+  // tell those apart (both are falsy), so check the raw field instead.
+  const hasKg = s => s.kg !== '' && s.kg != null;
+
+  // Assisted: less counterweight = harder, so the WORKING weight (the one
+  // that was actually challenging) is the SMALLEST kg logged in a session,
+  // not the largest — inverse of every other regime, where more kg = harder.
+  const workingKgOf = vals => isAsst ? Math.min(...vals) : Math.max(...vals);
+
   const graduatedAt = (sets) => {
-    const vals = sets.map(s => Number(s.kg)).filter(v => v > 0);
+    if (sets.length < profile.targetWorkSets) return false;
+    if (isBW) {
+      // No kg exists for bodyweight sets — graduation is reps-only: hit the
+      // top of the rep range across the full prescribed set count.
+      return sets.every(s => Number(s.reps) >= profile.repHigh);
+    }
+    const vals = sets.filter(hasKg).map(s => Number(s.kg));
     if (!vals.length) return false;
-    const workingKg = isAsst ? Math.min(...vals) : Math.max(...vals);
-    return sets.length >= profile.targetWorkSets
-      && sets.every(s => Number(s.kg) === workingKg && Number(s.reps) >= profile.repHigh);
+    const workingKg = workingKgOf(vals);
+    return sets.every(s => hasKg(s) && Number(s.kg) === workingKg && Number(s.reps) >= profile.repHigh);
   };
 
-  const last     = history[0];
-  const lastVals = last.map(s => Number(s.kg)).filter(v => v > 0);
-  const workingKg = lastVals.length ? (isAsst ? Math.min(...lastVals) : Math.max(...lastVals)) : null;
-  const graduated = graduatedAt(last);
+  const last = history[0];
+  let workingKg = null;
+  if (!isBW) {
+    const lastVals = last.filter(hasKg).map(s => Number(s.kg));
+    workingKg = lastVals.length ? workingKgOf(lastVals) : null;
+  }
+  // Bodyweight has no adjustable resistance in this data model, so
+  // "stalled, add weight" is never an actionable nudge — it opts out of
+  // graduation/stall entirely, same as it already opts out of warm-ups
+  // above. repsTarget stays at the top of the range permanently as a
+  // stable "aim for more reps" cue. (Revisit if weighted-bodyweight
+  // variants — vest/added load as a real progression axis — are ever
+  // tracked; see the project Log.)
+  const graduated = !isBW && graduatedAt(last);
 
   const suggestedKg = (graduated && workingKg != null) ? bumpWeight(workingKg, isAsst) : workingKg;
   const repsTarget   = graduated ? profile.repLow : profile.repHigh;
@@ -538,9 +546,11 @@ function computeSuggestion(exId, type, regime, profile) {
   // Stall streak — consecutive most-recent sessions that did NOT graduate.
   // 0 if the last session graduated (no stall, they just progressed).
   let stallStreak = 0;
-  for (const sets of history) {
-    if (graduatedAt(sets)) break;
-    stallStreak++;
+  if (!isBW) {
+    for (const sets of history) {
+      if (graduatedAt(sets)) break;
+      stallStreak++;
+    }
   }
 
   return { last, workingKg, suggestedKg, repsTarget, graduated, stallStreak };
@@ -549,14 +559,15 @@ function computeSuggestion(exId, type, regime, profile) {
 function buildSetsFromMemory(ex) {
   const regime  = ex.regime || 'weighted';
   const isComp  = ex.compound !== false;
-  const profile = TRAINING_PROFILES[ex.type] || TRAINING_PROFILES.hypertrophy;
+  const profile = profileFor(ex.type, regime);
   const sug     = computeSuggestion(ex.exId, ex.type, regime, profile);
+  ex._sug       = sug; // cached for buildExBlock()'s stall banner — see its comment
   const sets    = [];
 
   // No history yet → return empty default rows based on type
   if (!sug) {
-    const ph = ex.type === 'strength' ? `${profile.repLow}–${profile.repHigh}` : `${profile.repLow}–${profile.repHigh}`;
-    for (let i=0; i<profile.targetWorkSets; i++) sets.push({ intent:'work', reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null, completed:false, phReps:ph });
+    const ph = `${profile.repLow}–${profile.repHigh}`;
+    for (let i=0; i<profile.targetWorkSets; i++) sets.push({ intent:'work', reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null, phReps:ph });
     return sets;
   }
 
@@ -569,14 +580,18 @@ function buildSetsFromMemory(ex) {
   // of the compound ramp, not the first.
   const WU_REPS = [10, 8, 6];
   if (regime !== 'bodyweight' && sug.suggestedKg != null) {
+    // Isolation's single warm-up mirrors the compound ramp's assisted
+    // inversion (less counterweight = harder): 0.5 weighted's complement is
+    // 1.5, the same "2 − x" relationship the compound mults already use
+    // (0.25↔1.75, 0.55↔1.45, 0.85↔1.15).
     const mults = isComp
       ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : [0.25, 0.55, 0.85])
-      : [0.5];
+      : (regime === 'assisted' ? [1.5] : [0.5]);
     mults.forEach((m,idx) => sets.push({
       intent: 'warmup',
-      reps: WU_REPS[WU_REPS.length - mults.length + idx],
+      reps: isComp ? WU_REPS[idx] : WU_REPS[WU_REPS.length - 1],
       kg: round(sug.suggestedKg*m, 0.5),
-      lastReps:null, lastKg:null, sugReps:null, sugKg:null, completed:false,
+      lastReps:null, lastKg:null, sugReps:null, sugKg:null,
     }));
   }
 
@@ -590,7 +605,6 @@ function buildSetsFromMemory(ex) {
     reps: s.reps, kg: s.kg,
     lastReps: s.reps, lastKg: s.kg,
     sugReps: sug.repsTarget, sugKg: sug.suggestedKg,
-    completed: false,
   }));
   return sets;
 }
@@ -620,16 +634,17 @@ function bwIsStale() {
 function actualLoad(set, regime) {
   const bw = currentBW();
   if (regime === 'bodyweight') return bw || null;
-  if (regime === 'assisted')   return (bw && set.kg) ? Math.max(0, bw - Number(set.kg)) : null;
+  // (bw && set.kg) would treat a real 0kg assisted set (full graduation —
+  // no counterweight left) the same as an untouched field, since 0 is
+  // falsy either way. Check the field was actually filled in instead —
+  // same fix as hasKg() in computeSuggestion().
+  if (regime === 'assisted')   return (bw && set.kg !== '' && set.kg != null) ? Math.max(0, bw - Number(set.kg)) : null;
   return set.kg ? Number(set.kg) : null;
 }
 
 function volEx(sets, regime) {
-  // completed !== false, not === true — see the matching comment in
-  // rebuildMemory(): sessions saved before this field existed must still
-  // count toward volume, only an explicitly-unchecked row is excluded.
   return (sets||[])
-    .filter(s => s.intent === 'work' && s.completed!==false)
+    .filter(isCountedWork)
     .reduce((a,s) => {
       const l = actualLoad(s, regime||'weighted');
       return a + (l && s.reps ? Number(s.reps)*l : 0);
@@ -848,12 +863,15 @@ function buildExBlock(ex, i) {
   const isFirst = i===0, isLast=i===S.exercises.length-1;
   const bw = currentBW();
 
-  // Recomputed at render time (cheap — small dataset, and keeps the banner
-  // correct if type/regime changes mid-session) purely to drive the stall
-  // banner below; buildSetsFromMemory() already computed the same thing once
-  // when the exercise was added, to populate each row's sug*/last* fields.
-  const profile = TRAINING_PROFILES[ex.type] || TRAINING_PROFILES.hypertrophy;
-  const sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile);
+  // Reads the suggestion buildSetsFromMemory() already cached on the
+  // exercise object (ex._sug) rather than recomputing computeSuggestion()
+  // again here — keeps this banner and each row's sug*/last* chip fields
+  // single-sourced so they can never disagree, and avoids redundantly
+  // re-deriving the same result on every render. Refreshed on the same
+  // triggers the row data already refreshes on: adding the exercise, or
+  // changing its type/regime mid-session (setExType/setExRegime both
+  // re-run buildSetsFromMemory).
+  const sug = ex._sug;
   const stallBanner = (sug && sug.stallStreak >= 2) ? `
     <div style="background:#2d1010;border:1px solid #5c1a1a;border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:#e57373">
       Mesma carga há ${sug.stallStreak} treinos — foque em completar todas as séries no topo da faixa de reps antes de aumentar a carga.
@@ -981,8 +999,12 @@ function buildHistory() {
           if (set.intent==='work') wc++;
           const lbl = set.intent==='work' ? `W${wc}` : 'WU';
           const bw  = currentBW();
+          // hasKg, not `set.kg||'–'` — a genuinely-entered 0kg assisted set
+          // (full graduation) must show "0", not fall through to "–" as if
+          // untouched. Same fix as actualLoad()/computeSuggestion()'s hasKg.
+          const hasKg = set.kg !== '' && set.kg != null;
           const kgLbl = ex.regime==='bodyweight' ? (bw?`${bw}kg (BW)`:'BW')
-            : ex.regime==='assisted' ? (bw ? `${set.kg||'–'} assist. (${bw&&set.kg?Math.max(0,bw-Number(set.kg)):'-'}kg real)` : `${set.kg||'–'} assist.`)
+            : ex.regime==='assisted' ? (bw ? `${hasKg?set.kg:'–'} assist. (${bw&&hasKg?Math.max(0,bw-Number(set.kg)):'-'}kg real)` : `${hasKg?set.kg:'–'} assist.`)
             : `${set.kg||'–'} kg`;
           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid ${BD};font-size:14px">
             <span style="background:${set.intent==='work'?CG:'#555'};color:#fff;padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700;min-width:34px;text-align:center">${lbl}</span>
@@ -1585,7 +1607,7 @@ function saveSession() {
   const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, exercises:S.exercises };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
-  rebuildMemory(); persist(); S=null; TAB='history'; render();
+  persist(); S=null; TAB='history'; render();
 }
 
 function editSess(id) {
@@ -1597,11 +1619,11 @@ function editSess(id) {
   TAB='log'; EXP=null; render();
 }
 
-function delSess(id)     { D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; rebuildMemory(); persist(); render(); }
+function delSess(id)     { D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; persist(); render(); }
 function toggleExp(id)   { EXP=EXP===id?null:id; render(); }
 
 // Per-set mutations — called from inline event handlers in buildExBlock()
-function addSet(i)            { S.exercises[i].sets.push({intent:'work',reps:'',kg:'',lastReps:null,lastKg:null,sugReps:null,sugKg:null,completed:false}); render(); }
+function addSet(i)            { S.exercises[i].sets.push({intent:'work',reps:'',kg:'',lastReps:null,lastKg:null,sugReps:null,sugKg:null}); render(); }
 function rmSet(i,j)           { S.exercises[i].sets.splice(j,1); render(); }
 function toggleIntent(i,j)    { const s=S.exercises[i].sets[j]; s.intent=s.intent==='work'?'warmup':'work'; render(); }
 
@@ -1613,7 +1635,11 @@ function toggleIntent(i,j)    { const s=S.exercises[i].sets[j]; s.intent=s.inten
 // in-place UI updates that shouldn't trigger a full rebuild.
 function setVal(i,j,f,v) {
   const s = S.exercises[i].sets[j];
-  s[f] = f==='reps' ? (parseInt(v)||'') : (parseFloat(v)||'');
+  // Parse first, then check for a genuinely invalid/empty result — NOT
+  // `parseInt(v)||''`, which silently blanks a real, intentionally-typed
+  // "0" (0 is falsy, indistinguishable from a failed parse under ||).
+  const n = f==='reps' ? parseInt(v) : parseFloat(v);
+  s[f] = Number.isNaN(n) ? '' : n;
   s[f==='reps' ? 'repsEdited' : 'kgEdited'] = true;
   const el = document.getElementById(`s-${f}-${i}-${j}`);
   if (el) el.style.color = TX;
@@ -1741,7 +1767,6 @@ function applyData(p) {
   D.sessions     = p.sessions     || [];
   D.weights      = p.weights      || [];
   D.lastModified = p.lastModified || 0;
-  rebuildMemory(); // derive memory from imported sessions rather than trusting p.memory
 }
 
 function importBackup() {
