@@ -325,15 +325,15 @@ async function gistPull() {
 
 // Merge remote Gist data into D using per-file rules
 function mergeRemote(remote, force=false) {
-  const localTs = D.lastModified || 0;
-
-  // Sessions — newer wins
-  if (remote.sessions) {
-    const rTs = remote.sessions.lastModified || 0;
-    if (force || rTs > localTs) {
-      D.sessions = remote.sessions.sessions || [];
-      D.memory   = remote.sessions.memory   || {};
-    }
+  // Sessions — union by id, remote wins on conflict (most recent edit wins)
+  if (remote.sessions?.sessions) {
+    const map = new Map();
+    D.sessions.forEach(s => map.set(s.id, s));
+    remote.sessions.sessions.forEach(s => map.set(s.id, s));
+    D.sessions = [...map.values()].sort((a,b) => b.date.localeCompare(a.date));
+    // Also take remote memory if it has more entries
+    const remoteMem = remote.sessions.memory || {};
+    D.memory = { ...D.memory, ...remoteMem };
   }
 
   // Library — always union; remote entry wins on id conflict
