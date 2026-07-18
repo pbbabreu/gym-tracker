@@ -1,0 +1,298 @@
+{
+  "exercises": [
+    {
+      "id": "narrow-stance-sumo-deadlift",
+      "name": "Narrow stance sumo deadlift",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "bent-over-barbell-row",
+      "name": "Bent-over barbell row",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "zercher-squat",
+      "name": "Zercher squat",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "bench-press",
+      "name": "Bench press",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "assisted-pull-up-gravitron",
+      "name": "Assisted pull-up (Gravitron)",
+      "type": "strength",
+      "compound": true,
+      "regime": "assisted"
+    },
+    {
+      "id": "dip-gravitron",
+      "name": "Dip (Gravitron)",
+      "type": "strength",
+      "compound": true,
+      "regime": "assisted"
+    },
+    {
+      "id": "kettlebell-swing",
+      "name": "Kettlebell swing",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "incline-press-machine",
+      "name": "Incline press machine",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "seated-cable-row",
+      "name": "Seated cable row",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "wide-grip-lat-pulldown",
+      "name": "Wide grip lat pulldown",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "wide-grip-neutral-pulldown",
+      "name": "Wide grip neutral pulldown",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "chest-supported-high-row",
+      "name": "Chest supported high row",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "machine-low-row",
+      "name": "Machine low row",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "v-squat-front-facing",
+      "name": "V-squat (front-facing)",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "bulgarian-split-squat",
+      "name": "Bulgarian split squat",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "hip-thrust",
+      "name": "Hip thrust",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "cable-low-to-high-fly",
+      "name": "Cable low-to-high fly",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "pec-deck-fly",
+      "name": "Pec deck fly",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "stiff-leg-deadlift",
+      "name": "Stiff-leg deadlift",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted"
+    },
+    {
+      "id": "overhead-cable-triceps",
+      "name": "Overhead cable triceps",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "machine-triceps",
+      "name": "Machine triceps",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "cable-triceps-kickback",
+      "name": "Cable triceps kickback",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "rope-cable-triceps-extension",
+      "name": "Rope cable triceps extension",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "single-arm-preacher-curl",
+      "name": "Single arm preacher curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "incline-deficit-curl",
+      "name": "Incline deficit curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "hammer-curl",
+      "name": "Hammer curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "reverse-grip-ez-bar-curl",
+      "name": "Reverse grip EZ bar curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "hammer-curl-lateral-raise",
+      "name": "Hammer curl lateral raise",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "lateral-raise",
+      "name": "Lateral raise",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "crucifix-swing",
+      "name": "Crucifix swing",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "face-pull",
+      "name": "Face pull",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "seated-leg-curl",
+      "name": "Seated leg curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "leg-extension",
+      "name": "Leg extension",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "standing-leg-curl",
+      "name": "Standing leg curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "single-leg-45-back-extension",
+      "name": "Single leg 45° back extension",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "seated-machine-shoulder-press",
+      "name": "Seated machine shoulder press",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "hip-abduction-machine",
+      "name": "Hip abduction machine",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "hip-adduction-machine",
+      "name": "Hip adduction machine",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "calf-raise",
+      "name": "Calf raise",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "seated-calf-raise",
+      "name": "Seated calf raise",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    },
+    {
+      "id": "scapular-pull-up",
+      "name": "Scapular pull-up",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight"
+    },
+    {
+      "id": "strict-halos",
+      "name": "Strict halos",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted"
+    }
+  ]
+}

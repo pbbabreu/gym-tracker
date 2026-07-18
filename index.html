@@ -48,60 +48,44 @@ const TX=COLOR.text, DM=COLOR.dim, BD=COLOR.border;
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
-// ║  2. DEFAULT EXERCISE LIBRARY
-// ║  Hardcoded list of exercises available to load into the library.
-// ║  These are never mutated — they are the "factory defaults".
-// ║  Each entry: { name, type, compound, regime }
+// ║  2. EXERCISE LIBRARY SEED
+// ║
+// ║  The starter exercise library used to live here as a hardcoded array.
+// ║  It now lives in library.json (same origin as this file, fetched with a
+// ║  plain relative fetch() — no CORS/auth needed) so it can be edited
+// ║  without touching app code.
+// ║
+// ║  seedStarterLibrary() is called from loadData() ONLY when D.exercises is
+// ║  completely empty — i.e. a genuinely fresh install. It is deliberately
+// ║  NOT an ongoing sync: once seeded, entries are indistinguishable from
+// ║  anything the user adds themselves (same array, same CRUD functions), so
+// ║  deleting a seeded exercise deletes it for good — it will not silently
+// ║  reappear because library.json still has it. There is currently exactly
+// ║  one user, so a shared/global library with a suggestion-and-approval
+// ║  workflow (originally considered) was deliberately deferred — see the
+// ║  project Log — this is scoped to just "give every install a starting
+// ║  library, including offline."
 // ╚══════════════════════════════════════════════════════════════════════════════
 
-const DEFAULTS = [
-  // ── Compound · Strength ───────────────────────────────────────────────────
-  { name:'Narrow stance sumo deadlift',     type:'strength',    compound:true,  regime:'weighted'  },
-  { name:'Bent-over barbell row',           type:'strength',    compound:true,  regime:'weighted'  },
-  { name:'Zercher squat',                   type:'strength',    compound:true,  regime:'weighted'  },
-  { name:'Bench press',                     type:'strength',    compound:true,  regime:'weighted'  },
-  { name:'Assisted pull-up (Gravitron)',    type:'strength',    compound:true,  regime:'assisted'  },
-  { name:'Dip (Gravitron)',                 type:'strength',    compound:true,  regime:'assisted'  },
-  // ── Compound · Hypertrophy ────────────────────────────────────────────────
-  { name:'Kettlebell swing',                type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Incline press machine',           type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Seated cable row',                type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Wide grip lat pulldown',          type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Wide grip neutral pulldown',      type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Chest supported high row',        type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Machine low row',                 type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'V-squat (front-facing)',          type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Bulgarian split squat',           type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Hip thrust',                      type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Cable low-to-high fly',           type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Pec deck fly',                    type:'hypertrophy', compound:true,  regime:'weighted'  },
-  { name:'Stiff-leg deadlift',              type:'hypertrophy', compound:true,  regime:'weighted'  },
-  // ── Isolation · Hypertrophy ───────────────────────────────────────────────
-  { name:'Overhead cable triceps',          type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Machine triceps',                 type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Cable triceps kickback',          type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Rope cable triceps extension',    type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Single arm preacher curl',        type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Incline deficit curl',            type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Hammer curl',                     type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Reverse grip EZ bar curl',        type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Hammer curl lateral raise',       type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Lateral raise',                   type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Crucifix swing',                  type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Face pull',                       type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Seated leg curl',                 type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Leg extension',                   type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Standing leg curl',               type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Single leg 45° back extension',   type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Seated machine shoulder press',   type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Hip abduction machine',           type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Hip adduction machine',           type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Calf raise',                      type:'hypertrophy', compound:false, regime:'weighted'  },
-  { name:'Seated calf raise',               type:'hypertrophy', compound:false, regime:'weighted'  },
-  // ── Special ───────────────────────────────────────────────────────────────
-  { name:'Scapular pull-up',                type:'hypertrophy', compound:true,  regime:'bodyweight'},
-  { name:'Strict halos',                    type:'hypertrophy', compound:false, regime:'weighted'  },
-];
+// Set on a failed seed fetch so buildLibrary() can offer a retry — the only
+// case this matters is a fresh install with zero exercises AND no network
+// (so the service-worker cache, populated by a previous successful load,
+// isn't there yet either).
+let _libSeedError = false;
+
+async function seedStarterLibrary() {
+  try {
+    const r = await fetch('library.json');
+    if (!r.ok) throw new Error('fetch failed: ' + r.status);
+    const data = await r.json();
+    D.exercises = (data.exercises || []).map(e => ({...e}));
+    _libSeedError = false;
+    await persist();
+  } catch(e) {
+    _libSeedError = true;
+  }
+  render();
+}
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -379,6 +363,7 @@ async function persist() {
 // ── Load sequence ─────────────────────────────────────────────────────────────
 // 1. Load config
 // 2. Load local cache → render immediately (app is usable offline)
+// 2b. Fresh install only (no personal exercises yet) → seed from library.json
 // 3. Fetch all four Gist files in background → merge → re-render
 
 async function loadData() {
@@ -396,6 +381,11 @@ async function loadData() {
     rebuildMemory();
   }
   render();
+
+  // Step 2b — a genuinely fresh install (no personal exercises at all yet)
+  // gets seeded from library.json. Runs after the first render so the app
+  // is already usable while this fetch is in flight.
+  if (!D.exercises.length) await seedStarterLibrary();
 
   if (!CFG.token || !CFG.gistId) return;
 
@@ -883,7 +873,6 @@ function buildHistory() {
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildLibrary() {
-  const missing  = DEFAULTS.filter(d => !D.exercises.find(e => e.name===d.name)).length;
   const total    = D.exercises.length;
   const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed);
   const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed;
@@ -900,13 +889,13 @@ function buildLibrary() {
       ${Bs(CG,TX,'+ Novo','openNewEx()')}
     </div>
 
-    ${missing > 0 ? `
-      <div style="background:#0a2e24;border:1px solid #1a5c40;border-radius:10px;padding:12px 14px;margin:14px 0 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
+    ${(!total && _libSeedError) ? `
+      <div style="background:#2d1010;border:1px solid #5c1a1a;border-radius:10px;padding:12px 14px;margin:14px 0 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
         <div>
-          <div style="font-size:13px;color:#6fcf97;font-weight:600;margin-bottom:2px">Biblioteca padrão disponível</div>
-          <div style="font-size:12px;color:#4caf7d">${missing} exercício${missing!==1?'s':''} ainda não adicionado${missing!==1?'s':''}</div>
+          <div style="font-size:13px;color:#e57373;font-weight:600;margin-bottom:2px">Não foi possível carregar a biblioteca inicial</div>
+          <div style="font-size:12px;color:#c96a6a">Verifique sua conexão e tente novamente.</div>
         </div>
-        ${Bs(CG,TX,'Carregar','loadDefaults()')}
+        ${Bs(CG,TX,'Tentar novamente','seedStarterLibrary()')}
       </div>` : ''}
 
     <div style="margin-top:14px">
@@ -923,7 +912,7 @@ function buildLibrary() {
 
     <div id="lib-results">
       ${!total
-        ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px;line-height:1.7">Nenhum exercício cadastrado.<br>Adicione manualmente ou carregue a biblioteca padrão.</div>`
+        ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px;line-height:1.7">Nenhum exercício cadastrado.<br>Adicione manualmente pelo botão "+ Novo" acima.</div>`
         : !filtered.length
         ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px">Nenhum exercício encontrado.</div>`
         : filtered.map(libExRow).join('')}
@@ -975,14 +964,6 @@ function libSearchInput(v) {
 }
 
 function libAlphaToggle() { _libAlpha = !_libAlpha; render(); }
-
-function loadDefaults() {
-  DEFAULTS.forEach(d => {
-    if (!D.exercises.find(e => e.name===d.name))
-      D.exercises.push({ id:uid(), name:d.name, type:d.type, compound:d.compound, regime:d.regime });
-  });
-  persist(); render();
-}
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
