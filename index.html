@@ -311,20 +311,25 @@ async function gistSave() {
   setSyncStatus(ok ? 'ok' : 'error');
 }
 
-// Force-pull — called from "Forçar download" button in sync modal
+// Manual re-sync — called from "Forçar download" button in sync modal.
+// Since every data type below merges by safe union (never destructive),
+// this doesn't need a "force" path anymore — it's just an on-demand version
+// of the background fetch+merge loadData() already does automatically.
+// Useful when you're about to start a workout and a session logged on
+// another device hasn't shown up in History yet.
 async function gistPull() {
   if (!CFG.token) { alert('Configure o token do GitHub primeiro.'); return; }
   setSyncStatus('syncing');
   const remote = await gistFetchAll();
   if (!remote) { setSyncStatus('error'); return; }
-  mergeRemote(remote, true); // force=true → remote always wins
+  mergeRemote(remote);
   await persistLocal();
   setSyncStatus('ok');
   render();
 }
 
 // Merge remote Gist data into D using per-file rules
-function mergeRemote(remote, force=false) {
+function mergeRemote(remote) {
   // Sessions — union by id, remote wins on conflict (most recent edit wins)
   if (remote.sessions?.sessions) {
     const map = new Map();
