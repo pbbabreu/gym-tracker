@@ -457,9 +457,12 @@ const isCountedWork = s => s.intent === 'work' && s.completed !== false;
 
 function profileFor(type, regime) {
   if (type === 'strength') return { targetWorkSets: 3, repLow: 2, repHigh: 5 };
+  // Hypertrophy's 1 target work set is the same for compound and isolation
+  // — only the warm-up count differs by isComp (3 vs 1, in
+  // buildWarmupSets()), the work-set target doesn't.
   return regime === 'assisted'
-    ? { targetWorkSets: 2, repLow: 6, repHigh: 12 }
-    : { targetWorkSets: 2, repLow: 6, repHigh: 10 };
+    ? { targetWorkSets: 1, repLow: 6, repHigh: 12 }
+    : { targetWorkSets: 1, repLow: 6, repHigh: 10 };
 }
 
 // Returns up to n most recent sessions' counted work sets for this exact
