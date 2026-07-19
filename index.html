@@ -78,7 +78,7 @@ async function seedStarterLibrary() {
     const r = await fetch('library.json');
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     const data = await r.json();
-    D.exercises = (data.exercises || []).map(e => ({...e}));
+    D.exercises = (data.exercises || []).map(e => ({...e, updatedAt:Date.now()}));
     _libSeedError = false;
     await persist();
   } catch(e) {
@@ -100,11 +100,21 @@ async function seedStarterLibrary() {
 
 // Persisted data — written to storage on every mutation
 let D = {
-  exercises:    [],  // library entries: { id, name, type, compound, regime }
-  plans:        [],  // training plans:  { id, name, exercises:[exId,...] }
-  sessions:     [],  // history:         { id, date, planId, planName, exercises:[...] }
-  weights:      [],  // bodyweight log:  { id, date, kg }
-  lastModified: 0,   // unix timestamp — used for sync conflict resolution
+  exercises:    [],  // library entries: { id, name, type, compound, regime, updatedAt }
+  plans:        [],  // training plans:  { id, name, exercises:[exId,...], updatedAt }
+  sessions:     [],  // history:         { id, date, planId, planName, exercises:[...], updatedAt }
+  weights:      [],  // bodyweight log:  { id, date, kg, updatedAt }
+  // One deletedAt-timestamp map per collection, keyed by id. Exists so a
+  // deletion can survive being merged against a device that hasn't synced
+  // it yet — see mergeCollection() in section 5 for how these are used and
+  // why a plain union (no tombstones) let deletions get silently
+  // resurrected. Small enough (id+timestamp per entry) that these are never
+  // garbage-collected.
+  tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{} },
+  lastModified: 0,   // unix timestamp of the last local mutation — used to
+                      // decide whether a fresh Gist push is needed, NOT for
+                      // per-item conflict resolution (each item's own
+                      // updatedAt handles that, see mergeCollection()).
 };
 
 // Sync config — stored separately, never exported in data backups
@@ -134,6 +144,9 @@ let _planExs = [], _planId = null;
 
 // Exercise modal working state
 let _newType = 'hypertrophy', _newCompound = true, _newRegime = 'weighted';
+// Tracks whether the Composto/Isolado toggle was actually clicked during
+// the current edit — see saveEditEx() for why this matters.
+let _newCompoundTouched = false;
 
 // Pick-exercise modal working state
 let _pickType = 'hypertrophy', _pickRegime = 'weighted';
@@ -152,6 +165,16 @@ const fmtTime = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digi
 const esc     = s  => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const round   = (v,step) => Math.round(v/step)*step;
 
+// "Was this field actually filled in" — NOT "is it truthy". A set's reps/kg
+// can legitimately be 0 (a real 0kg assisted set at full graduation, a
+// logged-but-failed 0-rep attempt) and 0 is falsy, indistinguishable from
+// an untouched field under a plain `if(x)`/`x||fallback` check. Used
+// everywhere a set's data needs "was this entered" rather than "is it
+// nonzero" — computeSuggestion's graduation check, actualLoad, History's
+// per-set display, and getRecentWorkHistory's inclusion filter.
+const hasKg   = s => s.kg   !== '' && s.kg   != null;
+const hasReps = s => s.reps !== '' && s.reps != null;
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  5. STORAGE — localStorage · window.storage · GitHub Gist
@@ -162,18 +185,25 @@ const round   = (v,step) => Math.round(v/step)*step;
 // ║    3. GitHub Gist    — cross-device sync source of truth
 // ║
 // ║  The Gist stores FOUR independent files, each with its own lastModified:
-// ║    gym-tracker-sessions.json  — sessions
-// ║    gym-tracker-library.json   — exercises
-// ║    gym-tracker-plans.json     — plans
-// ║    gym-tracker-weights.json   — bodyweight log
+// ║    gym-tracker-sessions.json  — sessions + their tombstones
+// ║    gym-tracker-library.json   — exercises + their tombstones
+// ║    gym-tracker-plans.json     — plans + their tombstones
+// ║    gym-tracker-weights.json   — bodyweight log + its tombstones
 // ║
-// ║  Merge logic per file — all four union by id, remote wins per-id on
-// ║  conflict (never destructive, safe regardless of write order across
-// ║  devices):
-// ║    sessions  — union by id, remote wins on conflict
-// ║    library   — always union (never lose exercises from either device)
-// ║    plans     — always union (same reasoning)
-// ║    weights   — always union by id (additive log)
+// ║  Merge logic (mergeCollection(), below) — all four collections use the
+// ║  SAME rule: union by id, but a tombstoned id is removed again UNLESS
+// ║  the surviving copy's own updatedAt is newer than the deletion (meaning
+// ║  it was genuinely re-created/edited elsewhere after the delete, so that
+// ║  newer edit wins over the older tombstone). This is NOT simple
+// ║  "newer wins" per item — there's no per-item conflict resolution beyond
+// ║  the tombstone check; two concurrent non-delete edits to the same id
+// ║  still resolve as "whichever was applied to the Map last in the merge
+// ║  order wins," same as before tombstones existed. What tombstones add is
+// ║  specifically closing the deletion-resurrection gap: a plain id-union
+// ║  with no tombstones can never represent "this was intentionally
+// ║  removed," so a device that syncs before seeing a deletion would bring
+// ║  the item back and re-push it — tombstones are the fix for that one
+// ║  failure mode, not a general timestamp-based conflict resolver.
 // ║
 // ║  Config (token, gistId) stored separately, never exported.
 // ╚══════════════════════════════════════════════════════════════════════════════
@@ -282,18 +312,41 @@ async function gistFetchAll() {
   } catch(e) { return null; }
 }
 
+// ── Sync queue ──────────────────────────────────────────────────────────────
+//
+// Every push (gistSave) and pull (gistPull, loadData's background fetch)
+// runs through this so they're never concurrent — a pull racing an
+// in-flight push could read a half-written remote state, and two
+// overlapping pushes could clobber each other's writes. A save that starts
+// while one's already running doesn't wait or fire a second overlapping
+// request; it just flags that there's more to sync, and the in-flight one
+// triggers exactly one more push once it finishes, capturing whatever
+// changed in between — so a burst of rapid edits collapses into at most one
+// extra round-trip instead of a pile of overlapping requests. Pulls, being
+// deliberate/infrequent rather than rapid-fire, simply wait their turn.
+let _syncBusy = false;
+let _syncQueued = false;
+
+function releaseSyncSlot() {
+  _syncBusy = false;
+  if (_syncQueued) { _syncQueued = false; gistSave(); }
+}
+
 // Push all four files to the Gist (fire-and-forget from persist())
 async function gistSave() {
   if (!CFG.token) return;
+  if (_syncBusy) { _syncQueued = true; return; }
+  _syncBusy = true;
   setSyncStatus('syncing');
   const ts = D.lastModified;
   const ok = await gistWriteFiles({
-    'gym-tracker-sessions.json': { content: JSON.stringify({ sessions:D.sessions, lastModified:ts }, null,2) },
-    'gym-tracker-library.json':  { content: JSON.stringify({ exercises:D.exercises, lastModified:ts }, null,2) },
-    'gym-tracker-plans.json':    { content: JSON.stringify({ plans:D.plans, lastModified:ts }, null,2) },
-    'gym-tracker-weights.json':  { content: JSON.stringify({ weights:D.weights, lastModified:ts }, null,2) },
+    'gym-tracker-sessions.json': { content: JSON.stringify({ sessions:D.sessions, tombstones:D.tombstones.sessions, lastModified:ts }, null,2) },
+    'gym-tracker-library.json':  { content: JSON.stringify({ exercises:D.exercises, tombstones:D.tombstones.exercises, lastModified:ts }, null,2) },
+    'gym-tracker-plans.json':    { content: JSON.stringify({ plans:D.plans, tombstones:D.tombstones.plans, lastModified:ts }, null,2) },
+    'gym-tracker-weights.json':  { content: JSON.stringify({ weights:D.weights, tombstones:D.tombstones.weights, lastModified:ts }, null,2) },
   });
   setSyncStatus(ok ? 'ok' : 'error');
+  releaseSyncSlot();
 }
 
 // Manual re-sync — called from "Forçar download" button in sync modal.
@@ -304,47 +357,70 @@ async function gistSave() {
 // another device hasn't shown up in History yet.
 async function gistPull() {
   if (!CFG.token) { alert('Configure o token do GitHub primeiro.'); return; }
+  while (_syncBusy) await new Promise(r => setTimeout(r, 50)); // wait for any in-flight push/pull
+  _syncBusy = true;
   setSyncStatus('syncing');
   const remote = await gistFetchAll();
-  if (!remote) { setSyncStatus('error'); return; }
+  if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return; }
   mergeRemote(remote);
   await persistLocal();
   setSyncStatus('ok');
   render();
+  releaseSyncSlot();
 }
 
-// Merge remote Gist data into D using per-file rules
+// Merges one collection: union by id (remote entry wins on a plain id
+// conflict — last write to the Map wins, no per-item timestamp compares
+// beyond the tombstone check below), then tombstones remove anything
+// they cover UNLESS the surviving item's own updatedAt is newer than the
+// deletion. Also unions the tombstone maps themselves (keeping the later
+// deletedAt per id) so a deletion recorded on either side sticks. See the
+// section 5 banner for why this exists — a plain union with no tombstones
+// let a deleted item come back to life the next time a stale device synced.
+function mergeCollection(local, remote, localTombstones, remoteTombstones) {
+  const map = new Map(local.map(x => [x.id, x]));
+  (remote||[]).forEach(x => map.set(x.id, x));
+
+  const tombstones = { ...localTombstones };
+  Object.entries(remoteTombstones||{}).forEach(([id, deletedAt]) => {
+    if (!tombstones[id] || deletedAt > tombstones[id]) tombstones[id] = deletedAt;
+  });
+
+  Object.entries(tombstones).forEach(([id, deletedAt]) => {
+    const item = map.get(id);
+    if (!item) return;
+    if ((item.updatedAt||0) <= deletedAt) map.delete(id);
+    else delete tombstones[id]; // item was genuinely edited after the delete — the tombstone is stale
+  });
+
+  return { items: [...map.values()], tombstones };
+}
+
+// Merge remote Gist data into D using mergeCollection() for all four
+// collections — see the section 5 banner for the shared merge rule.
 function mergeRemote(remote) {
-  // Sessions — union by id, remote wins on conflict (most recent edit wins)
   if (remote.sessions?.sessions) {
-    const map = new Map();
-    D.sessions.forEach(s => map.set(s.id, s));
-    remote.sessions.sessions.forEach(s => map.set(s.id, s));
-    D.sessions = [...map.values()].sort((a,b) => b.date.localeCompare(a.date));
+    const { items, tombstones } = mergeCollection(D.sessions, remote.sessions.sessions, D.tombstones.sessions, remote.sessions.tombstones);
+    D.sessions = items.sort((a,b) => b.date.localeCompare(a.date));
+    D.tombstones.sessions = tombstones;
   }
 
-  // Library — always union; remote entry wins on id conflict
   if (remote.library?.exercises) {
-    const map = new Map();
-    D.exercises.forEach(e => map.set(e.id, e));
-    remote.library.exercises.forEach(e => map.set(e.id, e));
-    D.exercises = [...map.values()];
+    const { items, tombstones } = mergeCollection(D.exercises, remote.library.exercises, D.tombstones.exercises, remote.library.tombstones);
+    D.exercises = items;
+    D.tombstones.exercises = tombstones;
   }
 
-  // Plans — always union; remote entry wins on id conflict
   if (remote.plans?.plans) {
-    const map = new Map();
-    D.plans.forEach(p => map.set(p.id, p));
-    remote.plans.plans.forEach(p => map.set(p.id, p));
-    D.plans = [...map.values()];
+    const { items, tombstones } = mergeCollection(D.plans, remote.plans.plans, D.tombstones.plans, remote.plans.tombstones);
+    D.plans = items;
+    D.tombstones.plans = tombstones;
   }
 
-  // Weights — always union by id
   if (remote.weights?.weights) {
-    const map = new Map();
-    D.weights.forEach(w => map.set(w.id, w));
-    remote.weights.weights.forEach(w => map.set(w.id, w));
-    D.weights = [...map.values()];
+    const { items, tombstones } = mergeCollection(D.weights, remote.weights.weights, D.tombstones.weights, remote.weights.tombstones);
+    D.weights = items;
+    D.tombstones.weights = tombstones;
   }
 }
 
@@ -372,6 +448,7 @@ async function loadData() {
     D.plans        = local.plans        || [];
     D.sessions     = local.sessions     || [];
     D.weights      = local.weights      || [];
+    D.tombstones   = local.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{} };
     D.lastModified = local.lastModified || 0;
   }
   render();
@@ -383,16 +460,24 @@ async function loadData() {
 
   if (!CFG.token || !CFG.gistId) return;
 
-  // Step 3 — background Gist fetch
+  // Step 3 — background Gist fetch. Goes through the same sync queue as
+  // gistPull()/gistSave() (see their comment) so this can't race a push
+  // that's already in flight. Status is set to 'ok' only once the fetch+
+  // merge itself is actually done — it used to be set right after firing
+  // gistSave() without awaiting it, which could show "synced" a moment
+  // before the push had even started, let alone finished.
+  while (_syncBusy) await new Promise(r => setTimeout(r, 50));
+  _syncBusy = true;
   setSyncStatus('syncing');
   const remote = await gistFetchAll();
-  if (!remote) { setSyncStatus('error'); return; }
+  if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return; }
 
   mergeRemote(remote);
   await persistLocal();
-  gistSave(); // push merged result back so all devices converge
   setSyncStatus('ok');
   render();
+  releaseSyncSlot();
+  gistSave(); // push merged result back so all devices converge — goes through the queue itself
 }
 
 
@@ -476,11 +561,15 @@ function getRecentWorkHistory(exId, type, regime, n=3) {
   [...D.sessions]
     .sort((a,b) => b.date.localeCompare(a.date))
     .some(sess => {
-      const ex = (sess.exercises||[]).find(e => memKey(e.exId, e.type, e.regime||'weighted') === key);
-      if (ex) {
-        const ws = (ex.sets||[]).filter(s => isCountedWork(s) && (s.reps||s.kg));
-        if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
-      }
+      // A session can log the same exercise+type+regime combo more than
+      // once (e.g. squat→curl→squat→curl as a superset) — combine every
+      // matching entry's counted work sets for this session, not just the
+      // first one found, so a repeated exercise's full contribution counts
+      // toward suggestions/graduation instead of silently losing everything
+      // past the first occurrence.
+      const matches = (sess.exercises||[]).filter(e => memKey(e.exId, e.type, e.regime||'weighted') === key);
+      const ws = matches.flatMap(ex => (ex.sets||[]).filter(s => isCountedWork(s) && (hasReps(s)||hasKg(s))));
+      if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
       return out.length >= n; // stop early once we have enough
     });
   return out;
@@ -503,12 +592,6 @@ function computeSuggestion(exId, type, regime, profile) {
 
   const isAsst = regime === 'assisted';
   const isBW   = regime === 'bodyweight';
-
-  // "Was a kg value actually entered" — NOT "is it > 0". A real 0kg assisted
-  // set (full graduation — no counterweight left, the hardest possible
-  // state) must count; a genuinely untouched field must not. Number() can't
-  // tell those apart (both are falsy), so check the raw field instead.
-  const hasKg = s => s.kg !== '' && s.kg != null;
 
   // Assisted: less counterweight = harder, so the WORKING weight (the one
   // that was actually challenging) is the SMALLEST kg logged in a session,
@@ -649,12 +732,13 @@ function bwIsStale() {
 function actualLoad(set, regime) {
   const bw = currentBW();
   if (regime === 'bodyweight') return bw || null;
-  // (bw && set.kg) would treat a real 0kg assisted set (full graduation —
-  // no counterweight left) the same as an untouched field, since 0 is
-  // falsy either way. Check the field was actually filled in instead —
-  // same fix as hasKg() in computeSuggestion().
-  if (regime === 'assisted')   return (bw && set.kg !== '' && set.kg != null) ? Math.max(0, bw - Number(set.kg)) : null;
-  return set.kg ? Number(set.kg) : null;
+  // hasKg, not a truthy check — a genuinely-entered 0kg set (full
+  // graduation for assisted; a deliberate empty-bar/0kg entry for
+  // weighted) must count, not be treated as an untouched field. Applies to
+  // both regimes here — weighted used to skip this and only assisted had
+  // it, which was itself the bug: same class, same fix, every regime.
+  if (regime === 'assisted') return (bw && hasKg(set)) ? Math.max(0, bw - Number(set.kg)) : null;
+  return hasKg(set) ? Number(set.kg) : null;
 }
 
 function volEx(sets, regime) {
@@ -878,6 +962,17 @@ function buildExBlock(ex, i) {
   const isFirst = i===0, isLast=i===S.exercises.length-1;
   const bw = currentBW();
 
+  // Same exercise+type+regime logged more than once in this session (e.g.
+  // a squat→curl→squat→curl superset) is supported, not blocked — history
+  // combines their sets for suggestions/graduation (see
+  // getRecentWorkHistory()), and Histórico/Planos always show each
+  // occurrence separately in the order they were added. The border +
+  // info icon here are purely a same-session heads-up so it's obvious at a
+  // glance this isn't accidental duplication, not a restriction.
+  const isDuplicated = S.exercises.filter(e =>
+    memKey(e.exId, e.type, e.regime||'weighted') === memKey(ex.exId, ex.type, ex.regime||'weighted')
+  ).length > 1;
+
   // Reads the suggestion buildSetsFromMemory() already cached on the
   // exercise object (ex._sug) rather than recomputing computeSuggestion()
   // again here — keeps this banner and each row's sug*/last* chip fields
@@ -934,10 +1029,21 @@ function buildExBlock(ex, i) {
     let chips = '';
     if (isWork && (s.lastReps!=null || s.lastKg!=null)) {
       const parts = [`<button onclick="applyChip(${i},${j},'last')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${DM}">↺ ${fmtPair(s.lastReps,s.lastKg)}</button>`];
-      const sameAsLast = s.sugReps===s.lastReps && s.sugKg===s.lastKg;
+      // Bodyweight never has a suggested/last kg (there's no kg field for
+      // it at all — sugKg is always null, lastKg is always the unused
+      // default ''), so comparing kg there would always read as "different"
+      // even when the rep suggestion is identical. Compare reps only for BW.
+      const sameAsLast = s.sugReps===s.lastReps && (isBW || s.sugKg===s.lastKg);
       if ((s.sugReps!=null || s.sugKg!=null) && !sameAsLast) {
-        const isReset = s.sugReps!=null && s.lastReps!=null && s.sugReps < s.lastReps;
-        parts.push(`<button onclick="applyChip(${i},${j},'sug')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${isReset?CA:CG}">${isReset?'▼':'▲'} ${fmtPair(s.sugReps,s.sugKg)}</button>`);
+        // A lower rep target than last time is never a regression — the
+        // only way sugReps < lastReps happens at all is a genuine weight
+        // graduation (working weight went up, so the rep target resets to
+        // the bottom of the range). Show it from the weight's perspective,
+        // which really did go up (▲), not the reps', with a distinct color
+        // so a graduation still stands out from a routine "aim higher"
+        // nudge — just not as if something went wrong.
+        const isGraduation = s.sugReps!=null && s.lastReps!=null && s.sugReps < s.lastReps;
+        parts.push(`<button onclick="applyChip(${i},${j},'sug')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${isGraduation?CA:CG}">▲ ${fmtPair(s.sugReps,s.sugKg)}</button>`);
       }
       chips = `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:2px">${parts.join('')}</div>`;
     }
@@ -970,7 +1076,7 @@ function buildExBlock(ex, i) {
   }).join('');
 
   return `
-    <div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:12px;overflow:hidden">
+    <div style="background:${BG2};border:1px solid ${isDuplicated?CA:BD};border-radius:10px;margin-bottom:12px;overflow:hidden">
       <!-- Exercise header: reorder arrows, name, type/regime toggles, remove -->
       <div style="padding:10px 12px 10px 10px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid ${BD};gap:8px">
         <div style="display:flex;flex-direction:column;gap:2px;padding-top:2px;flex-shrink:0">
@@ -978,7 +1084,10 @@ function buildExBlock(ex, i) {
           <button onclick="moveEx(${i},1)"  ${isLast?'disabled':''} style="background:none;border:none;color:${isLast?BD:DM};font-size:14px;cursor:${isLast?'default':'pointer'};padding:1px 4px;line-height:1">▼</button>
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:15px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</div>
+          <div style="font-weight:700;font-size:15px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px">
+            <span style="overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</span>
+            ${isDuplicated ? `<button onclick="alert('Este exercício aparece mais de uma vez neste treino (mesmo tipo e regime). O histórico combina os dados das duas entradas para sugestões futuras, mas cada uma é salva separadamente, na ordem em que foram adicionadas.')" style="flex-shrink:0;background:none;border:1px solid ${CA};color:${CA};border-radius:99px;width:16px;height:16px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0">i</button>` : ''}
+          </div>
           <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
             <button onclick="setExType(${i},'strength')"    style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isS?'#A32D2D':BG3};color:${isS?TX:DM}">Força</button>
             <button onclick="setExType(${i},'hypertrophy')" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isH?CB:BG3};color:${isH?TX:DM}">Hipert.</button>
@@ -1017,7 +1126,10 @@ function buildHistory() {
   const sorted = [...D.sessions].sort((a,b) => b.date.localeCompare(a.date));
   return bkp + `<div style="font-size:18px;font-weight:700;margin-bottom:16px">Histórico</div>` + sorted.map(s => {
     const v  = s.exercises.reduce((a,ex) => a + volEx(ex.sets, ex.regime), 0);
-    const ws = s.exercises.reduce((a,ex) => a + (ex.sets||[]).filter(x => x.intent==='work').length, 0);
+    // isCountedWork, not a bare intent==='work' check — an explicitly-
+    // unchecked set shouldn't inflate the displayed series count when the
+    // volume total on the same line already excludes it via volEx().
+    const ws = s.exercises.reduce((a,ex) => a + (ex.sets||[]).filter(isCountedWork).length, 0);
     const open = EXP === s.id;
 
     let detail = '';
@@ -1028,13 +1140,12 @@ function buildHistory() {
           if (set.intent==='work') wc++;
           const lbl = set.intent==='work' ? `W${wc}` : 'WU';
           const bw  = currentBW();
-          // hasKg, not `set.kg||'–'` — a genuinely-entered 0kg assisted set
-          // (full graduation) must show "0", not fall through to "–" as if
-          // untouched. Same fix as actualLoad()/computeSuggestion()'s hasKg.
-          const hasKg = set.kg !== '' && set.kg != null;
+          // hasKg (shared, section 4), not a truthy check — a genuinely-
+          // entered 0kg set (full graduation for assisted; a deliberate
+          // 0kg entry for weighted) must show "0", not "–" as if untouched.
           const kgLbl = ex.regime==='bodyweight' ? (bw?`${bw}kg (BW)`:'BW')
-            : ex.regime==='assisted' ? (bw ? `${hasKg?set.kg:'–'} assist. (${bw&&hasKg?Math.max(0,bw-Number(set.kg)):'-'}kg real)` : `${hasKg?set.kg:'–'} assist.`)
-            : `${set.kg||'–'} kg`;
+            : ex.regime==='assisted' ? (bw ? `${hasKg(set)?set.kg:'–'} assist. (${bw&&hasKg(set)?Math.max(0,bw-Number(set.kg)):'-'}kg real)` : `${hasKg(set)?set.kg:'–'} assist.`)
+            : `${hasKg(set)?set.kg:'–'} kg`;
           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid ${BD};font-size:14px">
             <span style="background:${set.intent==='work'?CG:'#555'};color:#fff;padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700;min-width:34px;text-align:center">${lbl}</span>
             <span>${set.reps||'–'} reps × ${kgLbl}</span>
@@ -1316,11 +1427,11 @@ function rmPlanEx(i)       { _planExs.splice(i,1); refreshPlanExList(); }
 function savePlan() {
   const name = (document.getElementById('plan-name')?.value||'').trim();
   if (!name) return;
-  if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=[..._planExs];} }
-  else D.plans.push({ id:uid(), name, exercises:[..._planExs] });
+  if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=[..._planExs];p.updatedAt=Date.now();} }
+  else D.plans.push({ id:uid(), name, exercises:[..._planExs], updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
-function delPlan(id) { D.plans=D.plans.filter(p=>p.id!==id); persist(); render(); }
+function delPlan(id) { D.tombstones.plans[id]=Date.now(); D.plans=D.plans.filter(p=>p.id!==id); persist(); render(); }
 
 // ── Plan sharing — export a single plan as its own JSON file, import one ──
 //
@@ -1389,7 +1500,18 @@ function applyImportedPlan(data) {
       let local = (imp.id && D.exercises.find(e => e.id === imp.id))
         || D.exercises.find(e => String(e.name||'').toLowerCase() === imp.name.toLowerCase());
       if (!local) {
-        local = { id: imp.id || uid(), name: imp.name, type: imp.type, compound: imp.compound, regime: imp.regime };
+        // type/regime/compound come from untrusted JSON — normalize any
+        // value outside the app's actual enum to a sensible default rather
+        // than storing it verbatim. Every hand-created exercise is
+        // constrained to these exact values by the modal's toggle buttons
+        // (exF()); a stray value like regime:'eccentric' would make this
+        // exercise's own regime pill (regimePill()) show as one thing while
+        // actualLoad()/buildWarmupSets() — which only special-case
+        // 'assisted'/'bodyweight' — silently treat it as another.
+        const type    = imp.type==='strength' ? 'strength' : 'hypertrophy';
+        const regime  = (imp.regime==='assisted'||imp.regime==='bodyweight') ? imp.regime : 'weighted';
+        const compound = imp.compound===true || imp.compound===false ? imp.compound : null;
+        local = { id: imp.id || uid(), name: imp.name, type, compound, regime, updatedAt: Date.now() };
         D.exercises.push(local);
       }
       return local.id;
@@ -1398,7 +1520,7 @@ function applyImportedPlan(data) {
   // add the same exercise to a plan twice; an imported file isn't bound by
   // that same guard, so enforce it here too.
   const uniqueExIds = [...new Set(exIds)];
-  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: uniqueExIds });
+  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: uniqueExIds, updatedAt: Date.now() });
   persist(); render();
 }
 
@@ -1461,10 +1583,10 @@ function saveWeight() {
   const d = document.getElementById('bw-date')?.value;
   const v = parseFloat(document.getElementById('bw-val')?.value);
   if (!d || !v || v<=0) return;
-  D.weights.push({ id:uid(), date:d, kg:v });
+  D.weights.push({ id:uid(), date:d, kg:v, updatedAt:Date.now() });
   persist(); render();
 }
-function delWeight(id) { D.weights=D.weights.filter(w=>w.id!==id); persist(); render(); }
+function delWeight(id) { D.tombstones.weights[id]=Date.now(); D.weights=D.weights.filter(w=>w.id!==id); persist(); render(); }
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -1534,6 +1656,7 @@ function exF(field, val) {
     if(h){h.style.background=val==='hypertrophy'?CB:BG3;h.style.color=val==='hypertrophy'?TX:DM;}
   } else if (field === 'compound') {
     _newCompound = val;
+    _newCompoundTouched = true;
     const c=document.getElementById('ex-c'), i=document.getElementById('ex-i');
     if(c){c.style.background=val===true?'#1a1035':BG3;c.style.color=val===true?'#b39ddb':DM;}
     if(i){i.style.background=val===false?'#1e1810':BG3;i.style.color=val===false?'#d4a96a':DM;}
@@ -1549,12 +1672,18 @@ function exF(field, val) {
 function openNewEx()  { _newType='hypertrophy'; _newCompound=true; _newRegime='weighted'; showModal(exModalBody('Novo exercício','','saveNewEx()')); }
 function openEditEx(id) {
   const ex = D.exercises.find(e=>e.id===id); if(!ex)return;
+  // _newCompound defaults to `true` here purely so the modal has SOMETHING
+  // to highlight for an unclassified (compound:null) exercise — it does
+  // not mean the user chose Composto. _newCompoundTouched tracks whether
+  // they actually clicked the toggle, so saveEditEx() knows whether this
+  // display default should ever be written back.
   _newType=ex.type||'hypertrophy'; _newCompound=ex.compound!=null?ex.compound:true; _newRegime=ex.regime||'weighted';
+  _newCompoundTouched = false;
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
 function saveNewEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim(); if(!name)return;
-  D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime });
+  D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime, updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -1562,10 +1691,14 @@ function saveEditEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim();
   if (!id||!name) return;
   const ex = D.exercises.find(e=>e.id===id);
-  if (ex) { ex.name=name; ex.type=_newType; ex.compound=_newCompound; ex.regime=_newRegime; }
+  // Only write compound if the toggle was actually clicked this edit —
+  // otherwise an unclassified (compound:null) exercise gets permanently
+  // reclassified to _newCompound's display default just from renaming it
+  // or editing type/regime, without the user ever making that choice.
+  if (ex) { ex.name=name; ex.type=_newType; if(_newCompoundTouched) ex.compound=_newCompound; ex.regime=_newRegime; ex.updatedAt=Date.now(); }
   persist(); closeModal(); render();
 }
-function delEx(id) { D.exercises=D.exercises.filter(e=>e.id!==id); persist(); render(); }
+function delEx(id) { D.tombstones.exercises[id]=Date.now(); D.exercises=D.exercises.filter(e=>e.id!==id); persist(); render(); }
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -1686,7 +1819,7 @@ function createAndAdd() {
   const el   = document.getElementById('new-ex-name');
   const name = (el?el.value:'').trim(); if(!name)return;
   const id   = uid();
-  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted' });
+  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', updatedAt:Date.now() });
   if (S) { const o={exId:id,exName:name,type:_newType,compound:true,regime:'weighted',sets:[]}; o.sets=buildSetsFromMemory(o); S.exercises.push(o); }
   persist(); closeModal(); render();
 }
@@ -1725,7 +1858,15 @@ function cancelSession() { S=null; render(); }
 
 function saveSession() {
   if (!S||!S.exercises.length) return;
-  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, exercises:S.exercises };
+  // Strip the render-only _sug cache before persisting — it's a snapshot
+  // of computeSuggestion() from whenever the exercise was added/refreshed
+  // this session and must never be saved as if it were real data.
+  // editSess() recomputes it fresh instead of ever trusting a persisted
+  // copy (see its own comment) — this strip is defense in depth, so a
+  // stale/wrong cached suggestion can never masquerade as history even if
+  // some future code path forgets to refresh it.
+  const exercises = S.exercises.map(({_sug, ...ex}) => ex);
+  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, exercises, updatedAt:Date.now() };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
   persist(); S=null; TAB='history'; render();
@@ -1736,11 +1877,25 @@ function editSess(id) {
   // repsEdited/kgEdited force to true here (never false, unlike a fresh
   // prefill from buildSetsFromMemory): this is real saved history, not a
   // suggestion the user hasn't looked at yet, so it should never render dim.
-  S = { ...s, exercises:s.exercises.map(ex=>({...ex,sets:ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true}))})), _editId:s.id };
+  S = { ...s, exercises:s.exercises.map(ex=>{
+    // Recompute _sug fresh rather than trusting anything persisted on ex
+    // (saveSession() strips it anyway, but this is the real fix): D.sessions
+    // still has this exact session's own data in it until it's re-saved, so
+    // computeSuggestion() here correctly reflects "is there OTHER history
+    // for this exercise" — not a snapshot from whenever it was first added.
+    // Deliberately does NOT call buildSetsFromMemory() (would rebuild
+    // .sets from scratch, discarding the real logged data being edited).
+    const profile = profileFor(ex.type, ex.regime||'weighted');
+    return {
+      ...ex,
+      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile),
+      sets: ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true})),
+    };
+  }), _editId:s.id };
   TAB='log'; EXP=null; render();
 }
 
-function delSess(id)     { D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; persist(); render(); }
+function delSess(id)     { D.tombstones.sessions[id]=Date.now(); D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; persist(); render(); }
 function toggleExp(id)   { EXP=EXP===id?null:id; render(); }
 
 // Per-set mutations — called from inline event handlers in buildExBlock()
@@ -1762,7 +1917,11 @@ function toggleIntent(i,j)    { const s=S.exercises[i].sets[j]; s.intent=s.inten
 // (via each row's own × button) brings the prompt back for another guess.
 function estimateWarmups(i, v) {
   const kg = parseFloat(v);
-  if (!(kg > 0)) return;
+  // Reject only a genuinely invalid/blank entry — NOT 0. A typed "0" is a
+  // real, legitimate estimate (e.g. "I expect to need zero assistance"),
+  // and rejecting it here would silently contradict the hasKg philosophy
+  // applied everywhere else in this file.
+  if (Number.isNaN(kg) || kg < 0) return;
   const ex = S.exercises[i];
   ex.sets = [...buildWarmupSets(ex.regime||'weighted', ex.compound!==false, kg), ...ex.sets];
   render();
@@ -1815,7 +1974,15 @@ function toggleCompleted(i,j) {
   render();
 }
 
-// Type/regime changes re-run auto-population from memory
+// Type/regime changes re-run auto-population from memory — DESTRUCTIVE by
+// design: whatever the user already typed into this exercise's rows this
+// session (reps/kg, completed checks, warm-ups from an estimate) is
+// discarded and replaced wholesale, since there's no way to reconcile
+// already-entered values against a different type/regime's rep range or
+// warm-up rules. Intentional, not a bug to "fix" by trying to preserve the
+// old values — a type/regime combo change (e.g. Carga → Assistido) usually
+// means the numbers that were valid a moment ago don't mean the same thing
+// anymore anyway.
 function setExType(i,t)       { S.exercises[i].type=t;   S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
 function setExRegime(i,r)     { S.exercises[i].regime=r; S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
 function moveEx(i,dir)        { const j=i+dir; if(!S||j<0||j>=S.exercises.length)return; [S.exercises[i],S.exercises[j]]=[S.exercises[j],S.exercises[i]]; render(); }
@@ -1907,6 +2074,10 @@ function applyData(p) {
   D.plans        = p.plans        || [];
   D.sessions     = p.sessions     || [];
   D.weights      = p.weights      || [];
+  // Older backups (pre-tombstones) won't have this field — default to
+  // empty rather than leaving D.tombstones as whatever it was before the
+  // import, so a restore is a genuine clean replacement.
+  D.tombstones   = p.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{} };
   D.lastModified = p.lastModified || 0;
 }
 
@@ -1915,7 +2086,7 @@ function importBackup() {
   const json=(ta?ta.value:'').trim(); if(!json)return;
   try {
     const p=JSON.parse(json);
-    if(!Array.isArray(p.exercises)||!Array.isArray(p.plans)||!Array.isArray(p.sessions)) throw new Error();
+    if(!Array.isArray(p.exercises)||!Array.isArray(p.plans)||!Array.isArray(p.sessions)||!Array.isArray(p.weights)) throw new Error();
     applyData(p); persist(); closeModal(); render();
   } catch(e) { if(err)err.style.display='block'; }
 }
