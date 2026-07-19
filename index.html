@@ -556,6 +556,37 @@ function computeSuggestion(exId, type, regime, profile) {
   return { last, workingKg, suggestedKg, repsTarget, graduated, stallStreak };
 }
 
+// Warm-up rep ramp (10-8-6, heaviest/closest-to-work step last) — shared by
+// buildWarmupSets() below and read nowhere else.
+const WU_REPS = [10, 8, 6];
+
+// Builds warm-up set objects scaled off a base "today's target" weight.
+// Shared by two callers with two different sources for that base weight:
+// buildSetsFromMemory() (a returning exercise's computed suggestion) and
+// estimateWarmups() (a first-ever log, where the user types their own
+// estimate instead, since there's no history to suggest one — see
+// estimateWarmups() for why). Reps ramp down (10-8-6) as the sets get
+// heavier/closer to work weight — more reps to prime lightly-loaded early
+// sets, fewer as it gets harder. A single isolation warm-up takes the LAST
+// step (6) since it plays the same role as the final, closest-to-work step
+// of the compound ramp, not the first. Isolation's multiplier mirrors the
+// compound ramp's assisted inversion (less counterweight = harder): 0.5
+// weighted's complement is 1.5, the same "2 − x" relationship the compound
+// mults already use (0.25↔1.75, 0.55↔1.45, 0.85↔1.15). No warm-ups for
+// bodyweight (no adjustable resistance to warm up into).
+function buildWarmupSets(regime, isComp, baseKg) {
+  if (regime === 'bodyweight' || baseKg == null) return [];
+  const mults = isComp
+    ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : [0.25, 0.55, 0.85])
+    : (regime === 'assisted' ? [1.5] : [0.5]);
+  return mults.map((m, idx) => ({
+    intent: 'warmup',
+    reps: isComp ? WU_REPS[idx] : WU_REPS[WU_REPS.length - 1],
+    kg: round(baseKg*m, 0.5),
+    lastReps:null, lastKg:null, sugReps:null, sugKg:null,
+  }));
+}
+
 function buildSetsFromMemory(ex) {
   const regime  = ex.regime || 'weighted';
   const isComp  = ex.compound !== false;
@@ -564,36 +595,17 @@ function buildSetsFromMemory(ex) {
   ex._sug       = sug; // cached for buildExBlock()'s stall banner — see its comment
   const sets    = [];
 
-  // No history yet → return empty default rows based on type
+  // No history yet → return empty default rows based on type. No warm-ups
+  // either (nothing to scale them off) — buildExBlock() shows a prompt
+  // instead, letting the user estimate a working weight (see
+  // estimateWarmups()) so warm-ups aren't just silently missing.
   if (!sug) {
     const ph = `${profile.repLow}–${profile.repHigh}`;
     for (let i=0; i<profile.targetWorkSets; i++) sets.push({ intent:'work', reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null, phReps:ph });
     return sets;
   }
 
-  // Generate warm-up sets — scaled off TODAY'S suggested weight, not last
-  // session's actual weight, so warm-ups prep you for the target you're
-  // actually about to attempt. Reps ramp down (10-8-6) as the sets get
-  // heavier/closer to work weight — more reps to prime lightly-loaded early
-  // sets, fewer as it gets harder. A single isolation warm-up takes the LAST
-  // step (6) since it plays the same role as the final, closest-to-work step
-  // of the compound ramp, not the first.
-  const WU_REPS = [10, 8, 6];
-  if (regime !== 'bodyweight' && sug.suggestedKg != null) {
-    // Isolation's single warm-up mirrors the compound ramp's assisted
-    // inversion (less counterweight = harder): 0.5 weighted's complement is
-    // 1.5, the same "2 − x" relationship the compound mults already use
-    // (0.25↔1.75, 0.55↔1.45, 0.85↔1.15).
-    const mults = isComp
-      ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : [0.25, 0.55, 0.85])
-      : (regime === 'assisted' ? [1.5] : [0.5]);
-    mults.forEach((m,idx) => sets.push({
-      intent: 'warmup',
-      reps: isComp ? WU_REPS[idx] : WU_REPS[WU_REPS.length - 1],
-      kg: round(sug.suggestedKg*m, 0.5),
-      lastReps:null, lastKg:null, sugReps:null, sugKg:null,
-    }));
-  }
+  sets.push(...buildWarmupSets(regime, isComp, sug.suggestedKg));
 
   // Work rows: always start from what actually happened last time (never
   // silently replaced by the suggestion) — lastReps/lastKg feed the "repeat
@@ -877,6 +889,19 @@ function buildExBlock(ex, i) {
       Mesma carga há ${sug.stallStreak} treinos — foque em completar todas as séries no topo da faixa de reps antes de aumentar a carga.
     </div>` : '';
 
+  // First-ever log of this exercise (no sug) has no warm-ups yet — see
+  // estimateWarmups(). Disappears on its own once warm-up rows exist
+  // (generated from an estimate, or from real history the next time this
+  // exercise is logged); reappears if they're all removed.
+  const hasWarmups = ex.sets.some(s => s.intent === 'warmup');
+  const estimatePrompt = (!sug && !isBW && !hasWarmups) ? `
+    <div style="background:${BG3};border:1px solid ${BD};border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:${DM}">
+      Primeira vez com este exercício — sem histórico para calcular o aquecimento. Quanto você espera usar hoje?
+      <input type="number" inputmode="decimal" step="0.5" placeholder="${isAs?'Assist. estimado':'Kg estimado'}"
+        onchange="estimateWarmups(${i}, this.value)"
+        style="margin-top:8px;width:100%;background:${BG2};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 10px;outline:none;box-sizing:border-box">
+    </div>` : '';
+
   const setHeader = ex.sets.length ? `
     <div style="display:grid;grid-template-columns:28px 54px 1fr 1fr 38px;gap:6px;margin-bottom:6px">
       <span></span>
@@ -964,6 +989,7 @@ function buildExBlock(ex, i) {
       <!-- Set rows -->
       <div style="padding:12px 16px">
         ${stallBanner}
+        ${estimatePrompt}
         ${!ex.sets.length ? `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma série. Adicione abaixo.</div>` : ''}
         ${setHeader}${setRows}
         ${B(BG3,TX,'+ Série',`addSet(${i})`,';margin-bottom:0;margin-top:4px')}
@@ -1626,6 +1652,26 @@ function toggleExp(id)   { EXP=EXP===id?null:id; render(); }
 function addSet(i)            { S.exercises[i].sets.push({intent:'work',reps:'',kg:'',lastReps:null,lastKg:null,sugReps:null,sugKg:null}); render(); }
 function rmSet(i,j)           { S.exercises[i].sets.splice(j,1); render(); }
 function toggleIntent(i,j)    { const s=S.exercises[i].sets[j]; s.intent=s.intent==='work'?'warmup':'work'; render(); }
+
+// A first-ever log of an exercise has no suggested weight to scale warm-ups
+// off (buildSetsFromMemory()'s "no history" branch returns work rows only)
+// — so buildExBlock() shows an inline prompt asking the user to estimate
+// what they expect to work with instead, and this generates warm-ups off
+// that estimate via the same ramp a returning exercise would get
+// (buildWarmupSets()). Wired via onchange, not oninput — commits once the
+// field is left rather than re-rendering (and blowing away its own focus)
+// on every keystroke, same reasoning as the date input in
+// buildLogSession(). New warm-ups are prepended ahead of the existing work
+// rows; once they exist, buildExBlock()'s prompt condition is false and it
+// stops rendering on its own — no extra flag needed. Deleting them all
+// (via each row's own × button) brings the prompt back for another guess.
+function estimateWarmups(i, v) {
+  const kg = parseFloat(v);
+  if (!(kg > 0)) return;
+  const ex = S.exercises[i];
+  ex.sets = [...buildWarmupSets(ex.regime||'weighted', ex.compound!==false, kg), ...ex.sets];
+  render();
+}
 
 // Deliberately does NOT call render() — this fires on every keystroke, and a
 // full re-render would blow away the input's focus/cursor position mid-type.
