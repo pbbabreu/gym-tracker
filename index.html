@@ -1375,16 +1375,30 @@ function importPlanFile(input) {
 // sender's own id — keeping a second import of the same plan idempotent
 // against the exercise list rather than creating duplicates.
 function applyImportedPlan(data) {
-  const exIds = data.exercises.map(imp => {
-    let local = D.exercises.find(e => e.id === imp.id)
-      || D.exercises.find(e => e.name.toLowerCase() === String(imp.name||'').toLowerCase());
-    if (!local) {
-      local = { id: imp.id, name: imp.name, type: imp.type, compound: imp.compound, regime: imp.regime };
-      D.exercises.push(local);
-    }
-    return local.id;
-  });
-  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: exIds });
+  const exIds = data.exercises
+    // A plan file is untrusted input (from another user, possibly hand-
+    // edited) — an entry with no usable name can't become a real library
+    // exercise, so drop it rather than importing something invisible.
+    .filter(imp => imp && typeof imp.name === 'string' && imp.name.trim())
+    .map(imp => {
+      // Match by id only if one was actually given — an absent id must
+      // never fall through to `local.id` as literal `undefined`, or two
+      // separately-imported id-less entries would collide on the same
+      // `id: undefined` and become indistinguishable to every other
+      // `D.exercises.find(e => e.id === ...)` lookup in the app.
+      let local = (imp.id && D.exercises.find(e => e.id === imp.id))
+        || D.exercises.find(e => String(e.name||'').toLowerCase() === imp.name.toLowerCase());
+      if (!local) {
+        local = { id: imp.id || uid(), name: imp.name, type: imp.type, compound: imp.compound, regime: imp.regime };
+        D.exercises.push(local);
+      }
+      return local.id;
+    });
+  // De-duplicate — the plan editor's own addExToPlan() already refuses to
+  // add the same exercise to a plan twice; an imported file isn't bound by
+  // that same guard, so enforce it here too.
+  const uniqueExIds = [...new Set(exIds)];
+  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: uniqueExIds });
   persist(); render();
 }
 
