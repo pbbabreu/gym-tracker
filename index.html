@@ -1179,13 +1179,24 @@ function libAlphaToggle() { _libAlpha = !_libAlpha; render(); }
 // ║  Displays saved training plans.
 // ║  Plan editor modal replaces the old <select> dropdown with a full
 // ║  search + filter + scrollable exercise picker (same UX as add-exercise).
+// ║
+// ║  Plan sharing — exportPlan()/importPlanFile()/applyImportedPlan() —
+// ║  ships one plan as its own JSON file (name + a snapshot of its
+// ║  exercises' definitions, not just their ids) for sending to another
+// ║  user. Separate from the full-state Backup & Sync export/import in
+// ║  section 20 — this is scoped to a single plan, and merges into the
+// ║  local library on import rather than replacing it.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildPlans() {
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
       <div style="font-size:18px;font-weight:700">Planos</div>
-      ${Bs(CG,TX,'+ Novo','openNewPlan()')}
+      <div style="display:flex;gap:8px">
+        <input type="file" id="plan-import-file" accept="application/json" style="display:none" onchange="importPlanFile(this)">
+        ${Bs(BG3,TX,'⬆ Importar',"document.getElementById('plan-import-file').click()")}
+        ${Bs(CG,TX,'+ Novo','openNewPlan()')}
+      </div>
     </div>
     ${!D.plans.length
       ? `<div style="text-align:center;color:${DM};padding:40px;font-size:14px">Nenhum plano criado.</div>`
@@ -1203,6 +1214,7 @@ function buildPlans() {
             <div style="padding:13px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:${hasList?`1px solid ${BD}`:'none'}">
               <span style="font-weight:700;font-size:16px">${esc(p.name)}</span>
               <div style="display:flex;gap:8px">
+                ${hasList ? Bs(BG3,TX,'⬇','exportPlan(\''+p.id+'\')') : ''}
                 ${Bs(BG3,TX,'Editar',`openEditPlan('${p.id}')`)}
                 ${Bs(BG3,CR,'×',`delPlan('${p.id}')`)}
               </div>
@@ -1309,6 +1321,72 @@ function savePlan() {
   persist(); closeModal(); render();
 }
 function delPlan(id) { D.plans=D.plans.filter(p=>p.id!==id); persist(); render(); }
+
+// ── Plan sharing — export a single plan as its own JSON file, import one ──
+//
+// Unlike the full Backup & Sync export (all of D), this bundles just one
+// plan PLUS a snapshot of its exercises' definitions (name/type/compound/
+// regime) — not just their ids. A plan only stores exercise ids
+// (`p.exercises: [exId,...]`), and ids are random per user for anything
+// custom-created, so shipping ids alone would only work if the receiving
+// user's library happened to already contain matching ids. Bundling the
+// definitions means the plan works on import even into an empty library.
+function exportPlan(id) {
+  const p = D.plans.find(x => x.id === id); if (!p) return;
+  const exercises = (p.exercises||[])
+    .map(exId => D.exercises.find(e => e.id === exId))
+    .filter(Boolean)
+    .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime }));
+  const payload = { type: 'gym-tracker-plan', name: p.name, exercises };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const fn   = `plano-${p.name.toLowerCase().replace(/\s+/g,'-').replace(/[^a-z0-9-]/g,'')||'sem-nome'}.json`;
+  const a = document.createElement('a'); a.href=url; a.download=fn;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+}
+
+// Reads a plan file selected via the hidden file input (not paste-into-
+// textarea like Backup & Sync — this is meant to be received as an actual
+// file from another user, e.g. over WhatsApp/email, so picking it directly
+// is the more natural flow).
+function importPlanFile(input) {
+  const file = input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (data.type !== 'gym-tracker-plan' || !Array.isArray(data.exercises)) throw new Error();
+      applyImportedPlan(data);
+    } catch(e) {
+      alert('Arquivo de plano inválido.');
+    }
+  };
+  reader.readAsText(file);
+  input.value = ''; // reset so re-selecting the same file re-fires onchange
+}
+
+// Merges an imported plan's exercises into the local library and creates a
+// new plan referencing them. Matches each imported exercise against the
+// local library first by id (works out of the box for anyone's untouched
+// library.json-seeded exercises, since those ids are stable slugs shared
+// across every install), falling back to a case-insensitive name match
+// (covers a renamed or independently-recreated exercise with a different
+// id). Only when neither matches is a new library entry added, using the
+// sender's own id — keeping a second import of the same plan idempotent
+// against the exercise list rather than creating duplicates.
+function applyImportedPlan(data) {
+  const exIds = data.exercises.map(imp => {
+    let local = D.exercises.find(e => e.id === imp.id)
+      || D.exercises.find(e => e.name.toLowerCase() === String(imp.name||'').toLowerCase());
+    if (!local) {
+      local = { id: imp.id, name: imp.name, type: imp.type, compound: imp.compound, regime: imp.regime };
+      D.exercises.push(local);
+    }
+    return local.id;
+  });
+  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: exIds });
+  persist(); render();
+}
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
