@@ -79,12 +79,140 @@ async function seedStarterLibrary() {
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     const data = await r.json();
     D.exercises = (data.exercises || []).map(e => ({...e, updatedAt:Date.now()}));
+    // library.json ships fully classified, so this is normally a no-op —
+    // but calling it here too (not just from loadData()/mergeRemote()/
+    // applyData()) means a future entry added to library.json without the
+    // new fields still degrades safely instead of relying entirely on the
+    // seed file always being complete.
+    backfillExerciseClassification();
     _libSeedError = false;
     await persist();
   } catch(e) {
     _libSeedError = true;
   }
   render();
+}
+
+// ── Muscle-group / movement-pattern classification ───────────────────────────
+//
+// Every exercise is mandatorily classified — never null/undefined as a
+// JS value — but 'undefined' is itself a valid MUSCLE_GROUPS key, so a user
+// who doesn't know how to classify something yet always has a real, saveable
+// option instead of a blocked save. Movement patterns are scoped PER main
+// muscle group (MOVEMENT_PATTERNS[mainMuscle]), not a single global list —
+// this is deliberate: "leg curl" and "bicep curl" are different enough
+// exercises that collapsing them onto one shared "curl" pattern would make
+// muscle-grouped progress tracking misleading. Each group's pattern list
+// ends in its own 'other' escape valve for the same reason mainMuscle has
+// 'undefined' — classification must never block saving.
+const MUSCLE_GROUPS = {
+  chest:      'Peito',
+  back:       'Costas',
+  shoulders:  'Ombros',
+  biceps:     'Bíceps',
+  triceps:    'Tríceps',
+  forearms:   'Antebraços',
+  abs:        'Abdômen',
+  quads:      'Quadríceps',
+  hamstrings: 'Posterior de coxa',
+  glutes:     'Glúteos',
+  adductors:  'Adutores',
+  calves:     'Panturrilhas',
+  undefined:  'Não definido',
+};
+
+const MOVEMENT_PATTERNS = {
+  chest:      { press:'Supino', fly:'Voador', other:'Outro' },
+  back:       { row:'Remada', pulldown:'Puxada', hinge:'Dobra de quadril', extension:'Extensão lombar', other:'Outro' },
+  shoulders:  { press:'Press', raise:'Elevação', rear_delt:'Deltoide posterior', other:'Outro' },
+  biceps:     { curl:'Rosca', other:'Outro' },
+  triceps:    { extension:'Extensão', pushdown:'Tríceps pulley', dip:'Mergulho', other:'Outro' },
+  forearms:   { curl:'Rosca de punho', extension:'Extensão de punho', other:'Outro' },
+  abs:        { flexion:'Flexão de tronco', anti_extension:'Anti-extensão', rotation:'Rotação', other:'Outro' },
+  quads:      { squat:'Agachamento', extension:'Extensão de joelho', lunge:'Avanço', other:'Outro' },
+  hamstrings: { curl:'Flexora', hinge:'Dobra de quadril', other:'Outro' },
+  // 'adduction' deliberately NOT listed here anymore — it moved to its own
+  // Adductors group below (a structurally distinct muscle group, different
+  // nerve supply, not a glute function) once Hip adduction machine was
+  // reclassified there. Abduction stays — hip abductors genuinely are glutes.
+  glutes:     { hip_thrust:'Elevação de quadril', hinge:'Dobra de quadril', abduction:'Abdução', other:'Outro' },
+  adductors:  { adduction:'Adução', other:'Outro' },
+  calves:     { raise:'Elevação de panturrilha', other:'Outro' },
+  undefined:  { undefined:'Não definido' },
+};
+
+// Best-effort mainMuscle/movementPattern/accessoryMuscles for the 44
+// starter-library ids, used ONLY to backfill an already-live install's own
+// D.exercises the first time this classification system loads on it — see
+// backfillExerciseClassification() below. library.json ships the same
+// classification directly on each entry for a genuinely fresh install; this
+// table is a hand-kept duplicate of that data (not fetched from
+// library.json) so the backfill works synchronously and fully offline for
+// existing users, who never re-run seedStarterLibrary(). User-created
+// exercises aren't in this table at all — backfillExerciseClassification()
+// defaults anything not found here to 'undefined'/'undefined'/[].
+const SEED_CLASSIFICATION = {
+  'narrow-stance-sumo-deadlift':  ['back', 'hinge', ['hamstrings','glutes','quads']],
+  'wide-stance-sumo-deadlift':    ['glutes', 'hinge', ['hamstrings','quads']],
+  'bent-over-barbell-row':        ['back', 'row', ['biceps']],
+  'zercher-squat':                ['quads', 'squat', ['glutes','back']],
+  'bench-press':                  ['chest', 'press', ['triceps','shoulders']],
+  'assisted-pull-up-gravitron':   ['back', 'pulldown', ['biceps']],
+  'dip-gravitron':                ['chest', 'press', ['triceps','shoulders']],
+  'dip-gravitron-upright':        ['triceps', 'dip', ['chest','shoulders']],
+  'kettlebell-swing':             ['glutes', 'hinge', ['hamstrings','back']],
+  'incline-press-machine':        ['chest', 'press', ['shoulders','triceps']],
+  'seated-cable-row':             ['back', 'row', ['biceps']],
+  'wide-grip-lat-pulldown':       ['back', 'pulldown', ['biceps']],
+  'wide-grip-neutral-pulldown':   ['back', 'pulldown', ['biceps']],
+  'chest-supported-high-row':     ['back', 'row', ['biceps']],
+  'machine-low-row':              ['back', 'row', ['biceps']],
+  'v-squat-front-facing':         ['quads', 'squat', ['glutes']],
+  'bulgarian-split-squat':        ['quads', 'lunge', ['glutes','hamstrings']],
+  'hip-thrust':                   ['glutes', 'hip_thrust', ['hamstrings']],
+  'cable-low-to-high-fly':        ['chest', 'fly', ['shoulders']],
+  'pec-deck-fly':                 ['chest', 'fly', []],
+  'stiff-leg-deadlift':           ['hamstrings', 'hinge', ['glutes','back']],
+  'overhead-cable-triceps':       ['triceps', 'extension', []],
+  'machine-triceps':              ['triceps', 'extension', []],
+  'cable-triceps-kickback':       ['triceps', 'extension', []],
+  'rope-cable-triceps-extension': ['triceps', 'pushdown', []],
+  'single-arm-preacher-curl':     ['biceps', 'curl', []],
+  'incline-deficit-curl':         ['biceps', 'curl', []],
+  'hammer-curl':                  ['biceps', 'curl', ['forearms']],
+  'reverse-grip-ez-bar-curl':     ['biceps', 'curl', ['forearms']],
+  'hammer-curl-lateral-raise':    ['shoulders', 'raise', ['biceps']],
+  'lateral-raise':                ['shoulders', 'raise', []],
+  'crucifix-swing':               ['shoulders', 'raise', []],
+  'face-pull':                    ['shoulders', 'rear_delt', ['back']],
+  'seated-leg-curl':              ['hamstrings', 'curl', []],
+  'leg-extension':                ['quads', 'extension', []],
+  'standing-leg-curl':            ['hamstrings', 'curl', []],
+  'single-leg-45-back-extension': ['back', 'extension', ['hamstrings','glutes']],
+  'seated-machine-shoulder-press':['shoulders', 'press', ['triceps']],
+  'hip-abduction-machine':        ['glutes', 'abduction', []],
+  'hip-adduction-machine':        ['adductors', 'adduction', []],
+  'calf-raise':                   ['calves', 'raise', []],
+  'seated-calf-raise':            ['calves', 'raise', []],
+  'scapular-pull-up':             ['back', 'other', []],
+  'strict-halos':                 ['shoulders', 'other', []],
+};
+
+// Idempotent — safe to call on every load. Fills mainMuscle/movementPattern/
+// accessoryMuscles ONLY on exercises that don't have them yet (a falsy
+// ex.mainMuscle means "never classified," including truly missing from an
+// old backup/sync — the literal string 'undefined' is a real, already-made
+// classification choice and is left alone). Called from loadData() (local
+// cache + after a remote merge) and applyData() (backup restore) — anywhere
+// D.exercises can be hydrated from a source that predates this feature.
+function backfillExerciseClassification() {
+  D.exercises.forEach(ex => {
+    if (ex.mainMuscle) return;
+    const seed = SEED_CLASSIFICATION[ex.id];
+    ex.mainMuscle       = seed ? seed[0] : 'undefined';
+    ex.movementPattern  = seed ? seed[1] : 'undefined';
+    ex.accessoryMuscles = seed ? [...seed[2]] : [];
+  });
 }
 
 
@@ -100,7 +228,8 @@ async function seedStarterLibrary() {
 
 // Persisted data — written to storage on every mutation
 let D = {
-  exercises:    [],  // library entries: { id, name, type, compound, regime, updatedAt }
+  exercises:    [],  // library entries: { id, name, type, compound, regime,
+                      // mainMuscle, movementPattern, accessoryMuscles, updatedAt }
   plans:        [],  // training plans:  { id, name, exercises:[exId,...], updatedAt }
   sessions:     [],  // history:         { id, date, planId, planName, exercises:[...], updatedAt }
   weights:      [],  // bodyweight log:  { id, date, kg, updatedAt }
@@ -132,12 +261,15 @@ let _syncStatus = null; // { state: 'ok'|'error'|'syncing', time: number }
 
 // Filter state — library tab
 let _libFType = null, _libFMove = null, _libSearch = '', _libAlpha = false, _libUnclassed = false;
+let _libFMuscle = null, _libFPattern = null;
 
 // Filter state — add-exercise modal
 let _aFType = null, _aFMove = null, _aSearch = '', _aAlpha = false;
+let _aFMuscle = null, _aFPattern = null;
 
 // Filter state — plan editor modal
 let _peFType = null, _peFMove = null, _peSearch = '', _peAlpha = false;
+let _peFMuscle = null, _peFPattern = null;
 
 // Plan editor working state
 let _planExs = [], _planId = null;
@@ -147,6 +279,11 @@ let _newType = 'hypertrophy', _newCompound = true, _newRegime = 'weighted';
 // Tracks whether the Composto/Isolado toggle was actually clicked during
 // the current edit — see saveEditEx() for why this matters.
 let _newCompoundTouched = false;
+// Classification working state — see MUSCLE_GROUPS/MOVEMENT_PATTERNS
+// (section 2). Unlike _newCompound, these are mandatory-with-an-escape-
+// valve rather than nullable, so no _touched flag is needed: every save
+// path writes them unconditionally.
+let _newMuscle = 'undefined', _newPattern = 'undefined', _newAccessory = [];
 
 // Pick-exercise modal working state
 let _pickType = 'hypertrophy', _pickRegime = 'weighted';
@@ -409,6 +546,10 @@ function mergeRemote(remote) {
     const { items, tombstones } = mergeCollection(D.exercises, remote.library.exercises, D.tombstones.exercises, remote.library.tombstones);
     D.exercises = items;
     D.tombstones.exercises = tombstones;
+    // A remote device that hasn't loaded this classification feature yet
+    // could push exercises with no mainMuscle at all — backfill after every
+    // merge, not just on local load, so that never leaves a gap.
+    backfillExerciseClassification();
   }
 
   if (remote.plans?.plans) {
@@ -450,6 +591,10 @@ async function loadData() {
     D.weights      = local.weights      || [];
     D.tombstones   = local.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{} };
     D.lastModified = local.lastModified || 0;
+    // Backfills any exercise saved before muscle-group classification
+    // existed — see backfillExerciseClassification() (section 2). A no-op
+    // once every exercise has been through it once.
+    backfillExerciseClassification();
   }
   render();
 
@@ -781,6 +926,23 @@ const compPill = c => c === true
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1810;color:#d4a96a">Isolado</span>`
   : `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1a1a1a;color:${DM}">?</span>`;
 
+// Combines mainMuscle + movementPattern into one pill ("Peito · Supino")
+// rather than two separate ones — see MOVEMENT_PATTERNS (section 2) for why
+// the pattern label depends on which muscle group it's being read from.
+const musclePill = (m, p) => {
+  // Checked against MUSCLE_GROUPS directly (not just `m === 'undefined'`) so
+  // an unrecognized value — corrupted data, or a muscle group renamed/
+  // removed in a future version — falls back to the gray "unclassified"
+  // look instead of a teal "classified" pill showing the Undefined label.
+  const isUndef = !m || !MUSCLE_GROUPS[m] || m === 'undefined';
+  const mLabel  = MUSCLE_GROUPS[m] || MUSCLE_GROUPS.undefined;
+  const pLabel  = (MOVEMENT_PATTERNS[m] || {})[p] || '';
+  const label   = isUndef ? mLabel : (pLabel ? `${mLabel} · ${pLabel}` : mLabel);
+  return isUndef
+    ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1a1a1a;color:${DM}">${label}</span>`
+    : `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0a2e2e;color:#4dd0c4">${label}</span>`;
+};
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  9. FILTER SYSTEM
@@ -792,7 +954,7 @@ const compPill = c => c === true
 // ║  attribute CSP issues in sandboxed environments).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
-function applyFilters(list, fType, fMove, search, alpha, unclassed) {
+function applyFilters(list, fType, fMove, search, alpha, unclassed, fMuscle, fPattern) {
   let out = list.filter(ex => {
     if (fType === 'strength'    && ex.type !== 'strength')    return false;
     if (fType === 'hypertrophy' && ex.type !== 'hypertrophy') return false;
@@ -801,6 +963,13 @@ function applyFilters(list, fType, fMove, search, alpha, unclassed) {
       if (fMove === 'compound'  && ex.compound !== true)  return false;
       if (fMove === 'isolation' && ex.compound !== false) return false;
     }
+    if (fMuscle && ex.mainMuscle !== fMuscle) return false;
+    // Pattern is only ever checked once a muscle is also selected — each
+    // group has its own scoped pattern vocabulary (MOVEMENT_PATTERNS), so
+    // filterBarHTML() never offers a pattern pill without one, and checking
+    // it here without fMuscle set would be ambiguous (the same pattern key
+    // can mean different things — or not exist at all — in another group).
+    if (fMuscle && fPattern && ex.movementPattern !== fPattern) return false;
     if (search && !ex.name.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
@@ -810,9 +979,18 @@ function applyFilters(list, fType, fMove, search, alpha, unclassed) {
 
 // Builds a filter pill bar HTML string.
 // Each pill carries a data-key attribute so listeners can be attached externally.
-function filterBarHTML(fType, fMove, unclassed, showUnclassed) {
+function filterBarHTML(fType, fMove, unclassed, showUnclassed, fMuscle, fPattern) {
   const p = (lbl, active, key, acBg) =>
     `<button data-fk="${key}" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;background:${active?(acBg||CG):BG3};color:${active?TX:DM}">${lbl}</button>`;
+  const muscleRow = Object.entries(MUSCLE_GROUPS)
+    .filter(([k]) => k !== 'undefined')
+    .map(([k,label]) => p(label, fMuscle===k, `mg:${k}`, '#0a2e2e')).join('');
+  // Only the currently-selected muscle's own pattern list is ever shown —
+  // see the comment in applyFilters() for why a global pattern list would
+  // be misleading.
+  const patternRow = fMuscle
+    ? Object.entries(MOVEMENT_PATTERNS[fMuscle]||{}).map(([k,label]) => p(label, fPattern===k, `mp:${k}`, '#0a2e2e')).join('')
+    : '';
   return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
     ${p('Força',        fType==='strength',              'ft:strength')}
     ${p('Hipert.',      fType==='hypertrophy',            'ft:hypertrophy')}
@@ -820,19 +998,23 @@ function filterBarHTML(fType, fMove, unclassed, showUnclassed) {
     ${p('Composto',     !unclassed&&fMove==='compound',  'fm:compound',  '#1a1035')}
     ${p('Isolado',      !unclassed&&fMove==='isolation', 'fm:isolation', '#1e1810')}
     ${showUnclassed ? p('Não classif.', unclassed, 'fm:unclassed', '#2a2a1a') : ''}
-  </div>`;
+  </div>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:${patternRow?'6px':'10px'}">${muscleRow}</div>
+  ${patternRow ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${patternRow}</div>` : ''}`;
 }
 
 // Attaches click listeners to a rendered filter bar.
-// onType(val) and onMove(val) are callbacks that handle state changes.
-function bindFilterBar(containerId, onType, onMove) {
+// onType/onMove/onMuscle/onPattern(val) are callbacks that handle state changes.
+function bindFilterBar(containerId, onType, onMove, onMuscle, onPattern) {
   const bar = document.getElementById(containerId);
   if (!bar) return;
   bar.querySelectorAll('[data-fk]').forEach(btn => {
     btn.addEventListener('click', function() {
       const [ns, val] = this.dataset.fk.split(':');
-      if (ns === 'ft') onType(val);
-      else             onMove(val);
+      if      (ns === 'ft') onType(val);
+      else if (ns === 'fm') onMove(val);
+      else if (ns === 'mg') onMuscle(val);
+      else if (ns === 'mp') onPattern(val);
     });
   });
 }
@@ -1192,8 +1374,8 @@ function buildHistory() {
 
 function buildLibrary() {
   const total    = D.exercises.length;
-  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed);
-  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed;
+  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
+  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed || _libFMuscle;
   const countNote = hasFilter
     ? ` — ${filtered.length} ${_libUnclassed?'sem classificação':'resultado'+(filtered.length!==1?'s':'')}`
     : '';
@@ -1218,7 +1400,7 @@ function buildLibrary() {
 
     <div style="margin-top:14px">
       <div id="lib-filter-bar">
-        ${filterBarHTML(_libFType, _libFMove, _libUnclassed, true)}
+        ${filterBarHTML(_libFType, _libFMove, _libUnclassed, true, _libFMuscle, _libFPattern)}
       </div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
         <input type="text" placeholder="Buscar por nome..." value="${esc(_libSearch)}"
@@ -1246,6 +1428,7 @@ function libExRow(ex) {
         ${ex.type?typePill(ex.type):''}
         ${ex.regime?regimePill(ex.regime):''}
         ${compPill(ex.compound!=null?ex.compound:null)}
+        ${musclePill(ex.mainMuscle, ex.movementPattern)}
       </div>
     </div>
     ${Bs(BG3,TX,'Editar',`openEditEx('${ex.id}')`,';padding:6px 10px;font-size:12px')}
@@ -1261,7 +1444,9 @@ function bindLibraryFilters() {
       if (val === 'unclassed') { _libUnclassed=!_libUnclassed; if(_libUnclassed)_libFMove=null; }
       else { _libUnclassed=false; _libFMove=_libFMove===val?null:val; }
       render();
-    }
+    },
+    val => { _libFMuscle = _libFMuscle===val?null:val; _libFPattern=null; render(); },
+    val => { _libFPattern = _libFPattern===val?null:val; render(); }
   );
 }
 
@@ -1272,8 +1457,8 @@ function libSearchInput(v) {
   const countEl = document.getElementById('lib-count');
   if (!c) return;
   const total    = D.exercises.length;
-  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed);
-  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed;
+  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
+  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed || _libFMuscle;
   const countNote = hasFilter ? ` — ${filtered.length} ${_libUnclassed?'sem classificação':'resultado'+(filtered.length!==1?'s':'')}` : '';
   if (countEl) countEl.textContent = `${total} exercício${total!==1?'s':''}${countNote}`;
   c.innerHTML = !filtered.length
@@ -1318,7 +1503,7 @@ function buildPlans() {
             return `<div style="padding:6px 0;border-bottom:.5px solid ${BD};font-size:14px;display:flex;align-items:center;gap:6px">
               <span style="color:${DM};min-width:20px">${idx+1}.</span>
               <span style="flex:1">${esc(ex?ex.name:'(removido)')}</span>
-              ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}
+              ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
             </div>`;
           }).join('');
           return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:10px;overflow:hidden">
@@ -1335,8 +1520,8 @@ function buildPlans() {
         }).join('')}`;
 }
 
-function openNewPlan()   { _planExs=[]; _planId=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; showPlanEditor(''); }
-function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=[...(p.exercises||[])]; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; showPlanEditor(p.name); }
+function openNewPlan()   { _planExs=[]; _planId=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(''); }
+function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=[...(p.exercises||[])]; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(p.name); }
 
 function showPlanEditor(name) {
   showModal(`
@@ -1348,7 +1533,7 @@ function showPlanEditor(name) {
     <div id="plan-ex-list"></div>
     <div style="height:1px;background:${BD};margin:10px 0 12px"></div>
     <label style="font-size:12px;color:${DM};margin-bottom:8px;display:block">Adicionar ao plano</label>
-    <div id="pe-filter-bar">${filterBarHTML(_peFType,_peFMove,false,false)}</div>
+    <div id="pe-filter-bar">${filterBarHTML(_peFType,_peFMove,false,false,_peFMuscle,_peFPattern)}</div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <input id="pe-search" type="text" placeholder="Buscar exercício..."
         style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;box-sizing:border-box">
@@ -1370,7 +1555,9 @@ function showPlanEditor(name) {
   // Attach plan editor filter bar
   bindFilterBar('pe-filter-bar',
     val => { _peFType=_peFType===val?null:val; peBuildFilterBar(); peRefreshList(); },
-    val => { _peFMove=_peFMove===val?null:val; peBuildFilterBar(); peRefreshList(); }
+    val => { _peFMove=_peFMove===val?null:val; peBuildFilterBar(); peRefreshList(); },
+    val => { _peFMuscle=_peFMuscle===val?null:val; _peFPattern=null; peBuildFilterBar(); peRefreshList(); },
+    val => { _peFPattern=_peFPattern===val?null:val; peBuildFilterBar(); peRefreshList(); }
   );
 
   peRefreshList();
@@ -1379,22 +1566,24 @@ function showPlanEditor(name) {
 function peBuildFilterBar() {
   const c = document.getElementById('pe-filter-bar');
   if (!c) return;
-  c.innerHTML = filterBarHTML(_peFType, _peFMove, false, false);
+  c.innerHTML = filterBarHTML(_peFType, _peFMove, false, false, _peFMuscle, _peFPattern);
   bindFilterBar('pe-filter-bar',
     val => { _peFType=_peFType===val?null:val; peBuildFilterBar(); peRefreshList(); },
-    val => { _peFMove=_peFMove===val?null:val; peBuildFilterBar(); peRefreshList(); }
+    val => { _peFMove=_peFMove===val?null:val; peBuildFilterBar(); peRefreshList(); },
+    val => { _peFMuscle=_peFMuscle===val?null:val; _peFPattern=null; peBuildFilterBar(); peRefreshList(); },
+    val => { _peFPattern=_peFPattern===val?null:val; peBuildFilterBar(); peRefreshList(); }
   );
 }
 
 function peRefreshList() {
   const c = document.getElementById('pe-ex-list');
   if (!c) return;
-  const filtered = applyFilters(D.exercises, _peFType, _peFMove, _peSearch, _peAlpha, false);
+  const filtered = applyFilters(D.exercises, _peFType, _peFMove, _peSearch, _peAlpha, false, _peFMuscle, _peFPattern);
   if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
   c.innerHTML = filtered.map(ex => `
     <button onclick="addExToPlan('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
       <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(ex.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">+</span>
     </button>`).join('');
   c.scrollTop = 0;
@@ -1414,7 +1603,7 @@ function refreshPlanExList() {
       </div>
       <span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>
       <span style="flex:1;font-size:14px">${esc(ex?ex.name:'(removido)')}</span>
-      ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}
+      ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
       <button onclick="rmPlanEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px">×</button>
     </div>`;
   }).join('');
@@ -1447,7 +1636,8 @@ function exportPlan(id) {
   const exercises = (p.exercises||[])
     .map(exId => D.exercises.find(e => e.id === exId))
     .filter(Boolean)
-    .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime }));
+    .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime,
+      mainMuscle:e.mainMuscle, movementPattern:e.movementPattern, accessoryMuscles:e.accessoryMuscles||[] }));
   const payload = { type: 'gym-tracker-plan', name: p.name, exercises };
   const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
   const url  = URL.createObjectURL(blob);
@@ -1511,7 +1701,23 @@ function applyImportedPlan(data) {
         const type    = imp.type==='strength' ? 'strength' : 'hypertrophy';
         const regime  = (imp.regime==='assisted'||imp.regime==='bodyweight') ? imp.regime : 'weighted';
         const compound = imp.compound===true || imp.compound===false ? imp.compound : null;
-        local = { id: imp.id || uid(), name: imp.name, type, compound, regime, updatedAt: Date.now() };
+        // mainMuscle/movementPattern/accessoryMuscles get the same
+        // untrusted-input normalization — an imported value outside the
+        // real MUSCLE_GROUPS/MOVEMENT_PATTERNS enums falls back to
+        // 'undefined' rather than being stored verbatim, same reasoning as
+        // type/regime/compound above.
+        // typeof-guarded because bracket lookup coerces its key to a
+        // string — MUSCLE_GROUPS[undefined] resolves to the *string* key
+        // "undefined" (a real, valid entry), so an absent imp.mainMuscle
+        // would silently pass an `unless-falsy` check and store the literal
+        // JS value undefined instead of the string 'undefined'.
+        const mainMuscle = (typeof imp.mainMuscle === 'string' && MUSCLE_GROUPS[imp.mainMuscle]) ? imp.mainMuscle : 'undefined';
+        const patternMap = MOVEMENT_PATTERNS[mainMuscle] || MOVEMENT_PATTERNS.undefined;
+        const movementPattern = (typeof imp.movementPattern === 'string' && patternMap[imp.movementPattern])
+          ? imp.movementPattern : (mainMuscle==='undefined'?'undefined':'other');
+        const accessoryMuscles = Array.isArray(imp.accessoryMuscles)
+          ? imp.accessoryMuscles.filter(m => typeof m==='string' && m!=='undefined' && MUSCLE_GROUPS[m]) : [];
+        local = { id: imp.id || uid(), name: imp.name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles, updatedAt: Date.now() };
         D.exercises.push(local);
       }
       return local.id;
@@ -1643,11 +1849,35 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
       <button id="ex-a"  onclick="exF('regime','assisted')"   style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='assisted'?CA:BG3};color:${_newRegime==='assisted'?TX:DM}">Assist.</button>
       <button id="ex-bw" onclick="exF('regime','bodyweight')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='bodyweight'?CG:BG3};color:${_newRegime==='bodyweight'?TX:DM}">BW</button>
     </div>
+    <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Grupo muscular principal</label>
+    <select id="ex-muscle" onchange="exF('muscle', this.value)"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:14px;box-sizing:border-box">
+      ${Object.entries(MUSCLE_GROUPS).map(([k,label]) => `<option value="${k}" ${_newMuscle===k?'selected':''}>${label}</option>`).join('')}
+    </select>
+    <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Padrão de movimento</label>
+    <div id="ex-pattern-group" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${patternButtonsHTML()}</div>
+    <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Músculos acessórios (opcional)</label>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px">
+      ${Object.entries(MUSCLE_GROUPS).filter(([k])=>k!=='undefined').map(([k,label]) =>
+        `<button id="acc-${k}" onclick="exF('accessory','${k}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newAccessory.includes(k)?'#0a2e2e':BG3};color:${_newAccessory.includes(k)?'#4dd0c4':DM}">${label}</button>`
+      ).join('')}
+    </div>
     ${B(CG,TX,'Salvar',saveFn)}
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`;
 }
 
-// Updates button styles in-place when type/compound/regime is toggled
+// Renders just the movement-pattern button row for whatever _newMuscle is
+// currently selected — MOVEMENT_PATTERNS is keyed per muscle group, so this
+// has to be rebuilt (not just re-styled) every time the muscle changes.
+function patternButtonsHTML() {
+  const patterns = MOVEMENT_PATTERNS[_newMuscle] || MOVEMENT_PATTERNS.undefined;
+  return Object.entries(patterns).map(([key,label]) =>
+    `<button onclick="exF('pattern','${key}')" style="padding:8px 10px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_newPattern===key?'#0a2e2e':BG3};color:${_newPattern===key?'#4dd0c4':DM}">${label}</button>`
+  ).join('');
+}
+
+// Updates button styles in-place when type/compound/regime/muscle/
+// pattern/accessory is toggled.
 function exF(field, val) {
   if (field === 'type') {
     _newType = val;
@@ -1666,10 +1896,31 @@ function exF(field, val) {
     if(w){w.style.background=val==='weighted'?CB:BG3;w.style.color=val==='weighted'?TX:DM;}
     if(a){a.style.background=val==='assisted'?CA:BG3;a.style.color=val==='assisted'?TX:DM;}
     if(b){b.style.background=val==='bodyweight'?CG:BG3;b.style.color=val==='bodyweight'?TX:DM;}
+  } else if (field === 'muscle') {
+    _newMuscle = val;
+    // Changing muscle invalidates the old pattern — each group has its own
+    // scoped vocabulary (MOVEMENT_PATTERNS) — so reset to that group's own
+    // escape valve rather than leaving a stale key from a different group.
+    _newPattern = val === 'undefined' ? 'undefined' : 'other';
+    const g = document.getElementById('ex-pattern-group');
+    if (g) g.innerHTML = patternButtonsHTML();
+  } else if (field === 'pattern') {
+    _newPattern = val;
+    const g = document.getElementById('ex-pattern-group');
+    if (g) g.innerHTML = patternButtonsHTML();
+  } else if (field === 'accessory') {
+    const idx = _newAccessory.indexOf(val);
+    if (idx === -1) _newAccessory.push(val); else _newAccessory.splice(idx,1);
+    const el = document.getElementById('acc-'+val);
+    if (el) { el.style.background = _newAccessory.includes(val)?'#0a2e2e':BG3; el.style.color = _newAccessory.includes(val)?'#4dd0c4':DM; }
   }
 }
 
-function openNewEx()  { _newType='hypertrophy'; _newCompound=true; _newRegime='weighted'; showModal(exModalBody('Novo exercício','','saveNewEx()')); }
+function openNewEx()  {
+  _newType='hypertrophy'; _newCompound=true; _newRegime='weighted';
+  _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[];
+  showModal(exModalBody('Novo exercício','','saveNewEx()'));
+}
 function openEditEx(id) {
   const ex = D.exercises.find(e=>e.id===id); if(!ex)return;
   // _newCompound defaults to `true` here purely so the modal has SOMETHING
@@ -1679,11 +1930,19 @@ function openEditEx(id) {
   // display default should ever be written back.
   _newType=ex.type||'hypertrophy'; _newCompound=ex.compound!=null?ex.compound:true; _newRegime=ex.regime||'weighted';
   _newCompoundTouched = false;
+  // mainMuscle/movementPattern are mandatory-with-an-undefined-value, not
+  // nullable like compound — every exercise already has a real string here
+  // (backfillExerciseClassification() guarantees it) — but default anyway
+  // in case this is ever called mid-migration.
+  _newMuscle = ex.mainMuscle || 'undefined';
+  _newPattern = ex.movementPattern || 'undefined';
+  _newAccessory = [...(ex.accessoryMuscles||[])];
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
 function saveNewEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim(); if(!name)return;
-  D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime, updatedAt:Date.now() });
+  D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime,
+    mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory], updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -1695,7 +1954,14 @@ function saveEditEx() {
   // otherwise an unclassified (compound:null) exercise gets permanently
   // reclassified to _newCompound's display default just from renaming it
   // or editing type/regime, without the user ever making that choice.
-  if (ex) { ex.name=name; ex.type=_newType; if(_newCompoundTouched) ex.compound=_newCompound; ex.regime=_newRegime; ex.updatedAt=Date.now(); }
+  // mainMuscle/movementPattern/accessoryMuscles have no such nullable state
+  // to preserve — they're mandatory-with-an-escape-valve, so every save
+  // just writes whatever the modal currently shows, same as type/regime.
+  if (ex) {
+    ex.name=name; ex.type=_newType; if(_newCompoundTouched) ex.compound=_newCompound; ex.regime=_newRegime;
+    ex.mainMuscle=_newMuscle; ex.movementPattern=_newPattern; ex.accessoryMuscles=[..._newAccessory];
+    ex.updatedAt=Date.now();
+  }
   persist(); closeModal(); render();
 }
 function delEx(id) { D.tombstones.exercises[id]=Date.now(); D.exercises=D.exercises.filter(e=>e.id!==id); persist(); render(); }
@@ -1715,9 +1981,10 @@ function delEx(id) { D.tombstones.exercises[id]=Date.now(); D.exercises=D.exerci
 
 function openAddEx() {
   _aFType=null; _aFMove=null; _aSearch=''; _aAlpha=false; _newType='strength';
+  _aFMuscle=null; _aFPattern=null;
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:12px">Adicionar exercício</div>
-    <div id="a-filters">${filterBarHTML(_aFType,_aFMove,false,false)}</div>
+    <div id="a-filters">${filterBarHTML(_aFType,_aFMove,false,false,_aFMuscle,_aFPattern)}</div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <input id="a-search" type="text" placeholder="Buscar por nome..."
         style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;box-sizing:border-box">
@@ -1744,21 +2011,23 @@ function openAddEx() {
 
 function aBindFilters() {
   const c = document.getElementById('a-filters'); if(!c)return;
-  c.innerHTML = filterBarHTML(_aFType, _aFMove, false, false);
+  c.innerHTML = filterBarHTML(_aFType, _aFMove, false, false, _aFMuscle, _aFPattern);
   bindFilterBar('a-filters',
     val => { _aFType=_aFType===val?null:val; aBindFilters(); aRefreshList(); },
-    val => { _aFMove=_aFMove===val?null:val; aBindFilters(); aRefreshList(); }
+    val => { _aFMove=_aFMove===val?null:val; aBindFilters(); aRefreshList(); },
+    val => { _aFMuscle=_aFMuscle===val?null:val; _aFPattern=null; aBindFilters(); aRefreshList(); },
+    val => { _aFPattern=_aFPattern===val?null:val; aBindFilters(); aRefreshList(); }
   );
 }
 
 function aRefreshList() {
   const c = document.getElementById('a-list'); if(!c)return;
-  const filtered = applyFilters(D.exercises, _aFType, _aFMove, _aSearch, _aAlpha, false);
+  const filtered = applyFilters(D.exercises, _aFType, _aFMove, _aSearch, _aAlpha, false, _aFMuscle, _aFPattern);
   if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
   c.innerHTML = filtered.map(ex => `
     <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
       <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">→</span>
     </button>`).join('');
   c.scrollTop = 0;
@@ -1778,7 +2047,7 @@ function pickEx(id) {
   const isS=_pickType==='strength', isW=_pickRegime==='weighted', isAs=_pickRegime==='assisted', isBW=_pickRegime==='bodyweight';
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(ex.name)}</div>
-    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap">${ex.compound!=null?compPill(ex.compound):''}${ex.regime?regimePill(ex.regime):''}</div>
+    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap">${ex.compound!=null?compPill(ex.compound):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
     <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Tipo neste treino</label>
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button id="pt-s" onclick="setPickType('strength')"    style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isS?'#A32D2D':BG3};color:${isS?TX:DM}">Força</button>
@@ -1819,7 +2088,12 @@ function createAndAdd() {
   const el   = document.getElementById('new-ex-name');
   const name = (el?el.value:'').trim(); if(!name)return;
   const id   = uid();
-  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', updatedAt:Date.now() });
+  // mainMuscle/movementPattern default to 'undefined' here, same as the
+  // hardcoded compound/regime just above — this quick-create path only
+  // exposes Type (see setNewType()); a proper classification still needs a
+  // follow-up Library edit, exactly like fixing a mis-tagged regime already
+  // does today.
+  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', mainMuscle:'undefined', movementPattern:'undefined', accessoryMuscles:[], updatedAt:Date.now() });
   if (S) { const o={exId:id,exName:name,type:_newType,compound:true,regime:'weighted',sets:[]}; o.sets=buildSetsFromMemory(o); S.exercises.push(o); }
   persist(); closeModal(); render();
 }
@@ -2079,6 +2353,9 @@ function applyData(p) {
   // import, so a restore is a genuine clean replacement.
   D.tombstones   = p.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{} };
   D.lastModified = p.lastModified || 0;
+  // An older backup predates muscle-group classification entirely — same
+  // backfill loadData() runs on its own local-cache load.
+  backfillExerciseClassification();
 }
 
 function importBackup() {
