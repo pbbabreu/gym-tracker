@@ -87,7 +87,9 @@
     get S() { return S; },  set S(v) { S = v; },
     get TAB() { return TAB; }, set TAB(v) { TAB = v; },
     get schemaAhead() { return _remoteSchemaAhead; }, set schemaAhead(v) { _remoteSchemaAhead = v; },
-    hasKg, hasReps, round, esc, today,
+    get gymId() { return _currentGymId; }, set gymId(v) { _currentGymId = v; },
+    hasKg, hasReps, round, esc, today, availableAtGym, currentGym,
+    SCHEMA_VERSION,
   })`);
 
   // seed runs after first render; poll until the 44 starters exist
@@ -359,6 +361,110 @@
     t('pre-restore safety copy holds the replaced state', afterRestore.some(s => s.slot === 'prerestore' && s.data.sessions.length === 2));
     ['0','1','2','3','4','5','6','prerestore'].forEach(s => LSW.removeItem('gym:snapshot:' + s));
     T.D.sessions = keepSess; W.render();
+  }
+
+  // ── gym profiles (M0) ──────────────────────────────────────────────────────
+  g('gym profiles (M0)');
+  {
+    t('SCHEMA_VERSION bumped to 3 for the gyms era', T.SCHEMA_VERSION === 3);
+
+    // availability semantics — absent/empty = everywhere, null gym = no filtering
+    t('no gym selected → everything available', T.availableAtGym({ gyms: ['g9'] }, null) === true);
+    t('absent gyms field → available everywhere', T.availableAtGym({}, 'g1') === true);
+    t('empty gyms list → available everywhere', T.availableAtGym({ gyms: [] }, 'g1') === true);
+    t('tagged & matching → available', T.availableAtGym({ gyms: ['g1', 'g2'] }, 'g1') === true);
+    t('tagged & not matching → unavailable', T.availableAtGym({ gyms: ['g2'] }, 'g1') === false);
+
+    // gyms merge through mergeRemote (fifth file) incl. schema acceptance
+    const keepGyms = T.D.gyms.slice(), keepTombs = { ...T.D.tombstones.gyms };
+    T.D.gyms = [{ id: 'gl', name: 'Local Gym', updatedAt: 10 }];
+    const okG = W.mergeRemote({ gyms: { schema: 3, gyms: [{ id: 'gr', name: 'Remote Gym', updatedAt: 20 }], tombstones: {} } });
+    t('gyms file merges as fifth collection (schema 3 accepted)', okG === true && T.D.gyms.length === 2);
+    W.mergeRemote({ gyms: { schema: 3, gyms: [], tombstones: { gl: 99 } } });
+    t('gym tombstone from remote removes local gym', !T.D.gyms.some(g => g.id === 'gl'));
+
+    // session gym stamping via the real start flow + name snapshot
+    T.D.gyms = [{ id: 'g1', name: 'Gym One', updatedAt: 1 }];
+    T.gymId = 'g1';
+    W.startFree();
+    t('startFree stamps gymId + gymName snapshot', T.S.gymId === 'g1' && T.S.gymName === 'Gym One');
+    T.S.exercises = [{ exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 100 }] }];
+    W.saveSession();
+    const gymSess = T.D.sessions.find(s => s.gymId === 'g1');
+    t('saved session carries gymId + gymName', !!gymSess && gymSess.gymName === 'Gym One');
+    T.D.sessions = T.D.sessions.filter(s => s !== gymSess);
+    T.gymId = 'ghost-id';
+    W.startFree();
+    t('selection pointing at a deleted gym degrades to null', T.S.gymId === null && T.S.gymName === null);
+    W.cancelSession();
+    T.gymId = null;
+
+    // swap candidates — the classification system as substitution engine
+    T.S = { gymId: null, exercises: [] };
+    let tiers = W.swapCandidates({ exId: 'bench-press' }, '');
+    t('same muscle+pattern tier finds the other chest presses', tiers.samePattern.some(e => e.id === 'incline-press-machine'));
+    t('same muscle tier finds chest non-press', tiers.sameMuscle.some(e => e.id === 'pec-deck-fly'));
+    t('unrelated exercises land in others', tiers.others.some(e => e.id === 'zercher-squat'));
+    t('never suggests itself', !tiers.samePattern.concat(tiers.sameMuscle, tiers.others).some(e => e.id === 'bench-press'));
+    tiers = W.swapCandidates({ exId: 'bench-press' }, 'incline');
+    // Two seed exercises match "incline": the chest press (tier 1) and the
+    // biceps Incline deficit curl (others) — search filters within EVERY
+    // tier, it doesn't collapse the ranking.
+    t('search narrows candidates within each tier', tiers.samePattern.length === 1 && tiers.samePattern[0].id === 'incline-press-machine' && tiers.sameMuscle.length === 0 && tiers.others.length === 1 && tiers.others[0].id === 'incline-deficit-curl');
+    // gym filter removes unavailable-there suggestions entirely
+    const inclineEx = T.D.exercises.find(e => e.id === 'incline-press-machine');
+    inclineEx.gyms = ['somewhere-else'];
+    T.S = { gymId: 'g1', exercises: [] };
+    tiers = W.swapCandidates({ exId: 'bench-press' }, '');
+    t('unavailable-at-this-gym exercises are not suggested', !tiers.samePattern.some(e => e.id === 'incline-press-machine'));
+    delete inclineEx.gyms;
+    // undefined main muscle → nothing rankable
+    T.D.exercises.push({ id: 'tmp-undef', name: 'Mistério', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'undefined', movementPattern: 'undefined', accessoryMuscles: [], updatedAt: 1 });
+    tiers = W.swapCandidates({ exId: 'tmp-undef' }, '');
+    t('undefined-muscle exercise gets no fake ranking (all in others)', tiers.samePattern.length === 0 && tiers.sameMuscle.length === 0 && tiers.others.length > 0);
+    T.D.exercises = T.D.exercises.filter(e => e.id !== 'tmp-undef');
+    T.S = null;
+
+    // delGym cleanup: strips tags, bumps updatedAt, writes tombstone
+    const bench = T.D.exercises.find(e => e.id === 'bench-press');
+    bench.gyms = ['g1']; const oldUpd = bench.updatedAt = 5;
+    const realConfirm2 = W.confirm; W.confirm = () => true;
+    W.delGym('g1');
+    W.confirm = realConfirm2; W.closeModal();
+    t('delGym strips the dead tag from exercises', (bench.gyms || []).length === 0);
+    t('delGym bumps updatedAt so the cleanup syncs', bench.updatedAt > oldUpd);
+    t('delGym writes a tombstone', 'g1' in T.D.tombstones.gyms);
+    delete bench.gyms; bench.updatedAt = oldUpd;
+    T.D.gyms = keepGyms; T.D.tombstones.gyms = keepTombs;
+
+    // plan export deliberately excludes gyms (sender-local ids)
+    const pbench = T.D.exercises.find(e => e.id === 'bench-press');
+    pbench.gyms = ['g-mine'];
+    T.D.plans.push({ id: 'exp-test', name: 'Exp', exercises: ['bench-press'], updatedAt: 1 });
+    let capturedBlob = null;
+    const realCreate = W.URL.createObjectURL, realRevoke = W.URL.revokeObjectURL, realClick = W.HTMLAnchorElement.prototype.click;
+    W.URL.createObjectURL = b => { capturedBlob = b; return 'blob:test'; };
+    W.URL.revokeObjectURL = () => {};
+    W.HTMLAnchorElement.prototype.click = function() {};
+    W.exportPlan('exp-test');
+    W.URL.createObjectURL = realCreate; W.URL.revokeObjectURL = realRevoke; W.HTMLAnchorElement.prototype.click = realClick;
+    const expPayload = capturedBlob ? JSON.parse(await capturedBlob.text()) : null;
+    t('exported plan exercises carry NO gyms field', !!expPayload && !('gyms' in expPayload.exercises[0]));
+    delete pbench.gyms;
+    T.D.plans = T.D.plans.filter(p => p.id !== 'exp-test');
+
+    // old backup (pre-gyms) restores with clean gym state
+    const keepAll = JSON.parse(JSON.stringify({ ex: T.D.exercises, pl: T.D.plans, se: T.D.sessions, we: T.D.weights, gy: T.D.gyms, tb: T.D.tombstones }));
+    W.applyData({ exercises: keepAll.ex, plans: [], sessions: [], weights: [], tombstones: { exercises: {}, plans: {}, sessions: {}, weights: {} } });
+    t('pre-gyms backup restores with empty gyms + normalized tombstones', T.D.gyms.length === 0 && typeof T.D.tombstones.gyms === 'object');
+    T.D.exercises = keepAll.ex; T.D.plans = keepAll.pl; T.D.sessions = keepAll.se; T.D.weights = keepAll.we; T.D.gyms = keepAll.gy; T.D.tombstones = keepAll.tb;
+
+    // selector UI states
+    T.D.gyms = [];
+    t('no gyms → quiet "+ Academias" entry pill', W.gymSelectorHTML().includes('+ Academias'));
+    T.D.gyms = [{ id: 'gx', name: 'Iron Temple', updatedAt: 1 }];
+    t('with gyms → named pill + manager pill', W.gymSelectorHTML().includes('Iron Temple') && W.gymSelectorHTML().includes('⚙'));
+    T.D.gyms = keepGyms;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

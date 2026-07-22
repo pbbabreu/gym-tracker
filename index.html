@@ -250,17 +250,29 @@ function scrubSessionSetMetadata() {
 // Persisted data — written to storage on every mutation
 let D = {
   exercises:    [],  // library entries: { id, name, type, compound, regime,
-                      // mainMuscle, movementPattern, accessoryMuscles, updatedAt }
+                      // mainMuscle, movementPattern, accessoryMuscles, updatedAt,
+                      // gyms?: [gymId,...] — OPTIONAL availability tags: absent or
+                      // empty means "available everywhere" (the zero-config
+                      // default — nobody is forced to tag anything; see
+                      // availableAtGym() in section 4) }
   plans:        [],  // training plans:  { id, name, exercises:[exId,...], updatedAt }
-  sessions:     [],  // history:         { id, date, planId, planName, exercises:[...], updatedAt }
+  sessions:     [],  // history:         { id, date, planId, planName, gymId?, gymName?,
+                      // exercises:[...], updatedAt } — gymId/gymName tag which gym the
+                      // session happened at; gymName is a snapshot (same pattern as
+                      // planName) so history still reads right after a gym is deleted
   weights:      [],  // bodyweight log:  { id, date, kg, updatedAt }
+  gyms:         [],  // gym profiles:    { id, name, updatedAt } — a fifth synced
+                      // collection, same merge/tombstone machinery as the others.
+                      // Which gym is CURRENTLY selected is per-device UI state
+                      // (_currentGymId + localStorage), deliberately NOT in D:
+                      // "where am I training today" shouldn't sync across devices.
   // One deletedAt-timestamp map per collection, keyed by id. Exists so a
   // deletion can survive being merged against a device that hasn't synced
   // it yet — see mergeCollection() in section 5 for how these are used and
   // why a plain union (no tombstones) let deletions get silently
   // resurrected. Small enough (id+timestamp per entry) that these are never
   // garbage-collected.
-  tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{} },
+  tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{} },
   lastModified: 0,   // unix timestamp of the last local mutation — used to
                       // decide whether a fresh Gist push is needed, NOT for
                       // per-item conflict resolution (each item's own
@@ -309,6 +321,18 @@ let _newMuscle = 'undefined', _newPattern = 'undefined', _newAccessory = [];
 // Pick-exercise modal working state
 let _pickType = 'hypertrophy', _pickRegime = 'weighted';
 
+// Currently-selected gym — per-DEVICE UI state (persisted to localStorage,
+// never to D/the Gist): the phone at the gym and the desktop at home are
+// legitimately "at" different places at once. null = no gym context, which
+// disables all availability filtering. Resolved through currentGym() so a
+// gym deleted on another device degrades to "no selection" instead of a
+// dangling id.
+let _currentGymId = null;
+
+// Exercise modal working state — gym availability multi-select (mirrors
+// _newAccessory's pattern; empty = available everywhere)
+let _newGyms = [];
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  4. UTILITIES
@@ -340,6 +364,18 @@ const round   = (v,step) => Math.round(v/step)*step;
 // per-set display, and getRecentWorkHistory's inclusion filter.
 const hasKg   = s => s.kg   !== '' && s.kg   != null;
 const hasReps = s => s.reps !== '' && s.reps != null;
+
+// "Can this exercise be done at this gym?" — an absent/EMPTY gyms list on
+// the exercise means available EVERYWHERE (the zero-config default), and no
+// selected gym (gymId null) means no availability filtering at all. Used by
+// the session-block unavailability notice, the swap-exercise suggestions,
+// and the add-exercise picker badges.
+const availableAtGym = (ex, gymId) => !gymId || !(ex.gyms||[]).length || (ex.gyms||[]).includes(gymId);
+
+// Resolves _currentGymId to the actual gym object, or null — a selection
+// pointing at a gym that was deleted (possibly on another device, arriving
+// via merge) degrades safely to "no gym selected" instead of dangling.
+const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -387,7 +423,12 @@ const hasReps = s => s.reps !== '' && s.reps != null;
 // older app version would mangle by writing back (dropping fields it doesn't
 // know it's holding). 1 = every file written before this field existed —
 // which is also what a missing `schema` reads as on fetch.
-const SCHEMA_VERSION = 2;
+// 3 = gym profiles: the fifth Gist file (gym-tracker-gyms.json), optional
+//     per-exercise `gyms` availability tags, and session gymId/gymName —
+//     a v2 app re-saving an edited session would silently drop its gym tag,
+//     so v2 devices freeze sync until reloaded (which the v3 service worker
+//     makes automatic when online).
+const SCHEMA_VERSION = 3;
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and gistSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -560,6 +601,7 @@ async function gistFetchAll() {
       library:  parse('gym-tracker-library.json'),
       plans:    parse('gym-tracker-plans.json'),
       weights:  parse('gym-tracker-weights.json'),
+      gyms:     parse('gym-tracker-gyms.json'),
     };
   } catch(e) { return null; }
 }
@@ -615,6 +657,7 @@ async function gistSave() {
     'gym-tracker-library.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, exercises:D.exercises, tombstones:D.tombstones.exercises, lastModified:ts }, null,2) },
     'gym-tracker-plans.json':    { content: JSON.stringify({ schema:SCHEMA_VERSION, plans:D.plans, tombstones:D.tombstones.plans, lastModified:ts }, null,2) },
     'gym-tracker-weights.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, weights:D.weights, tombstones:D.tombstones.weights, lastModified:ts }, null,2) },
+    'gym-tracker-gyms.json':     { content: JSON.stringify({ schema:SCHEMA_VERSION, gyms:D.gyms, tombstones:D.tombstones.gyms, lastModified:ts }, null,2) },
   });
   if (ok) _syncFailStreak = 0;
   else if (navigator.onLine !== false) _syncFailStreak++;
@@ -716,7 +759,7 @@ function mergeCollection(local, remote, localTombstones, remoteTombstones) {
 // merge is scarier than skipping a sync, and the next fresh load gets the
 // current app anyway.
 function mergeRemote(remote) {
-  const remoteSchema = Math.max(...[remote.sessions, remote.library, remote.plans, remote.weights].map(f => f?.schema || 1));
+  const remoteSchema = Math.max(...[remote.sessions, remote.library, remote.plans, remote.weights, remote.gyms].map(f => f?.schema || 1));
   if (remoteSchema > SCHEMA_VERSION) { _remoteSchemaAhead = true; return false; }
 
   if (remote.sessions?.sessions) {
@@ -750,6 +793,12 @@ function mergeRemote(remote) {
     D.weights = items;
     D.tombstones.weights = tombstones;
   }
+
+  if (remote.gyms?.gyms) {
+    const { items, tombstones } = mergeCollection(D.gyms, remote.gyms.gyms, D.tombstones.gyms, remote.gyms.tombstones);
+    D.gyms = items;
+    D.tombstones.gyms = tombstones;
+  }
   return true;
 }
 
@@ -770,6 +819,10 @@ async function persist() {
 async function loadData() {
   await loadConfig();
 
+  // Restore the per-device gym selection (see _currentGymId, section 3) —
+  // resolved lazily through currentGym(), so a stale id is harmless.
+  _currentGymId = LS.get('gym:currentGym') || null;
+
   // Step 2 — local cache
   const local = await loadLocalData();
   if (local) {
@@ -777,7 +830,11 @@ async function loadData() {
     D.plans        = local.plans        || [];
     D.sessions     = local.sessions     || [];
     D.weights      = local.weights      || [];
-    D.tombstones   = local.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{} };
+    D.gyms         = local.gyms         || [];
+    D.tombstones   = local.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{} };
+    // A cache written before gyms existed has a tombstones object with no
+    // gyms key — normalize so delGym()/mergeCollection() never hit undefined.
+    if (!D.tombstones.gyms) D.tombstones.gyms = {};
     D.lastModified = local.lastModified || 0;
     // Backfills any exercise saved before muscle-group classification
     // existed — see backfillExerciseClassification() (section 2). A no-op
@@ -1322,6 +1379,98 @@ function buildLog() {
   return buildLogSession();
 }
 
+// ── Gyms (gym profiles) ───────────────────────────────────────────────────────
+//
+// A gym is just { id, name } — availability lives on the EXERCISES (their
+// optional gyms tag list), not here. The selector below picks "where am I
+// training today" (per-device, see _currentGymId); sessions started while a
+// gym is selected carry its id + a name snapshot, and exercise blocks whose
+// library entry isn't available at that gym get an inline notice with a
+// swap shortcut (see buildExBlock / openSwapEx).
+
+// Pill row on the Log start screen. Tapping the selected gym deselects it
+// (back to "no gym context" — no availability filtering). The ⚙ pill opens
+// the manager; when no gyms exist yet, a single quiet "+ Academias" pill is
+// the only trace of the whole feature.
+function gymSelectorHTML() {
+  const pill = (lbl, active, oc, dim) =>
+    `<button onclick="${oc}" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;background:${active?CG:BG3};color:${active?TX:(dim?DM:TX)}">${lbl}</button>`;
+  if (!D.gyms.length) {
+    return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px">${pill('+ Academias', false, 'openGymManager()', true)}</div>`;
+  }
+  return `<div style="margin-bottom:16px">
+    <div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Academia de hoje</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${D.gyms.map(gm => pill(esc(gm.name), _currentGymId===gm.id, `setCurrentGym('${gm.id}')`)).join('')}
+      ${pill('⚙', false, 'openGymManager()', true)}
+    </div>
+  </div>`;
+}
+
+function setCurrentGym(id) {
+  _currentGymId = _currentGymId === id ? null : id; // tap the active one to deselect
+  LS.set('gym:currentGym', _currentGymId || '');
+  render();
+}
+
+function openGymManager() {
+  const rows = D.gyms.map(gm => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:.5px solid ${BD}">
+      <input type="text" value="${esc(gm.name)}" onchange="renameGym('${gm.id}', this.value)"
+        style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 10px;outline:none;min-width:0">
+      <button onclick="delGym('${gm.id}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
+    </div>`).join('');
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:6px">Academias</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px;line-height:1.5">Perfis de academia — marque em quais academias cada exercício está disponível (na Biblioteca), e escolha a academia do dia na tela de treino. Exercícios sem marcação valem em todas.</div>
+    ${rows || `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma academia cadastrada.</div>`}
+    <div style="display:flex;gap:8px;margin:14px 0">
+      <input id="gym-new-name" type="text" placeholder="Nome da academia"
+        style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;outline:none;min-width:0">
+      ${Bs(CG,TX,'+ Adicionar','addGym()')}
+    </div>
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0')}`);
+}
+
+function addGym() {
+  const el = document.getElementById('gym-new-name');
+  const name = (el?el.value:'').trim(); if (!name) return;
+  D.gyms.push({ id: uid(), name, updatedAt: Date.now() });
+  persist();
+  openGymManager(); // rebuild the modal with the new row
+  render();
+}
+
+function renameGym(id, v) {
+  const name = (v||'').trim();
+  const gm = D.gyms.find(g => g.id === id); if (!gm) return;
+  if (!name) { openGymManager(); return; } // blank rename → just restore the row
+  gm.name = name; gm.updatedAt = Date.now();
+  persist(); render();
+}
+
+function delGym(id) {
+  const gm = D.gyms.find(g => g.id === id); if (!gm) return;
+  if (!confirm(`Excluir a academia "${gm.name}"?\n\nExercícios marcados apenas nela passam a valer em todas as academias.`)) return;
+  D.tombstones.gyms[id] = Date.now();
+  D.gyms = D.gyms.filter(g => g.id !== id);
+  // Strip the dead tag from every exercise that carried it — an updatedAt
+  // bump included, so the cleanup propagates through the LWW merge instead
+  // of lingering as a dangling id on other devices. An exercise whose list
+  // becomes empty is now available everywhere, exactly what the confirm
+  // text promised.
+  D.exercises.forEach(ex => {
+    if ((ex.gyms||[]).includes(id)) {
+      ex.gyms = ex.gyms.filter(g => g !== id);
+      ex.updatedAt = Date.now();
+    }
+  });
+  if (_currentGymId === id) { _currentGymId = null; LS.set('gym:currentGym', ''); }
+  persist();
+  openGymManager();
+  render();
+}
+
 function buildLogStartScreen() {
   let plans = '';
   if (D.plans.length) {
@@ -1339,6 +1488,7 @@ function buildLogStartScreen() {
     ${bwBanner()}
     <div style="font-size:20px;font-weight:700;margin-bottom:4px">Treinar</div>
     <div style="color:${DM};font-size:13px;margin-bottom:20px">${fmt(today())}</div>
+    ${gymSelectorHTML()}
     ${plans}
     ${B(CG,TX,'+ Treino livre','startFree()',';margin-bottom:0')}
     ${!D.plans.length ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px;line-height:1.6">Crie um plano ou comece um treino livre.</div>` : ''}`;
@@ -1349,7 +1499,7 @@ function buildLogSession() {
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <div style="flex:1;min-width:0">
-        <div style="font-weight:700;font-size:17px;margin-bottom:4px">${esc(S.planName||(isEdit?'Editar treino':'Treino livre'))}</div>
+        <div style="font-weight:700;font-size:17px;margin-bottom:4px">${esc(S.planName||(isEdit?'Editar treino':'Treino livre'))}${S.gymName?` <span style="font-weight:400;font-size:12px;color:${DM}">· ${esc(S.gymName)}</span>`:''}</div>
         <input type="date" value="${S.date}" onchange="S.date=this.value"
           style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:6px 10px;outline:none;width:auto">
       </div>
@@ -1389,6 +1539,18 @@ function buildExBlock(ex, i) {
   const stallBanner = (sug && sug.stallStreak >= 2) ? `
     <div style="background:#2d1010;border:1px solid #5c1a1a;border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:#e57373">
       Mesma carga há ${sug.stallStreak} treinos — foque em completar todas as séries no topo da faixa de reps antes de aumentar a carga.
+    </div>` : '';
+
+  // Availability lives on the LIBRARY entry, not the session copy — look it
+  // up fresh so a mid-session availability edit is reflected. Only warns
+  // when this session actually has a gym context (S.gymId); never blocks —
+  // maybe the machine exists and the tags are just stale.
+  const libEx = D.exercises.find(e => e.id === ex.exId);
+  const unavailableHere = S.gymId && libEx && !availableAtGym(libEx, S.gymId);
+  const unavailableBanner = unavailableHere ? `
+    <div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:#e6c84a;display:flex;align-items:center;gap:10px">
+      <span style="flex:1">Não disponível em ${esc(S.gymName||'nesta academia')} — trocar por um exercício equivalente?</span>
+      ${Bs(BG3,TX,'Trocar',`openSwapEx(${i})`,';flex-shrink:0;padding:6px 10px;font-size:12px')}
     </div>` : '';
 
   // First-ever log of this exercise (no sug) has no warm-ups yet — see
@@ -1500,10 +1662,14 @@ function buildExBlock(ex, i) {
             <button onclick="setExRegime(${i},'bodyweight')" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
           </div>
         </div>
-        <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px 6px;line-height:1;margin-top:-2px;flex-shrink:0">×</button>
+        <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
+          <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px 6px;line-height:1;margin-top:-2px">×</button>
+          <button onclick="openSwapEx(${i})" title="Trocar exercício" style="background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:2px 6px;line-height:1">⇄</button>
+        </div>
       </div>
       <!-- Set rows -->
       <div style="padding:12px 16px">
+        ${unavailableBanner}
         ${stallBanner}
         ${estimatePrompt}
         ${!ex.sets.length ? `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma série. Adicione abaixo.</div>` : ''}
@@ -1574,7 +1740,7 @@ function buildHistory() {
       <div onclick="toggleExp('${s.id}')" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">
         <div>
           <div style="font-weight:600">${esc(s.planName||'Treino livre')}</div>
-          <div style="font-size:13px;color:${DM}">${fmt(s.date)}</div>
+          <div style="font-size:13px;color:${DM}">${fmt(s.date)}${s.gymName?` · ${esc(s.gymName)}`:''}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:13px;color:${DM}">${ws} série${ws!==1?'s':''} · ${s.exercises.length} ex.</div>
@@ -1858,6 +2024,9 @@ function exportPlan(id) {
   const exercises = (p.exercises||[])
     .map(exId => D.exercises.find(e => e.id === exId))
     .filter(Boolean)
+    // gyms deliberately NOT exported: availability tags reference the
+    // sender's own gym ids, which mean nothing in the receiver's library —
+    // imported exercises arrive untagged (= available everywhere).
     .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime,
       mainMuscle:e.mainMuscle, movementPattern:e.movementPattern, accessoryMuscles:e.accessoryMuscles||[] }));
   const payload = { type: 'gym-tracker-plan', name: p.name, exercises };
@@ -2084,6 +2253,14 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
         `<button id="acc-${k}" onclick="exF('accessory','${k}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newAccessory.includes(k)?'#0a2e2e':BG3};color:${_newAccessory.includes(k)?'#4dd0c4':DM}">${label}</button>`
       ).join('')}
     </div>
+    ${D.gyms.length ? `
+    <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Academias (disponibilidade)</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Nenhuma marcada = disponível em todas.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px">
+      ${D.gyms.map(gm =>
+        `<button id="gav-${gm.id}" onclick="exF('gymav','${gm.id}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newGyms.includes(gm.id)?'#0a2e24':BG3};color:${_newGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
+      ).join('')}
+    </div>` : ''}
     ${B(CG,TX,'Salvar',saveFn)}
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`;
 }
@@ -2135,12 +2312,18 @@ function exF(field, val) {
     if (idx === -1) _newAccessory.push(val); else _newAccessory.splice(idx,1);
     const el = document.getElementById('acc-'+val);
     if (el) { el.style.background = _newAccessory.includes(val)?'#0a2e2e':BG3; el.style.color = _newAccessory.includes(val)?'#4dd0c4':DM; }
+  } else if (field === 'gymav') {
+    // Gym availability multi-toggle — same pattern as accessory muscles.
+    const idx = _newGyms.indexOf(val);
+    if (idx === -1) _newGyms.push(val); else _newGyms.splice(idx,1);
+    const el = document.getElementById('gav-'+val);
+    if (el) { el.style.background = _newGyms.includes(val)?'#0a2e24':BG3; el.style.color = _newGyms.includes(val)?'#6fcf97':DM; }
   }
 }
 
 function openNewEx()  {
   _newType='hypertrophy'; _newCompound=true; _newRegime='weighted';
-  _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[];
+  _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[]; _newGyms=[];
   showModal(exModalBody('Novo exercício','','saveNewEx()'));
 }
 function openEditEx(id) {
@@ -2159,12 +2342,17 @@ function openEditEx(id) {
   _newMuscle = ex.mainMuscle || 'undefined';
   _newPattern = ex.movementPattern || 'undefined';
   _newAccessory = [...(ex.accessoryMuscles||[])];
+  // Availability tags may reference a since-deleted gym on data merged from
+  // another device before its delGym cleanup arrives — filter to real gyms
+  // so the modal never shows phantom chips.
+  _newGyms = (ex.gyms||[]).filter(id => D.gyms.some(g => g.id === id));
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
 function saveNewEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim(); if(!name)return;
   D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime,
-    mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory], updatedAt:Date.now() });
+    mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
+    gyms:[..._newGyms], updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -2182,6 +2370,7 @@ function saveEditEx() {
   if (ex) {
     ex.name=name; ex.type=_newType; if(_newCompoundTouched) ex.compound=_newCompound; ex.regime=_newRegime;
     ex.mainMuscle=_newMuscle; ex.movementPattern=_newPattern; ex.accessoryMuscles=[..._newAccessory];
+    ex.gyms=[..._newGyms];
     ex.updatedAt=Date.now();
   }
   persist(); closeModal(); render();
@@ -2246,12 +2435,18 @@ function aRefreshList() {
   const c = document.getElementById('a-list'); if(!c)return;
   const filtered = applyFilters(D.exercises, _aFType, _aFMove, _aSearch, _aAlpha, false, _aFMuscle, _aFPattern);
   if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
-  c.innerHTML = filtered.map(ex => `
-    <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
+  c.innerHTML = filtered.map(ex => {
+    // This picker only opens mid-session, so S exists — when the session
+    // has a gym context, exercises unavailable there get dimmed + badged
+    // but stay pickable (the tags might just be stale; never block).
+    const unavail = S?.gymId && !availableAtGym(ex, S.gymId);
+    return `
+    <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px${unavail?';opacity:.55':''}">
       <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">→</span>
-    </button>`).join('');
+    </button>`;
+  }).join('');
   c.scrollTop = 0;
 }
 
@@ -2337,8 +2532,10 @@ function createAndAdd() {
 
 function startPlan(id) {
   const p = D.plans.find(x=>x.id===id); if(!p)return;
+  const gm = currentGym(); // gymName is a snapshot, same pattern as planName — history survives a gym deletion
   S = {
     planId: p.id, planName: p.name, date: today(),
+    gymId: gm?.id || null, gymName: gm?.name || null,
     exercises: (p.exercises||[]).map(exId => {
       const ex = D.exercises.find(e=>e.id===exId);
       // '(removido)' — same label the Plans tab itself shows for a plan
@@ -2351,7 +2548,7 @@ function startPlan(id) {
   render();
 }
 
-function startFree()     { S={ planId:null, planName:null, date:today(), exercises:[] }; render(); }
+function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; render(); }
 function cancelSession() { S=null; render(); }
 
 function saveSession() {
@@ -2385,7 +2582,7 @@ function saveSession() {
       return set;
     })
   }));
-  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, exercises, updatedAt:Date.now() };
+  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises, updatedAt:Date.now() };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
   persist(); S=null; TAB='history'; render();
@@ -2506,6 +2703,85 @@ function setExType(i,t)       { S.exercises[i].type=t;   S.exercises[i].sets=bui
 function setExRegime(i,r)     { S.exercises[i].regime=r; S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
 function moveEx(i,dir)        { const j=i+dir; if(!S||j<0||j>=S.exercises.length)return; [S.exercises[i],S.exercises[j]]=[S.exercises[j],S.exercises[i]]; render(); }
 function rmEx(i)              { S.exercises.splice(i,1); render(); }
+
+// ── Swap exercise ─────────────────────────────────────────────────────────────
+//
+// Replaces a session exercise with an equivalent one, in place (same
+// position). The everyday case is "machine occupied / not available at this
+// gym" — so candidates are ranked by how equivalent they are for training
+// purposes: same mainMuscle + same movementPattern first, then same
+// mainMuscle, then everything else — this ranking is exactly what the
+// muscle-classification system was built to enable. When the session has a
+// gym context (S.gymId), unavailable-there exercises are filtered out of
+// the suggestions entirely (an unavailable suggestion is noise, not help).
+// An exercise with an Undefined main muscle can't be matched meaningfully,
+// so everything lands in the "others" bucket — searchable, just unranked.
+function swapCandidates(sessionEx, search) {
+  const lib = D.exercises.find(e => e.id === sessionEx.exId);
+  const muscle  = lib?.mainMuscle, pattern = lib?.movementPattern;
+  const canRank = muscle && muscle !== 'undefined';
+  const q = (search||'').toLowerCase();
+  const tiers = { samePattern: [], sameMuscle: [], others: [] };
+  D.exercises.forEach(e => {
+    if (e.id === sessionEx.exId) return;                       // can't swap to itself
+    if (S?.gymId && !availableAtGym(e, S.gymId)) return;       // unavailable here = not a suggestion
+    if (q && !e.name.toLowerCase().includes(q)) return;
+    if (canRank && e.mainMuscle === muscle && e.movementPattern === pattern && pattern !== 'other') tiers.samePattern.push(e);
+    else if (canRank && e.mainMuscle === muscle) tiers.sameMuscle.push(e);
+    else tiers.others.push(e);
+  });
+  return tiers;
+}
+
+function openSwapEx(i) {
+  const ex = S.exercises[i]; if (!ex) return;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Trocar exercício</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:12px">Substituir <strong style="color:${TX}">${esc(ex.exName)}</strong>${S.gymName?` — mostrando apenas o que está disponível em ${esc(S.gymName)}`:''}</div>
+    <input id="sw-search" type="text" placeholder="Buscar por nome..."
+      style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;margin-bottom:10px;box-sizing:border-box">
+    <div id="sw-list" style="max-height:300px;overflow-y:auto;margin-bottom:14px"></div>
+    ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
+  const inp = document.getElementById('sw-search');
+  if (inp) inp.addEventListener('input', function() { swRefreshList(i, this.value); });
+  swRefreshList(i, '');
+}
+
+function swRefreshList(i, search) {
+  const c = document.getElementById('sw-list'); if (!c) return;
+  const ex = S.exercises[i];
+  const tiers = swapCandidates(ex, search);
+  const row = e => `
+    <button onclick="doSwapEx(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
+      <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(e.name)}</span>
+      <div style="display:flex;gap:4px;flex-shrink:0">${e.type?typePill(e.type):''}${e.regime?regimePill(e.regime):''}${musclePill(e.mainMuscle,e.movementPattern)}</div>
+    </button>`;
+  const section = (lbl, list) => list.length
+    ? `<div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:8px 0 6px">${lbl}</div>${list.map(row).join('')}`
+    : '';
+  const html = section('Mesmo músculo e padrão', tiers.samePattern)
+             + section('Mesmo músculo', tiers.sameMuscle)
+             + section('Outros', tiers.others);
+  c.innerHTML = html || `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`;
+  c.scrollTop = 0;
+}
+
+// The swap is DESTRUCTIVE for the block being replaced, same reasoning as
+// setExType/setExRegime: entered numbers were for the OLD exercise and
+// can't be reinterpreted for a different one. The replacement starts fresh
+// from its own library defaults + history-driven rows. A confirm guards the
+// case where real numbers were already typed in.
+function doSwapEx(i, newId) {
+  const ne = D.exercises.find(e => e.id === newId); if (!ne || !S) return;
+  const old = S.exercises[i];
+  const hasData = (old.sets||[]).some(s => hasReps(s) || hasKg(s));
+  if (hasData && !confirm(`Substituir "${old.exName}" por "${ne.name}"?\n\nAs séries já preenchidas serão descartadas.`)) return;
+  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound, regime: ne.regime||'weighted', sets: [] };
+  o.sets = buildSetsFromMemory(o);
+  S.exercises[i] = o;
+  closeModal();
+  render();
+}
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -2633,10 +2909,14 @@ function applyData(p) {
   D.plans        = p.plans        || [];
   D.sessions     = p.sessions     || [];
   D.weights      = p.weights      || [];
+  D.gyms         = p.gyms         || []; // absent in pre-gyms backups — valid, just empty
   // Older backups (pre-tombstones) won't have this field — default to
   // empty rather than leaving D.tombstones as whatever it was before the
   // import, so a restore is a genuine clean replacement.
-  D.tombstones   = p.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{} };
+  D.tombstones   = p.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{} };
+  // Same normalization loadData() does — a backup from the tombstones era
+  // but before gyms has the object without a gyms key.
+  if (!D.tombstones.gyms) D.tombstones.gyms = {};
   D.lastModified = p.lastModified || 0;
   // An older backup predates muscle-group classification entirely — same
   // backfill loadData() runs on its own local-cache load.
