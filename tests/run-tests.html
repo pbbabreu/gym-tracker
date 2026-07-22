@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gym Tracker — test runner</title>
+<!--
+  ══════════════════════════════════════════════════════════════════════════
+  REGRESSION TEST RUNNER — run over a LOCAL server only, never the live site.
+
+    cd gym-tracker
+    python -m http.server 8742
+    → open http://localhost:8742/tests/run-tests.html
+
+  How it works: this page wipes the origin's storage (localStorage, service
+  workers, caches — that's why it must never run against the production
+  origin), then loads ../index.html in a same-origin iframe and asserts
+  directly against the REAL app — no extracted copies that can drift: if
+  it's green here, the shipped file itself behaves.
+
+  Access detail worth knowing: top-level `function` declarations become
+  window properties (reachable as W.fn), but top-level `let`/`const`
+  bindings (D, S, TAB, today, hasKg, …) do NOT — they live in the iframe
+  realm's global lexical environment. The accessor object T below is built
+  with W.eval() *inside* that realm, closing over those bindings, which is
+  what makes them readable/writable from out here.
+
+  Every test sets up its own state inside the iframe and restores what it
+  touched, so order doesn't matter. Add a test for every bug fixed — the
+  suite is the project's memory of what must never break again. Current
+  coverage: the 2026-07-22 fix pass (local dates, per-item LWW merge,
+  schema guard, set-metadata strip/scrub, snapshots) plus the core
+  progression/warm-up/filter/import algorithms.
+  ══════════════════════════════════════════════════════════════════════════
+-->
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #111; color: #f0ede6; margin: 0 auto; padding: 20px; max-width: 760px; }
+  h1 { font-size: 18px; } #summary { font-size: 15px; font-weight: 700; padding: 10px 14px; border-radius: 8px; margin: 12px 0; background: #1c1c1c; }
+  #summary.ok { background: #0a2e24; color: #6fcf97; } #summary.bad { background: #2d1010; color: #e57373; }
+  .group { font-weight: 700; margin: 14px 0 4px; color: #8a8680; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .t { padding: 3px 0 3px 22px; font-size: 13px; position: relative; }
+  .t.ok::before { content: '✓'; color: #6fcf97; position: absolute; left: 4px; }
+  .t.bad::before { content: '✗'; color: #e57373; position: absolute; left: 4px; }
+  .t.bad { color: #e57373; }
+  .detail { color: #8a8680; font-size: 11px; padding-left: 22px; font-family: monospace; }
+  iframe { position: fixed; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+<h1>Gym Tracker — regression suite</h1>
+<div id="summary">running…</div>
+<div id="results"></div>
+<script>
+(async () => {
+  const resEl = document.getElementById('results'), sumEl = document.getElementById('summary');
+  let pass = 0, fail = 0;
+  const g = name => resEl.insertAdjacentHTML('beforeend', `<div class="group">${name}</div>`);
+  const t = (name, cond, detail) => {
+    cond ? pass++ : fail++;
+    resEl.insertAdjacentHTML('beforeend', `<div class="t ${cond ? 'ok' : 'bad'}">${name}</div>${!cond && detail !== undefined ? `<div class="detail">${String(detail).replace(/</g,'&lt;')}</div>` : ''}`);
+  };
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // ── boot: wipe origin storage, load the real app in an iframe ─────────────
+  g('boot');
+  try {
+    for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+    for (const k of await caches.keys()) await caches.delete(k);
+    localStorage.clear();
+    t('origin storage wiped (SW, caches, localStorage)', true);
+  } catch (e) { t('origin storage wiped', false, e); }
+
+  const frame = document.createElement('iframe');
+  frame.src = '../index.html';
+  document.body.appendChild(frame);
+  const W = await new Promise((resolve, reject) => {
+    frame.onload = () => resolve(frame.contentWindow);
+    setTimeout(() => reject(new Error('iframe load timeout')), 15000);
+  });
+  const errors = [];
+  W.addEventListener('error', e => errors.push(e.message));
+
+  // Accessor bridge into the iframe realm's top-level let/const bindings —
+  // see the header comment for why W.D alone would be undefined.
+  const T = W.eval(`({
+    get D() { return D; },  set D(v) { D = v; },
+    get S() { return S; },  set S(v) { S = v; },
+    get TAB() { return TAB; }, set TAB(v) { TAB = v; },
+    get schemaAhead() { return _remoteSchemaAhead; }, set schemaAhead(v) { _remoteSchemaAhead = v; },
+    hasKg, hasReps, round, esc, today,
+  })`);
+
+  // seed runs after first render; poll until the 44 starters exist
+  for (let i = 0; i < 60 && !(T.D && T.D.exercises.length === 44); i++) await new Promise(r => setTimeout(r, 250));
+  t('app booted and seeded 44 exercises', T.D && T.D.exercises.length === 44, T.D && T.D.exercises.length);
+
+  // ── utilities ──────────────────────────────────────────────────────────────
+  g('utilities');
+  t('hasKg: 0 is real data', T.hasKg({ kg: 0 }) === true);
+  t("hasKg: '' is untouched", T.hasKg({ kg: '' }) === false);
+  t('hasKg: null is untouched', T.hasKg({ kg: null }) === false);
+  t('hasReps: 0 is real data', T.hasReps({ reps: 0 }) === true);
+  t('round to 0.5 down', T.round(22.6, 0.5) === 22.5);
+  t('round to 0.5 up', T.round(22.8, 0.5) === 23);
+  t('esc() escapes HTML', T.esc('<b>&"') === '&lt;b&gt;&amp;&quot;');
+
+  // today(): must be the LOCAL date even when UTC has rolled over (the
+  // 2026-07-22 timezone fix — evening sessions were dated tomorrow)
+  {
+    const RealDate = W.Date;
+    const fixed = new RealDate('2026-07-22T23:30:00-03:00');
+    W.Date = class extends RealDate {
+      constructor(...a) { a.length ? super(...a) : super(fixed.getTime()); }
+      static now() { return fixed.getTime(); }
+    };
+    const late = T.today();
+    W.Date = RealDate;
+    // Asserts the LOCAL calendar day for whatever TZ the browser runs in —
+    // on this project's machine (UTC-3) the UTC day is already the 23rd here.
+    const expected = (() => { const d = new Date(fixed); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })();
+    t(`today() is the local calendar date at 23:30 UTC-3 (${late})`, late === expected, `got ${late}, expected ${expected}`);
+    t('today() now matches a manual local build', T.today() === (() => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); })());
+  }
+
+  // ── training profiles & progression ───────────────────────────────────────
+  g('profiles & progression');
+  t('strength profile 3×2–5 regardless of regime', eq(W.profileFor('strength', 'assisted'), { targetWorkSets: 3, repLow: 2, repHigh: 5 }) && eq(W.profileFor('strength', 'weighted'), { targetWorkSets: 3, repLow: 2, repHigh: 5 }));
+  t('hypertrophy weighted 1×6–10', eq(W.profileFor('hypertrophy', 'weighted'), { targetWorkSets: 1, repLow: 6, repHigh: 10 }));
+  t('hypertrophy assisted 1×6–12', eq(W.profileFor('hypertrophy', 'assisted'), { targetWorkSets: 1, repLow: 6, repHigh: 12 }));
+  t('bumpWeight +2.5 weighted', W.bumpWeight(20, false) === 22.5);
+  t('bumpWeight −2.5 assisted', W.bumpWeight(20, true) === 17.5);
+  t('bumpWeight floors at 0 for assisted', W.bumpWeight(2, true) === 0);
+  t('bumpWeight rounds to nearest 0.5', W.bumpWeight(21.1, false) === 23.5);
+
+  g('warm-up generation');
+  {
+    const wu = W.buildWarmupSets('weighted', true, 100);
+    t('compound weighted: 25/55/85% ramp', eq(wu.map(s => s.kg), [25, 55, 85]));
+    t('compound warm-up reps 10-8-6', eq(wu.map(s => s.reps), [10, 8, 6]));
+    t('all intent=warmup', wu.every(s => s.intent === 'warmup'));
+    t('compound assisted: 175/145/115% (inverted)', eq(W.buildWarmupSets('assisted', true, 20).map(s => s.kg), [35, 29, 23]));
+    const iso = W.buildWarmupSets('weighted', false, 100);
+    t('isolation weighted: single 50% set', eq(iso.map(s => s.kg), [50]));
+    t('isolation warm-up takes the LAST rep step (6)', iso[0].reps === 6);
+    t('isolation assisted: 150% complement', eq(W.buildWarmupSets('assisted', false, 20).map(s => s.kg), [30]));
+    t('bodyweight: no warm-ups', W.buildWarmupSets('bodyweight', true, 100).length === 0);
+    t('null base: no warm-ups', W.buildWarmupSets('weighted', true, null).length === 0);
+  }
+
+  g('suggestion algorithm (computeSuggestion)');
+  {
+    const keepS = T.D.sessions;
+    const mkSess = (date, sets, over = {}) => ({ id: 'T' + date, date, planId: null, planName: null, updatedAt: 1, exercises: [{ exId: 'zercher-squat', exName: 'Z', type: 'strength', regime: 'weighted', sets, ...over }] });
+    const P = W.profileFor('strength', 'weighted');
+
+    // fatigue drop-off (the motivating example): 2 of 3 sets held 12kg, third dropped
+    T.D.sessions = [mkSess('2026-07-01', [
+      { intent: 'work', reps: 5, kg: 12 }, { intent: 'work', reps: 5, kg: 12 }, { intent: 'work', reps: 5, kg: 10 },
+    ])];
+    let sug = W.computeSuggestion('zercher-squat', 'strength', 'weighted', P);
+    t('fatigue drop-off does NOT graduate', sug.graduated === false);
+    t('drop-off suggestion offers the working weight back (12)', sug.suggestedKg === 12 && sug.repsTarget === 5);
+
+    // full graduation: all 3 sets at top of range, same weight
+    T.D.sessions = [mkSess('2026-07-01', [
+      { intent: 'work', reps: 5, kg: 20 }, { intent: 'work', reps: 5, kg: 20 }, { intent: 'work', reps: 5, kg: 20 },
+    ])];
+    sug = W.computeSuggestion('zercher-squat', 'strength', 'weighted', P);
+    t('full target at top of range graduates', sug.graduated === true);
+    t('graduation bumps to 22.5 and resets reps to 2', sug.suggestedKg === 22.5 && sug.repsTarget === 2);
+
+    // assisted inversion incl. the 0kg full-graduation state
+    const PA = W.profileFor('hypertrophy', 'assisted');
+    T.D.sessions = [mkSess('2026-07-01', [{ intent: 'work', reps: 12, kg: 5 }], { type: 'hypertrophy', regime: 'assisted' })];
+    sug = W.computeSuggestion('zercher-squat', 'hypertrophy', 'assisted', PA);
+    t('assisted graduation reduces counterweight (5→2.5)', sug.graduated === true && sug.suggestedKg === 2.5);
+    T.D.sessions = [mkSess('2026-07-01', [{ intent: 'work', reps: 12, kg: 0 }], { type: 'hypertrophy', regime: 'assisted' })];
+    sug = W.computeSuggestion('zercher-squat', 'hypertrophy', 'assisted', PA);
+    t('0kg assisted set is real data, floors at 0', sug.graduated === true && sug.suggestedKg === 0);
+
+    // bodyweight opts out of graduation/stall
+    const PB = W.profileFor('hypertrophy', 'bodyweight');
+    T.D.sessions = [mkSess('2026-07-01', [{ intent: 'work', reps: 10 }], { type: 'hypertrophy', regime: 'bodyweight' }), mkSess('2026-06-28', [{ intent: 'work', reps: 10 }], { type: 'hypertrophy', regime: 'bodyweight' })];
+    sug = W.computeSuggestion('zercher-squat', 'hypertrophy', 'bodyweight', PB);
+    t('bodyweight never graduates, never stalls', sug.graduated === false && sug.stallStreak === 0 && sug.repsTarget === PB.repHigh);
+
+    // stall streak counts consecutive non-graduated sessions
+    T.D.sessions = [
+      mkSess('2026-07-05', [{ intent: 'work', reps: 3, kg: 20 }, { intent: 'work', reps: 3, kg: 20 }, { intent: 'work', reps: 3, kg: 20 }]),
+      mkSess('2026-07-01', [{ intent: 'work', reps: 4, kg: 20 }, { intent: 'work', reps: 3, kg: 20 }, { intent: 'work', reps: 3, kg: 20 }]),
+    ];
+    sug = W.computeSuggestion('zercher-squat', 'strength', 'weighted', P);
+    t('two stuck sessions → stallStreak 2', sug.stallStreak === 2);
+
+    // duplicate exercise entries in ONE session combine for history
+    T.D.sessions = [{ id: 'dup', date: '2026-07-01', planId: null, planName: null, updatedAt: 1, exercises: [
+      { exId: 'zercher-squat', exName: 'Z', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 20 }, { intent: 'work', reps: 5, kg: 20 }] },
+      { exId: 'zercher-squat', exName: 'Z', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 20 }] },
+    ] }];
+    const hist = W.getRecentWorkHistory('zercher-squat', 'strength', 'weighted');
+    t('superset duplicates combine into one session entry', hist.length === 1 && hist[0].length === 3);
+    sug = W.computeSuggestion('zercher-squat', 'strength', 'weighted', P);
+    t('combined duplicates can graduate together', sug.graduated === true);
+
+    // explicitly-unchecked sets are excluded; untouched legacy sets count
+    T.D.sessions = [mkSess('2026-07-01', [
+      { intent: 'work', reps: 5, kg: 20, completed: false }, { intent: 'work', reps: 5, kg: 20 },
+    ])];
+    const hist2 = W.getRecentWorkHistory('zercher-squat', 'strength', 'weighted');
+    t('completed:false excluded, absent counted', hist2.length === 1 && hist2[0].length === 1);
+
+    T.D.sessions = keepS;
+  }
+
+  // ── load & volume ──────────────────────────────────────────────────────────
+  g('load & volume');
+  {
+    const keepW = T.D.weights;
+    T.D.weights = [{ id: 'w1', date: '2026-07-20', kg: 80, updatedAt: 1 }];
+    t('bodyweight load = BW', W.actualLoad({}, 'bodyweight') === 80);
+    t('assisted load = BW − counterweight', W.actualLoad({ kg: 20 }, 'assisted') === 60);
+    t('assisted 0kg = full BW load', W.actualLoad({ kg: 0 }, 'assisted') === 80);
+    t('assisted at BW counterweight floors at 0', W.actualLoad({ kg: 80 }, 'assisted') === 0);
+    t("assisted '' = no data", W.actualLoad({ kg: '' }, 'assisted') === null);
+    t('weighted 0kg is real (0, not null)', W.actualLoad({ kg: 0 }, 'weighted') === 0);
+    t('volEx counts only counted work', W.volEx([
+      { intent: 'work', reps: 5, kg: 100 }, { intent: 'work', reps: 5, kg: 100, completed: false }, { intent: 'warmup', reps: 10, kg: 25 },
+    ], 'weighted') === 500);
+    T.D.weights = [];
+    t('no bodyweight logged → assisted load unknowable (null)', W.actualLoad({ kg: 20 }, 'assisted') === null);
+    T.D.weights = keepW;
+  }
+
+  // ── filter engine ──────────────────────────────────────────────────────────
+  g('filter engine');
+  {
+    const all = T.D.exercises;
+    const biceps = W.applyFilters(all, null, null, '', false, false, 'biceps', null);
+    t('muscle filter returns only that muscle', biceps.length > 0 && biceps.every(e => e.mainMuscle === 'biceps'));
+    t('muscle filter count matches manual count', biceps.length === all.filter(e => e.mainMuscle === 'biceps').length);
+    const dipTri = W.applyFilters(all, null, null, 'dip', false, false, 'triceps', null);
+    t('muscle+search isolates the upright dip variant', dipTri.length === 1 && dipTri[0].id === 'dip-gravitron-upright');
+    const dipChest = W.applyFilters(all, null, null, 'dip', false, false, 'chest', null);
+    t('muscle+search isolates the leaning dip variant', dipChest.length === 1 && dipChest[0].id === 'dip-gravitron');
+    t('pattern without muscle is ignored', W.applyFilters(all, null, null, '', false, false, null, 'curl').length === all.length);
+    t('strength type filter', W.applyFilters(all, 'strength', null, '', false, false, null, null).every(e => e.type === 'strength'));
+    t('unclassed filter empty on fully-classified seed', W.applyFilters(all, null, null, '', false, true, null, null).length === 0);
+  }
+
+  // ── plan import hardening ──────────────────────────────────────────────────
+  g('plan import (untrusted input)');
+  {
+    const exCount = T.D.exercises.length, planCount = T.D.plans.length;
+    W.applyImportedPlan({ name: 'T1', exercises: [{ id: 'bench-press', name: 'Bench press', type: 'strength', compound: true, regime: 'weighted' }] });
+    t('exact id match reuses local exercise', T.D.exercises.length === exCount);
+    W.applyImportedPlan({ name: 'T2', exercises: [{ id: 'foreign-xyz', name: 'BENCH PRESS', type: 'strength' }] });
+    t('name fallback (case-insensitive) despite foreign id', T.D.exercises.length === exCount);
+    W.applyImportedPlan({ name: 'T3', exercises: [{ id: 'evil-1', name: 'Foo', type: 'weird', regime: 'eccentric', compound: 'yes', mainMuscle: 'quadzilla', movementPattern: 'zzz', accessoryMuscles: ['nope', 'biceps', 7] }] });
+    const foo = T.D.exercises.find(e => e.id === 'evil-1');
+    t('unknown enums normalized (type/regime/compound)', foo && foo.type === 'hypertrophy' && foo.regime === 'weighted' && foo.compound === null);
+    t('unknown muscle/pattern → undefined strings', foo.mainMuscle === 'undefined' && foo.movementPattern === 'undefined');
+    t('accessory list filtered to real groups', eq(foo.accessoryMuscles, ['biceps']));
+    W.applyImportedPlan({ name: 'T4', exercises: [{ name: 'Bar Exercise No Id' }] });
+    const bar = T.D.exercises.find(e => e.name === 'Bar Exercise No Id');
+    t('id-less entry gets a fresh real id', !!bar && !!bar.id && bar.id !== 'undefined');
+    const exBefore = T.D.exercises.length;
+    W.applyImportedPlan({ name: 'T5', exercises: [{ id: 'no-name-entry' }, { id: 'bench-press', name: 'Bench press' }, { id: 'bench-press', name: 'Bench press' }] });
+    const t5 = T.D.plans.find(p => p.name === 'T5');
+    t('name-less entries dropped', T.D.exercises.length === exBefore && !T.D.exercises.some(e => e.id === 'no-name-entry'));
+    t('within-import duplicates de-duplicated', t5.exercises.length === 1);
+    // cleanup
+    T.D.plans = T.D.plans.filter(p => !/^T[1-5]$/.test(p.name));
+    T.D.exercises = T.D.exercises.filter(e => e.id !== 'evil-1' && e.id !== bar.id);
+    t('cleanup restored counts', T.D.exercises.length === exCount && T.D.plans.length === planCount);
+  }
+
+  // ── merge engine (the 2026-07-22 LWW fix) ──────────────────────────────────
+  g('merge engine');
+  {
+    const M = W.mergeCollection;
+    t('stale remote loses to newer local (THE fix)', M([{ id: 'a', n: 'NEW', updatedAt: 100 }], [{ id: 'a', n: 'old', updatedAt: 50 }], {}, {}).items[0].n === 'NEW');
+    t('newer remote wins over older local', M([{ id: 'a', n: 'old', updatedAt: 50 }], [{ id: 'a', n: 'new', updatedAt: 100 }], {}, {}).items[0].n === 'new');
+    t('exact tie → remote wins (legacy behavior)', M([{ id: 'a', n: 'L', updatedAt: 9 }], [{ id: 'a', n: 'R', updatedAt: 9 }], {}, {}).items[0].n === 'R');
+    t('no-timestamp legacy → remote wins', M([{ id: 'a', n: 'L' }], [{ id: 'a', n: 'R' }], {}, {}).items[0].n === 'R');
+    t('disjoint ids union', M([{ id: 'a' }], [{ id: 'b' }], {}, {}).items.length === 2);
+    let r = M([{ id: 'a', updatedAt: 50 }], [], {}, { a: 100 });
+    t('tombstone removes older item', r.items.length === 0 && r.tombstones.a === 100);
+    r = M([{ id: 'a', updatedAt: 200 }], [], {}, { a: 100 });
+    t('edit-after-delete survives and drops tombstone', r.items.length === 1 && !('a' in r.tombstones));
+    r = M([{ id: 'a', n: 'NEW', updatedAt: 300 }], [{ id: 'a', n: 'stale', updatedAt: 50 }], {}, { a: 100 });
+    t('LWW + tombstone interplay', r.items[0].n === 'NEW' && !('a' in r.tombstones));
+    t('later tombstone wins the tombstone union', M([], [], { a: 50 }, { a: 100 }).tombstones.a === 100);
+  }
+
+  g('schema guard');
+  {
+    const keepFlag = T.schemaAhead, keepSess = T.D.sessions.slice();
+    T.schemaAhead = false;
+    const refused = W.mergeRemote({ sessions: { schema: 99, sessions: [{ id: 'future', date: '2026-01-01', updatedAt: 9 }], tombstones: {} } });
+    t('newer-schema remote refused wholesale', refused === false && T.schemaAhead === true && !T.D.sessions.some(s => s.id === 'future'));
+    T.schemaAhead = false;
+    const okMerge = W.mergeRemote({ sessions: { schema: 2, sessions: [{ id: 'ok-sess', date: '2026-01-01', exercises: [], updatedAt: 9 }], tombstones: {} } });
+    t('current-schema remote merges fine', okMerge === true && T.D.sessions.some(s => s.id === 'ok-sess'));
+    t('legacy files (no schema field) read as v1 and merge', W.mergeRemote({ plans: { plans: [], tombstones: {} } }) === true);
+    T.D.sessions = keepSess; T.schemaAhead = keepFlag;
+  }
+
+  // ── set-metadata strip & scrub (the 2026-07-22 hygiene fix) ────────────────
+  g('set metadata strip & scrub');
+  {
+    const keepSess = T.D.sessions.slice(), keepS = T.S, keepTab = T.TAB;
+    T.S = { date: '2026-01-01', planId: null, planName: null, exercises: [{
+      exId: 'e1', exName: 'E1', type: 'strength', regime: 'weighted', _sug: { fake: true },
+      sets: [
+        { intent: 'work', reps: 5, kg: 100, lastReps: 5, lastKg: 97.5, sugReps: 3, sugKg: 100, phReps: '2–5', repsEdited: true, kgEdited: true, completed: true },
+        { intent: 'work', reps: 4, kg: 100, completed: false },
+        { intent: 'warmup', reps: 10, kg: 25, repsEdited: true },
+      ],
+    }] };
+    W.saveSession();
+    const saved = T.D.sessions.find(s => s.date === '2026-01-01');
+    t('saved sets carry only intent/reps/kg/completed', saved.exercises[0].sets.every(s => Object.keys(s).every(k => ['intent', 'reps', 'kg', 'completed'].includes(k))));
+    t('explicit true / explicit false / absent all preserved', saved.exercises[0].sets[0].completed === true && saved.exercises[0].sets[1].completed === false && !('completed' in saved.exercises[0].sets[2]));
+    t('_sug never persisted', !('_sug' in saved.exercises[0]));
+    T.D.sessions = T.D.sessions.filter(s => s.date !== '2026-01-01');
+
+    // scrub: legacy-shaped saved session gets cleaned on hydration paths
+    T.D.sessions.push({ id: 'legacy', date: '2026-01-02', updatedAt: 7, exercises: [{ exId: 'e', sets: [{ intent: 'work', reps: 5, kg: 100, sugKg: 99, phReps: 'x', kgEdited: true, futureField: 'keep' }] }] });
+    W.scrubSessionSetMetadata();
+    const leg = T.D.sessions.find(s => s.id === 'legacy').exercises[0].sets[0];
+    t('scrub removes scaffolding keys', !('sugKg' in leg) && !('phReps' in leg) && !('kgEdited' in leg));
+    t('scrub keeps unknown future fields (blocklist)', leg.futureField === 'keep');
+    t('scrub does not bump updatedAt', T.D.sessions.find(s => s.id === 'legacy').updatedAt === 7);
+    T.D.sessions = keepSess; T.S = keepS; T.TAB = keepTab; W.render();
+  }
+
+  // ── daily snapshots ────────────────────────────────────────────────────────
+  g('daily snapshots');
+  {
+    const LSW = W.localStorage;
+    ['0','1','2','3','4','5','6','prerestore'].forEach(s => LSW.removeItem('gym:snapshot:' + s));
+    const keepSess = T.D.sessions.slice();
+    T.D.sessions = [];
+    W.writeDailySnapshot();
+    t('empty state → no snapshot written', W.listSnapshots().length === 0);
+    T.D.sessions = [{ id: 'snapme', date: '2026-07-20', updatedAt: 1, exercises: [] }];
+    W.writeDailySnapshot();
+    const snaps = W.listSnapshots();
+    t('snapshot written once real data exists', snaps.length === 1 && snaps[0].date === T.today() && snaps[0].data.sessions.length === 1);
+    T.D.sessions.push({ id: 'later', date: '2026-07-21', updatedAt: 2, exercises: [] });
+    W.writeDailySnapshot();
+    t('same-day second call is a no-op (day-start state kept)', W.listSnapshots()[0].data.sessions.length === 1);
+    // restore round-trip, with confirm shimmed
+    const realConfirm = W.confirm; W.confirm = () => true;
+    W.restoreSnapshot(String(new Date().getDay()));
+    W.confirm = realConfirm;
+    t('restore replaced live data with the snapshot', T.D.sessions.length === 1 && T.D.sessions[0].id === 'snapme');
+    const afterRestore = W.listSnapshots();
+    t('pre-restore safety copy holds the replaced state', afterRestore.some(s => s.slot === 'prerestore' && s.data.sessions.length === 2));
+    ['0','1','2','3','4','5','6','prerestore'].forEach(s => LSW.removeItem('gym:snapshot:' + s));
+    T.D.sessions = keepSess; W.render();
+  }
+
+  // ── wrap-up ────────────────────────────────────────────────────────────────
+  g('wrap-up');
+  // Persist the restored (clean) state: several tests persist() mid-run
+  // (saveSession, restoreSnapshot, …), so without this final write the
+  // origin's localStorage would keep whatever the LAST mid-test persist
+  // happened to hold — leftover test sessions that then contaminate any
+  // manual poking at the app on this origin afterwards. (Found the hard
+  // way — a "leftover snapme session" confused a later check.)
+  await W.persistLocal();
+  t('final state persisted clean (no test leftovers in localStorage)', !JSON.parse(W.localStorage.getItem('gym:data')).sessions.some(s => String(s.id).startsWith('T2026') || ['dup','snapme','later','legacy','ok-sess'].includes(s.id)));
+  t('zero uncaught errors inside the app during the whole run', errors.length === 0, errors.join(' | '));
+
+  sumEl.textContent = `${pass} passed, ${fail} failed`;
+  sumEl.className = fail ? 'bad' : 'ok';
+  document.title = (fail ? '✗ ' : '✓ ') + document.title;
+  window.__TEST_RESULT__ = { pass, fail };
+})();
+</script>
+</body>
+</html>
