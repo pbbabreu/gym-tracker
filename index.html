@@ -215,6 +215,27 @@ function backfillExerciseClassification() {
   });
 }
 
+// ── Saved-session set scrub ───────────────────────────────────────────────────
+//
+// Cleanup twin of saveSession()'s metadata strip (section 19): sessions
+// saved before that strip existed carry render-time scaffolding on every
+// set (chip sources, dim-state flags, placeholder hints) that means nothing
+// as history and bloats every backup, localStorage write, and Gist push
+// forever. A BLOCKLIST of known-scaffolding keys, not an allowlist rebuild,
+// so any genuinely-new set field added in the future survives untouched.
+// Deliberately does NOT bump updatedAt — this isn't a user edit, and
+// inflating recency would let a merely-scrubbed copy beat a genuine remote
+// edit under mergeCollection()'s per-item LWW. Idempotent and cheap, so it
+// runs on every path that hydrates D.sessions (loadData local cache,
+// mergeRemote, applyData backup restore) — the exact same pattern
+// backfillExerciseClassification() above uses, for the same reason.
+const SET_SCAFFOLDING_KEYS = ['lastReps','lastKg','sugReps','sugKg','phReps','repsEdited','kgEdited'];
+function scrubSessionSetMetadata() {
+  D.sessions.forEach(sess => (sess.exercises||[]).forEach(ex => (ex.sets||[]).forEach(s => {
+    SET_SCAFFOLDING_KEYS.forEach(k => { if (k in s) delete s[k]; });
+  })));
+}
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  3. APPLICATION STATE
@@ -296,7 +317,15 @@ let _pickType = 'hypertrophy', _pickRegime = 'weighted';
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 const uid     = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
-const today   = () => new Date().toISOString().slice(0,10);
+// LOCAL date, deliberately NOT toISOString() (which is UTC): in any timezone
+// west of UTC — e.g. Brazil, UTC-3 — the UTC date rolls over at 21:00 local,
+// so an evening workout logged after that got stamped with TOMORROW's date.
+// Everything that keys off these strings (History ordering, bwIsStale()'s
+// staleness window, getRecentWorkHistory()'s newest-first sort feeding
+// suggestions) was silently wrong for late sessions. 'en-CA' is the one
+// locale whose date format is exactly YYYY-MM-DD, matching what
+// <input type="date"> and every date.localeCompare() in this file expect.
+const today   = () => new Date().toLocaleDateString('en-CA');
 const fmt     = d  => new Date(d+'T12:00:00').toLocaleDateString('pt-BR',{day:'numeric',month:'short',year:'numeric'});
 const fmtTime = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}) : '';
 const esc     = s  => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -328,22 +357,42 @@ const hasReps = s => s.reps !== '' && s.reps != null;
 // ║    gym-tracker-weights.json   — bodyweight log + its tombstones
 // ║
 // ║  Merge logic (mergeCollection(), below) — all four collections use the
-// ║  SAME rule: union by id, but a tombstoned id is removed again UNLESS
-// ║  the surviving copy's own updatedAt is newer than the deletion (meaning
-// ║  it was genuinely re-created/edited elsewhere after the delete, so that
-// ║  newer edit wins over the older tombstone). This is NOT simple
-// ║  "newer wins" per item — there's no per-item conflict resolution beyond
-// ║  the tombstone check; two concurrent non-delete edits to the same id
-// ║  still resolve as "whichever was applied to the Map last in the merge
-// ║  order wins," same as before tombstones existed. What tombstones add is
-// ║  specifically closing the deletion-resurrection gap: a plain id-union
-// ║  with no tombstones can never represent "this was intentionally
-// ║  removed," so a device that syncs before seeing a deletion would bring
-// ║  the item back and re-push it — tombstones are the fix for that one
-// ║  failure mode, not a general timestamp-based conflict resolver.
+// ║  SAME rule: union by id with per-item last-writer-wins (each item's own
+// ║  updatedAt decides; remote wins ties, which keeps legacy no-timestamp
+// ║  items on their original remote-wins behavior). On top of that,
+// ║  tombstones: a tombstoned id is removed again UNLESS the surviving
+// ║  copy's own updatedAt is newer than the deletion (meaning it was
+// ║  genuinely re-created/edited elsewhere after the delete, so that newer
+// ║  edit wins over the older tombstone). Tombstones exist to close the
+// ║  deletion-resurrection gap: a plain id-union can never represent "this
+// ║  was intentionally removed," so a device that synced before seeing a
+// ║  deletion would bring the item back and re-push it. The per-item LWW
+// ║  exists because gistSave() uploads whole collections — every push
+// ║  implicitly rewrites every item, so without a recency compare a stale
+// ║  device's push silently reverted other devices' newer edits.
+// ║
+// ║  Schema guard — every file gistSave() writes is stamped with
+// ║  SCHEMA_VERSION. If a fetch ever returns a file stamped NEWER than this
+// ║  app build understands, the app refuses to merge or push until it's
+// ║  been reloaded fresh (see mergeRemote()/gistSave()) — an outdated
+// ║  cached app writing back shapes it doesn't know about is how fields
+// ║  like tombstones would silently vanish. Backfills handle old→new data
+// ║  shapes; this guard handles the reverse direction, which backfills
+// ║  can't.
 // ║
 // ║  Config (token, gistId) stored separately, never exported.
 // ╚══════════════════════════════════════════════════════════════════════════════
+
+// Bumped whenever the shape of what gistSave() writes changes in a way an
+// older app version would mangle by writing back (dropping fields it doesn't
+// know it's holding). 1 = every file written before this field existed —
+// which is also what a missing `schema` reads as on fetch.
+const SCHEMA_VERSION = 2;
+// Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
+// true, mergeRemote() refuses to merge and gistSave() refuses to push.
+// Cleared only by a fresh page load (which, post-service-worker-v3, always
+// gets the current app when online).
+let _remoteSchemaAhead = false;
 
 // Safe localStorage wrapper — returns null instead of throwing in sandboxed envs
 const LS = {
@@ -472,15 +521,20 @@ function releaseSyncSlot() {
 // Push all four files to the Gist (fire-and-forget from persist())
 async function gistSave() {
   if (!CFG.token) return;
+  // Never let an app build overwrite data written by a NEWER one — this
+  // flag is set when a pull saw a schema stamp ahead of ours (see
+  // mergeRemote()). Checked before the busy/queue logic on purpose: a
+  // blocked push must not sit in the queue and fire later anyway.
+  if (_remoteSchemaAhead) { setSyncStatus('error'); return; }
   if (_syncBusy) { _syncQueued = true; return; }
   _syncBusy = true;
   setSyncStatus('syncing');
   const ts = D.lastModified;
   const ok = await gistWriteFiles({
-    'gym-tracker-sessions.json': { content: JSON.stringify({ sessions:D.sessions, tombstones:D.tombstones.sessions, lastModified:ts }, null,2) },
-    'gym-tracker-library.json':  { content: JSON.stringify({ exercises:D.exercises, tombstones:D.tombstones.exercises, lastModified:ts }, null,2) },
-    'gym-tracker-plans.json':    { content: JSON.stringify({ plans:D.plans, tombstones:D.tombstones.plans, lastModified:ts }, null,2) },
-    'gym-tracker-weights.json':  { content: JSON.stringify({ weights:D.weights, tombstones:D.tombstones.weights, lastModified:ts }, null,2) },
+    'gym-tracker-sessions.json': { content: JSON.stringify({ schema:SCHEMA_VERSION, sessions:D.sessions, tombstones:D.tombstones.sessions, lastModified:ts }, null,2) },
+    'gym-tracker-library.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, exercises:D.exercises, tombstones:D.tombstones.exercises, lastModified:ts }, null,2) },
+    'gym-tracker-plans.json':    { content: JSON.stringify({ schema:SCHEMA_VERSION, plans:D.plans, tombstones:D.tombstones.plans, lastModified:ts }, null,2) },
+    'gym-tracker-weights.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, weights:D.weights, tombstones:D.tombstones.weights, lastModified:ts }, null,2) },
   });
   setSyncStatus(ok ? 'ok' : 'error');
   releaseSyncSlot();
@@ -492,31 +546,49 @@ async function gistSave() {
 // of the background fetch+merge loadData() already does automatically.
 // Useful when you're about to start a workout and a session logged on
 // another device hasn't shown up in History yet.
+// Returns true only when the fetch AND merge both succeeded — the one
+// caller that chains a push off this (saveGithubConfig()) must never push
+// after a failed pull, or it would blind-overwrite the remote state it
+// just failed to read.
 async function gistPull() {
-  if (!CFG.token) { alert('Configure o token do GitHub primeiro.'); return; }
+  if (!CFG.token) { alert('Configure o token do GitHub primeiro.'); return false; }
   while (_syncBusy) await new Promise(r => setTimeout(r, 50)); // wait for any in-flight push/pull
   _syncBusy = true;
   setSyncStatus('syncing');
   const remote = await gistFetchAll();
-  if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return; }
-  mergeRemote(remote);
+  if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return false; }
+  if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return false; } // remote schema is newer than this app — see mergeRemote()
   await persistLocal();
   setSyncStatus('ok');
   render();
   releaseSyncSlot();
+  return true;
 }
 
-// Merges one collection: union by id (remote entry wins on a plain id
-// conflict — last write to the Map wins, no per-item timestamp compares
-// beyond the tombstone check below), then tombstones remove anything
-// they cover UNLESS the surviving item's own updatedAt is newer than the
-// deletion. Also unions the tombstone maps themselves (keeping the later
-// deletedAt per id) so a deletion recorded on either side sticks. See the
-// section 5 banner for why this exists — a plain union with no tombstones
-// let a deleted item come back to life the next time a stale device synced.
+// Merges one collection: union by id with per-item last-writer-wins (the
+// copy with the higher updatedAt is kept; remote wins ties), then
+// tombstones remove anything they cover UNLESS the surviving item's own
+// updatedAt is newer than the deletion. Also unions the tombstone maps
+// themselves (keeping the later deletedAt per id) so a deletion recorded
+// on either side sticks. See the section 5 banner for why this exists —
+// a plain union with no tombstones let a deleted item come back to life
+// the next time a stale device synced.
 function mergeCollection(local, remote, localTombstones, remoteTombstones) {
   const map = new Map(local.map(x => [x.id, x]));
-  (remote||[]).forEach(x => map.set(x.id, x));
+  // Per-item LWW, not blind "remote wins": gistSave() always uploads WHOLE
+  // collections, so every push implicitly rewrites every item in them, not
+  // just the one the user touched. Under blind remote-wins, any push from
+  // a device holding a stale copy (e.g. a tab left open since yesterday
+  // editing an unrelated plan) silently reverted newer edits everywhere —
+  // no concurrent edit to the same item needed. Comparing each item's own
+  // updatedAt closes that: the stale copy loses, the newer edit survives
+  // the round-trip and re-propagates. Remote wins ties (>=) on purpose:
+  // legacy items with no updatedAt compare 0 vs 0 and must keep the old
+  // remote-wins behavior they were originally written under.
+  (remote||[]).forEach(x => {
+    const cur = map.get(x.id);
+    if (!cur || (x.updatedAt||0) >= (cur.updatedAt||0)) map.set(x.id, x);
+  });
 
   const tombstones = { ...localTombstones };
   Object.entries(remoteTombstones||{}).forEach(([id, deletedAt]) => {
@@ -535,11 +607,22 @@ function mergeCollection(local, remote, localTombstones, remoteTombstones) {
 
 // Merge remote Gist data into D using mergeCollection() for all four
 // collections — see the section 5 banner for the shared merge rule.
+// Returns false (merging nothing at all) when any remote file was written
+// by a newer app version than this one — a partial old-shape/new-shape
+// merge is scarier than skipping a sync, and the next fresh load gets the
+// current app anyway.
 function mergeRemote(remote) {
+  const remoteSchema = Math.max(...[remote.sessions, remote.library, remote.plans, remote.weights].map(f => f?.schema || 1));
+  if (remoteSchema > SCHEMA_VERSION) { _remoteSchemaAhead = true; return false; }
+
   if (remote.sessions?.sessions) {
     const { items, tombstones } = mergeCollection(D.sessions, remote.sessions.sessions, D.tombstones.sessions, remote.sessions.tombstones);
     D.sessions = items.sort((a,b) => b.date.localeCompare(a.date));
     D.tombstones.sessions = tombstones;
+    // A remote device running an app version older than the saveSession()
+    // metadata strip can push sets still carrying chip/dim scaffolding —
+    // scrub after every merge, same reasoning as the backfill below.
+    scrubSessionSetMetadata();
   }
 
   if (remote.library?.exercises) {
@@ -563,6 +646,7 @@ function mergeRemote(remote) {
     D.weights = items;
     D.tombstones.weights = tombstones;
   }
+  return true;
 }
 
 // ── persist() — called after every mutation ───────────────────────────────────
@@ -595,6 +679,9 @@ async function loadData() {
     // existed — see backfillExerciseClassification() (section 2). A no-op
     // once every exercise has been through it once.
     backfillExerciseClassification();
+    // Same idea for sessions saved before the set-metadata strip existed —
+    // see scrubSessionSetMetadata() (section 2). Also a no-op once clean.
+    scrubSessionSetMetadata();
   }
   render();
 
@@ -617,7 +704,7 @@ async function loadData() {
   const remote = await gistFetchAll();
   if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return; }
 
-  mergeRemote(remote);
+  if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return; } // remote schema newer than this app — don't merge, don't push
   await persistLocal();
   setSyncStatus('ok');
   render();
@@ -2119,7 +2206,9 @@ function startPlan(id) {
     planId: p.id, planName: p.name, date: today(),
     exercises: (p.exercises||[]).map(exId => {
       const ex = D.exercises.find(e=>e.id===exId);
-      const o  = { exId, exName:ex?ex.name:'?', type:ex?.type||'hypertrophy', compound:ex?.compound, regime:ex?.regime||'weighted', sets:[] };
+      // '(removido)' — same label the Plans tab itself shows for a plan
+      // entry whose exercise was deleted from the library, not a bare '?'.
+      const o  = { exId, exName:ex?ex.name:'(removido)', type:ex?.type||'hypertrophy', compound:ex?.compound, regime:ex?.regime||'weighted', sets:[] };
       o.sets   = buildSetsFromMemory(o);
       return o;
     })
@@ -2139,7 +2228,28 @@ function saveSession() {
   // copy (see its own comment) — this strip is defense in depth, so a
   // stale/wrong cached suggestion can never masquerade as history even if
   // some future code path forgets to refresh it.
-  const exercises = S.exercises.map(({_sug, ...ex}) => ex);
+  // Sets get the same treatment: persist only what a saved set MEANS —
+  // intent, the numbers, and the explicit completed state. Everything else
+  // on a live row (lastReps/lastKg/sugReps/sugKg = chip sources, phReps =
+  // placeholder hint, repsEdited/kgEdited = dim-state flags) is render-time
+  // scaffolding: meaningless as history (a stored "suggestion" says nothing
+  // later), a source of stale chips when re-editing old sessions, and pure
+  // bloat multiplied across every set in every backup and Gist push
+  // forever. Nothing is lost: editSess() force-sets the edited flags on
+  // load anyway, and chips are rebuilt from live history, not saved data.
+  // scrubSessionSetMetadata() (section 2) is this strip's cleanup twin for
+  // sessions saved before it existed.
+  const exercises = S.exercises.map(({_sug, ...ex}) => ({
+    ...ex,
+    sets: (ex.sets||[]).map(s => {
+      const set = { intent: s.intent, reps: s.reps, kg: s.kg };
+      // `completed` only when it was ever explicitly toggled — an absent
+      // field means "legacy / never touched, counted by default" and that
+      // three-state distinction (see isCountedWork()) must survive the save.
+      if (s.completed !== undefined) set.completed = s.completed;
+      return set;
+    })
+  }));
   const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, exercises, updatedAt:Date.now() };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
@@ -2277,6 +2387,7 @@ function openBackup() {
   const fn       = `gym-tracker-${date}.json`;
   const json     = JSON.stringify(D, null, 2);
   const syncMsg  = !CFG.token                   ? 'GitHub não configurado'
+    : _remoteSchemaAhead                         ? '⚠ Dados na nuvem vêm de uma versão mais nova do app — recarregue para atualizar'
     : _syncStatus?.state==='ok'                  ? `✓ Sincronizado · ${fmtTime(_syncStatus.time)}`
     : _syncStatus?.state==='error'               ? '⚠ Erro de sincronização'
     : _syncStatus?.state==='syncing'             ? '🔄 Sincronizando...'
@@ -2324,7 +2435,26 @@ async function saveGithubConfig() {
   CFG.gistId = (document.getElementById('gh-gist')?.value||'').trim();
   await saveConfig();
   closeModal();
-  if (CFG.token) { setSyncStatus('syncing'); await gistSave(); render(); }
+  if (!CFG.token) return;
+  if (CFG.gistId) {
+    // An EXISTING Gist ID was entered (the typical second-device / new-
+    // phone setup) — pull-and-merge BEFORE the first push. Pushing first
+    // would overwrite the whole Gist with this device's local state, which
+    // on a fresh install is four empty collections: the entire remote
+    // history wiped at HEAD, in exactly the "new phone, get my data back"
+    // scenario this button exists for. The union+LWW merge makes the pull
+    // side safe by construction; only push once the pull genuinely
+    // succeeded — a failed fetch must NOT fall through to a blind
+    // overwrite of remote state we couldn't read.
+    const ok = await gistPull();
+    if (ok) await gistSave();
+  } else {
+    // No Gist ID yet → there's no remote state to protect; pushing is what
+    // CREATES the Gist (gistWriteFiles' POST path stores the new id).
+    setSyncStatus('syncing');
+    await gistSave();
+  }
+  render();
 }
 
 function copyBackup() {
@@ -2356,6 +2486,9 @@ function applyData(p) {
   // An older backup predates muscle-group classification entirely — same
   // backfill loadData() runs on its own local-cache load.
   backfillExerciseClassification();
+  // And the same for set scaffolding in sessions saved before the
+  // saveSession() metadata strip — see scrubSessionSetMetadata() (section 2).
+  scrubSessionSetMetadata();
 }
 
 function importBackup() {
@@ -2394,6 +2527,15 @@ if ('serviceWorker' in navigator) {
 // ║    2. Load local data → render immediately
 // ║    3. Fetch Gist in background → merge → re-render if newer
 // ╚══════════════════════════════════════════════════════════════════════════════
+
+// Ask the browser to mark this origin's storage persistent — best-effort,
+// fire-and-forget (Chrome grants it silently for installed PWAs, other
+// browsers may ignore it). Without it, localStorage and the SW cache are
+// "best effort" storage that an OS-level storage crunch — or weeks of
+// disuse on iOS — is allowed to evict wholesale; with it, eviction needs
+// explicit user action. The Gist copy is the backstop either way, but
+// local data shouldn't be one cache-pressure event away from a restore.
+try { navigator.storage?.persist?.(); } catch(e) {}
 
 loadData();
 
