@@ -431,6 +431,72 @@ async function persistLocal() {
   try { await window.storage.set('gym:data', s); } catch(e) {}
 }
 
+// ── Daily local snapshots ─────────────────────────────────────────────────────
+//
+// A rolling 7-slot safety net, one slot per weekday (so up to a week of
+// look-back before slots recycle): the first load of each calendar day
+// stashes D as-loaded — BEFORE any remote merge can touch it — into
+// gym:snapshot:<weekday>. Restorable from the Backup & Sync modal. This
+// protects against the failure modes sync itself can't: a bad merge, an
+// app bug mangling data, a fat-fingered "Importar e substituir". Honest
+// limitation: a restore replaces LOCAL data only, it does not rewind the
+// Gist — anything the Gist holds with a newer updatedAt (including
+// tombstones) re-wins on the next merge; full remote rewind is the manual
+// Gist-revision procedure documented in the project vault. Best-effort by
+// design: a quota error just means no snapshot today, never a blocked load.
+const SNAPSHOT_PREFIX = 'gym:snapshot:';
+
+function writeDailySnapshot() {
+  try {
+    // An empty/fresh install has nothing worth keeping — the seed library
+    // alone is reconstructible from library.json at any time.
+    if (!D.sessions.length && !D.plans.length && !D.weights.length) return;
+    const key = SNAPSHOT_PREFIX + new Date().getDay();
+    const existing = LS.get(key);
+    if (existing) {
+      try { if (JSON.parse(existing).date === today()) return; } catch(e) {} // unparseable slot → overwrite it
+    }
+    LS.set(key, JSON.stringify({ date: today(), data: D }));
+  } catch(e) {}
+}
+
+// All existing snapshots, newest first, for the restore list in the
+// Backup & Sync modal. 'prerestore' is the automatic safety copy of
+// whatever was live immediately before the last restore/import — so even
+// a wrong restore is itself undoable.
+function listSnapshots() {
+  const out = [];
+  ['0','1','2','3','4','5','6','prerestore'].forEach(slot => {
+    const raw = LS.get(SNAPSHOT_PREFIX + slot);
+    if (!raw) return;
+    try {
+      const p = JSON.parse(raw);
+      if (p?.date && p?.data) out.push({ slot, date: p.date, data: p.data });
+    } catch(e) {}
+  });
+  return out.sort((a,b) => b.date.localeCompare(a.date));
+}
+
+// Stashes the CURRENT state into the prerestore slot. Called before
+// anything wholesale-replaces D (snapshot restore, backup import).
+function stashPreRestore() {
+  try { LS.set(SNAPSHOT_PREFIX + 'prerestore', JSON.stringify({ date: today(), data: D })); } catch(e) {}
+}
+
+function restoreSnapshot(slot) {
+  const raw = LS.get(SNAPSHOT_PREFIX + slot);
+  if (!raw) return;
+  let p = null;
+  try { p = JSON.parse(raw); } catch(e) {}
+  if (!p?.data) { alert('Snapshot corrompido — não foi possível restaurar.'); return; }
+  if (!confirm(`Substituir os dados atuais pelo snapshot de ${fmt(p.date)}?\n\nOs dados atuais ficam guardados em "antes da última restauração".`)) return;
+  stashPreRestore();
+  applyData(p.data);   // same validated path a backup import uses (backfill + scrub included)
+  persist();
+  closeModal();
+  render();
+}
+
 // ── Gist helpers ──────────────────────────────────────────────────────────────
 
 // Read one file from the Gist; returns parsed object or null
@@ -513,6 +579,20 @@ async function gistFetchAll() {
 let _syncBusy = false;
 let _syncQueued = false;
 
+// Consecutive failed Gist round-trips (push or pull) while apparently
+// ONLINE — attempts with navigator.onLine === false don't count, because
+// failing to sync at the gym with no signal is expected, not a problem
+// worth nagging about. Any success resets to 0. At 3+, the banner in
+// buildPage() surfaces it: the tiny red dot alone proved too quiet for a
+// genuinely broken setup (expired PAT, revoked scope), which otherwise
+// stays invisible until someone happens to open the Backup modal.
+let _syncFailStreak = 0;
+
+// Stamped on every successful fetch+merge (loadData's background pull and
+// gistPull) — read by the visibilitychange resume-pull below to rate-limit
+// itself.
+let _lastPullOk = 0;
+
 function releaseSyncSlot() {
   _syncBusy = false;
   if (_syncQueued) { _syncQueued = false; gistSave(); }
@@ -536,6 +616,8 @@ async function gistSave() {
     'gym-tracker-plans.json':    { content: JSON.stringify({ schema:SCHEMA_VERSION, plans:D.plans, tombstones:D.tombstones.plans, lastModified:ts }, null,2) },
     'gym-tracker-weights.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, weights:D.weights, tombstones:D.tombstones.weights, lastModified:ts }, null,2) },
   });
+  if (ok) _syncFailStreak = 0;
+  else if (navigator.onLine !== false) _syncFailStreak++;
   setSyncStatus(ok ? 'ok' : 'error');
   releaseSyncSlot();
 }
@@ -556,14 +638,36 @@ async function gistPull() {
   _syncBusy = true;
   setSyncStatus('syncing');
   const remote = await gistFetchAll();
-  if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return false; }
-  if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return false; } // remote schema is newer than this app — see mergeRemote()
+  if (!remote) { if (navigator.onLine !== false) _syncFailStreak++; setSyncStatus('error'); releaseSyncSlot(); return false; }
+  if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return false; } // remote schema is newer than this app — see mergeRemote(); not a failure streak
   await persistLocal();
+  _syncFailStreak = 0;
+  _lastPullOk = Date.now();
   setSyncStatus('ok');
   render();
   releaseSyncSlot();
   return true;
 }
+
+// ── Resume pull ───────────────────────────────────────────────────────────────
+//
+// An installed PWA can sit warm in the app switcher for days, and
+// loadData()'s background pull only runs on a genuine cold start — so
+// "phone doesn't see the session logged on the desktop yesterday" kept
+// happening until a manual Forçar download. This fires the same queued
+// fetch+merge whenever the app becomes visible again, rate-limited by
+// _lastPullOk so ordinary tab-switching doesn't hammer the API. On a
+// successful pull it also pushes the merged result back (same convergence
+// step loadData's cold-start pull does).
+const RESUME_PULL_MIN_MS = 5 * 60 * 1000;
+document.addEventListener('visibilitychange', async () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!CFG.token || !CFG.gistId) return;   // sync not configured
+  if (_remoteSchemaAhead) return;          // frozen until a fresh reload anyway
+  if (Date.now() - _lastPullOk < RESUME_PULL_MIN_MS) return;
+  const ok = await gistPull();             // queued — can never race an in-flight push
+  if (ok) gistSave();
+});
 
 // Merges one collection: union by id with per-item last-writer-wins (the
 // copy with the higher updatedAt is kept; remote wins ties), then
@@ -682,6 +786,9 @@ async function loadData() {
     // Same idea for sessions saved before the set-metadata strip existed —
     // see scrubSessionSetMetadata() (section 2). Also a no-op once clean.
     scrubSessionSetMetadata();
+    // First load of the day → stash the as-loaded state (pre-any-merge)
+    // into today's weekday snapshot slot. See writeDailySnapshot().
+    writeDailySnapshot();
   }
   render();
 
@@ -702,10 +809,12 @@ async function loadData() {
   _syncBusy = true;
   setSyncStatus('syncing');
   const remote = await gistFetchAll();
-  if (!remote) { setSyncStatus('error'); releaseSyncSlot(); return; }
+  if (!remote) { if (navigator.onLine !== false) _syncFailStreak++; setSyncStatus('error'); releaseSyncSlot(); return; }
 
   if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return; } // remote schema newer than this app — don't merge, don't push
   await persistLocal();
+  _syncFailStreak = 0;
+  _lastPullOk = Date.now();
   setSyncStatus('ok');
   render();
   releaseSyncSlot();
@@ -1139,7 +1248,33 @@ function buildPage() {
              : TAB==='library' ? buildLibrary()
              : TAB==='plans'   ? buildPlans()
              :                   buildWeight();
-  return `<div style="min-height:100vh">${tabBar}<div style="padding:16px">${body}</div></div>`;
+  return `<div style="min-height:100vh">${tabBar}<div id="sync-banner">${syncProblemBanner()}</div><div style="padding:16px">${body}</div></div>`;
+}
+
+// Cross-tab problem banner, shown directly under the tab bar when sync is
+// genuinely broken (not just a transient blip): either the remote data is
+// from a newer app version (see SCHEMA_VERSION) or 3+ consecutive online
+// round-trips have failed (see _syncFailStreak — an expired/revoked PAT
+// looks exactly like this). Rendered by buildPage() and ALSO refreshed
+// in place by setSyncStatus() via updateSyncBanner() — same pattern as the
+// sync dot — so it appears/clears promptly without forcing a full render
+// mid-interaction (a background render() would blow away input focus,
+// exactly what setVal() is built to avoid).
+function syncProblemBanner() {
+  const style = `background:#1e1a00;border-bottom:1px solid #5a4a00;padding:9px 14px;font-size:12px;color:#e6c84a;display:flex;align-items:center;gap:10px`;
+  if (_remoteSchemaAhead) return `<div style="${style}">
+    <span style="flex:1">Dados na nuvem vêm de uma versão mais nova do app — recarregue para atualizar.</span>
+    ${Bs(BG3,TX,'Recarregar','location.reload()')}
+  </div>`;
+  if (_syncFailStreak >= 3) return `<div style="${style}">
+    <span style="flex:1">Sincronização falhando (${_syncFailStreak} tentativas) — verifique o token e a conexão.</span>
+    ${Bs(BG3,TX,'Abrir','openBackup()')}
+  </div>`;
+  return '';
+}
+function updateSyncBanner() {
+  const el = document.getElementById('sync-banner');
+  if (el) el.innerHTML = syncProblemBanner();
 }
 
 function setTab(t) {
@@ -1149,7 +1284,7 @@ function setTab(t) {
 }
 
 // Sync status dot — green=ok, red=error, yellow=syncing
-function setSyncStatus(state) { _syncStatus = { state, time: Date.now() }; updateSyncDot(); }
+function setSyncStatus(state) { _syncStatus = { state, time: Date.now() }; updateSyncDot(); updateSyncBanner(); }
 function updateSyncDot() {
   const el = document.getElementById('sync-dot');
   if (!el) return;
@@ -2427,7 +2562,27 @@ function openBackup() {
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:11px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box;height:80px;font-family:monospace;resize:none;line-height:1.4"></textarea>
     <div id="imp-err" style="font-size:12px;color:${CR};margin-bottom:8px;display:none">JSON inválido — verifique o conteúdo.</div>
     ${B(CG,TX,'Importar e substituir dados','importBackup()')}
-    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0')}`);
+
+    <!-- Local snapshots — see writeDailySnapshot() (section 5) -->
+    <label style="font-size:12px;color:${DM};margin:16px 0 2px;display:block">Snapshots locais</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:8px;line-height:1.5">Um snapshot dos seus dados é guardado automaticamente no primeiro uso de cada dia (últimos 7 dias, neste aparelho). Restaurar substitui os dados locais — o estado atual fica guardado em "antes da última restauração".</div>
+    ${(() => {
+      const snaps = listSnapshots();
+      if (!snaps.length) return `<div style="font-size:12px;color:${DM};padding:6px 0 2px">Nenhum snapshot ainda.</div>`;
+      return snaps.map(s => {
+        const label  = s.slot === 'prerestore' ? 'Antes da última restauração' : fmt(s.date);
+        const counts = `${(s.data.sessions||[]).length} treino${(s.data.sessions||[]).length!==1?'s':''} · ${(s.data.exercises||[]).length} ex. · ${(s.data.weights||[]).length} peso${(s.data.weights||[]).length!==1?'s':''}`;
+        return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:.5px solid ${BD}">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600">${label}</div>
+            <div style="font-size:11px;color:${DM};margin-top:1px">${counts}</div>
+          </div>
+          ${Bs(BG3,TX,'Restaurar',`restoreSnapshot('${s.slot}')`,';padding:6px 10px;font-size:12px')}
+        </div>`;
+      }).join('');
+    })()}
+
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
 }
 
 async function saveGithubConfig() {
@@ -2497,6 +2652,9 @@ function importBackup() {
   try {
     const p=JSON.parse(json);
     if(!Array.isArray(p.exercises)||!Array.isArray(p.plans)||!Array.isArray(p.sessions)||!Array.isArray(p.weights)) throw new Error();
+    // Same pre-replacement safety copy a snapshot restore takes — a wrong
+    // import is undoable from the "antes da última restauração" slot.
+    stashPreRestore();
     applyData(p); persist(); closeModal(); render();
   } catch(e) { if(err)err.style.display='block'; }
 }
