@@ -2,7 +2,10 @@
 // matters as much as the code change: it forces every installed device to
 // reinstall this SW and re-cache CURRENT files, replacing whatever stale
 // copy has been frozen in the old cache since that device's last SW update.
-const CACHE = 'gym-tracker-v3';
+// v4: vendor/supabase.js joined ASSETS — it must be in the install-time
+// cache or the first OFFLINE load after an online one would boot the app
+// without window.supabase (login/account sync silently absent).
+const CACHE = 'gym-tracker-v4';
 // Relative (not root-absolute) paths on purpose: this app is hosted at a
 // GitHub Pages *project* site (pbbabreu.github.io/gym-tracker/), not the
 // domain root. Root-absolute paths like '/index.html' resolve against the
@@ -10,7 +13,7 @@ const CACHE = 'gym-tracker-v3';
 // request fails, so the old '/'-prefixed list silently broke offline
 // caching entirely. Relative paths resolve against this file's own
 // location instead, so they work regardless of the site's subpath.
-const ASSETS = ['./', './index.html', './manifest.json', './library.json'];
+const ASSETS = ['./', './index.html', './manifest.json', './library.json', './vendor/supabase.js'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));

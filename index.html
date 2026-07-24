@@ -20,6 +20,11 @@ input[type=number]{-moz-appearance:textfield}
 </head>
 <body>
 <div id="root"></div>
+<!-- Vendored Supabase client (see vendor/supabase.js header) — must load
+     before the app script below, which reads window.supabase at startup.
+     If it ever fails to load (e.g. a pre-v4 SW cache), the app degrades to
+     local-only + Gist sync: everything guards on window.supabase existing. -->
+<script src="vendor/supabase.js"></script>
 <script>
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -279,8 +284,12 @@ let D = {
                       // updatedAt handles that, see mergeCollection()).
 };
 
-// Sync config — stored separately, never exported in data backups
-let CFG = { token: '', gistId: '' };
+// Sync config — stored separately, never exported in data backups.
+// driver: which remote transport syncs the data — 'supabase' (account-based,
+// the default for fresh installs) or 'gist' (the original PAT+Gist setup,
+// kept as the legacy driver until every existing device migrates). Empty
+// string = not chosen yet; syncDriver() resolves the effective value.
+let CFG = { token: '', gistId: '', driver: '' };
 
 // Active session — null when no workout is in progress
 let S = null;
@@ -379,18 +388,24 @@ const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
-// ║  5. STORAGE — localStorage · window.storage · GitHub Gist
+// ║  5. STORAGE & SYNC — localStorage · window.storage · remote driver
 // ║
 // ║  Three-layer storage strategy:
 // ║    1. localStorage   — fast, survives refresh, works on GitHub Pages
 // ║    2. window.storage — Claude artifact fallback
-// ║    3. GitHub Gist    — cross-device sync source of truth
-// ║
-// ║  The Gist stores FOUR independent files, each with its own lastModified:
-// ║    gym-tracker-sessions.json  — sessions + their tombstones
-// ║    gym-tracker-library.json   — exercises + their tombstones
-// ║    gym-tracker-plans.json     — plans + their tombstones
-// ║    gym-tracker-weights.json   — bodyweight log + its tombstones
+// ║    3. Remote driver  — cross-device sync source of truth, one of two
+// ║       transports behind the same remoteSave()/remotePull() interface:
+// ║         · Supabase (default for fresh installs) — email magic-link
+// ║           account; five user_blobs rows, one per collection, guarded
+// ║           by row-level security. See "Supabase account & client".
+// ║         · GitHub Gist (legacy) — five JSON files in a private Gist,
+// ║           the original PAT-based setup, kept until every existing
+// ║           device migrates.
+// ║       Both carry the SAME five payloads (buildRemotePayload() is the
+// ║       single source of the shape): sessions / library / plans /
+// ║       weights / gyms, each with its own tombstones + lastModified.
+// ║       Everything below the transport — queue, merge, tombstones,
+// ║       schema guard — is driver-blind.
 // ║
 // ║  Merge logic (mergeCollection(), below) — all four collections use the
 // ║  SAME rule: union by id with per-item last-writer-wins (each item's own
@@ -403,14 +418,14 @@ const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 // ║  deletion-resurrection gap: a plain id-union can never represent "this
 // ║  was intentionally removed," so a device that synced before seeing a
 // ║  deletion would bring the item back and re-push it. The per-item LWW
-// ║  exists because gistSave() uploads whole collections — every push
+// ║  exists because remoteSave() uploads whole collections — every push
 // ║  implicitly rewrites every item, so without a recency compare a stale
 // ║  device's push silently reverted other devices' newer edits.
 // ║
-// ║  Schema guard — every file gistSave() writes is stamped with
+// ║  Schema guard — every file remoteSave() writes is stamped with
 // ║  SCHEMA_VERSION. If a fetch ever returns a file stamped NEWER than this
 // ║  app build understands, the app refuses to merge or push until it's
-// ║  been reloaded fresh (see mergeRemote()/gistSave()) — an outdated
+// ║  been reloaded fresh (see mergeRemote()/remoteSave()) — an outdated
 // ║  cached app writing back shapes it doesn't know about is how fields
 // ║  like tombstones would silently vanish. Backfills handle old→new data
 // ║  shapes; this guard handles the reverse direction, which backfills
@@ -419,7 +434,7 @@ const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 // ║  Config (token, gistId) stored separately, never exported.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
-// Bumped whenever the shape of what gistSave() writes changes in a way an
+// Bumped whenever the shape of what remoteSave() writes changes in a way an
 // older app version would mangle by writing back (dropping fields it doesn't
 // know it's holding). 1 = every file written before this field existed —
 // which is also what a missing `schema` reads as on fetch.
@@ -430,7 +445,7 @@ const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 //     makes automatic when online).
 const SCHEMA_VERSION = 3;
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
-// true, mergeRemote() refuses to merge and gistSave() refuses to push.
+// true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
 // gets the current app when online).
 let _remoteSchemaAhead = false;
@@ -446,9 +461,9 @@ const LS = {
 async function loadConfig() {
   try {
     const raw = LS.get('gym:config');
-    if (raw) { const c=JSON.parse(raw); CFG.token=c.token||''; CFG.gistId=c.gistId||''; return; }
+    if (raw) { const c=JSON.parse(raw); CFG.token=c.token||''; CFG.gistId=c.gistId||''; CFG.driver=c.driver||''; return; }
     const r = await window.storage.get('gym:config');
-    if (r?.value) { const c=JSON.parse(r.value); CFG.token=c.token||''; CFG.gistId=c.gistId||''; }
+    if (r?.value) { const c=JSON.parse(r.value); CFG.token=c.token||''; CFG.gistId=c.gistId||''; CFG.driver=c.driver||''; }
   } catch(e) {}
 }
 
@@ -456,6 +471,101 @@ async function saveConfig() {
   const s = JSON.stringify(CFG);
   LS.set('gym:config', s);
   try { await window.storage.set('gym:config', s); } catch(e) {}
+}
+
+// ── Supabase account & client ─────────────────────────────────────────────────
+//
+// The account-based sync backend (see the vault's multi-user design): email
+// magic-link login, one private row per user per collection (user_blobs),
+// row-level security as the boundary. The client-side merge machinery
+// (queue / per-item LWW / tombstones / schema guard) is transport-agnostic
+// and identical for both drivers — Supabase changes WHERE the five payloads
+// live, never how they reconcile.
+//
+// SUPABASE_KEY is the *publishable* key — public by design (it ships to
+// every visitor, like any Supabase app); RLS is the real security boundary.
+// The service_role key must never appear anywhere in this repo.
+const SUPABASE_URL = 'https://grjssghmulifsaumweci.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_XFfBUF2CPjA-mJEbp90zYw_lgTQL-f0';
+
+// null when vendor/supabase.js didn't load (a pre-v4 SW cache, an exotic
+// sandbox) — every Supabase path guards on this and the app degrades to
+// local-only (+ Gist, if configured).
+let sb = null;
+// Current auth session, null = not logged in. Kept fresh by
+// onAuthStateChange; loadData() additionally awaits the initial restore so
+// a cold start's background pull can't race the SDK reading its stored
+// session out of localStorage.
+let sbSession = null;
+
+if (window.supabase && SUPABASE_URL) {
+  sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+  sb.auth.onAuthStateChange((event, session) => {
+    sbSession = session;
+    // Only a genuinely fresh SIGNED_IN (the magic-link landing) auto-
+    // connects — NOT the INITIAL_SESSION replay every load fires, which
+    // would double-pull alongside loadData()'s own background fetch. And
+    // only when the driver already resolves to supabase (fresh installs):
+    // a Gist-configured device switches by explicit user action instead
+    // (the "usar esta conta" button → connectSupabaseSync()).
+    // This can fire while loadData() is still mid-startup — deliberately
+    // fine: the sync queue serializes the network legs, and pull-first +
+    // union/LWW make any interleaving converge to the same state (a pull
+    // is idempotent; nothing here can blank or clobber either side).
+    if (event === 'SIGNED_IN' && syncDriver() === 'supabase') connectSupabaseSync();
+    updateSyncBanner();
+  });
+}
+
+// Sends the magic-link email. shouldCreateUser is deliberately left at its
+// default (true): whether an unknown email may create an account is
+// governed SERVER-side by the project's "allow new sign-ups" setting —
+// invite-only is enforced where it can't be bypassed, not in client code.
+async function sbSignIn(email) {
+  if (!sb) return { error: { message: 'cliente Supabase não carregado' } };
+  return sb.auth.signInWithOtp({
+    email,
+    // Lands back wherever the app is running from (production, or the
+    // local dev server when that origin is on the auth redirect allowlist);
+    // anything not allowlisted falls back to the project's Site URL.
+    options: { emailRedirectTo: location.origin + location.pathname },
+  });
+}
+
+async function sbSignOut() {
+  if (sb) { try { await sb.auth.signOut(); } catch(e) {} } // clears the SDK's stored session
+  sbSession = null;
+  closeModal();
+  render();
+}
+
+// Which transport is in effect. An explicit choice wins; otherwise a device
+// with a working Gist config keeps using it (existing installs change
+// nothing until their user opts in), and everything else — i.e. every fresh
+// family install — defaults to the account backend.
+function syncDriver() {
+  if (CFG.driver) return CFG.driver;
+  return (CFG.token && CFG.gistId) ? 'gist' : 'supabase';
+}
+
+// "Can remote sync actually run right now" — gates persist()'s fire-and-
+// forget push, the background/resume pulls, and remotePull's button path.
+function syncConfigured() {
+  return syncDriver() === 'gist' ? !!(CFG.token && CFG.gistId) : !!(sb && sbSession);
+}
+
+// Flips this device to the account backend and does first-contact sync:
+// pull-and-merge BEFORE the first push — the same discipline
+// saveGithubConfig() enforces for Gist, for the same reason: a fresh login
+// on a new phone must hydrate FROM the account, never blank it. Union+LWW
+// makes the pull side safe by construction; a failed pull blocks the push.
+async function connectSupabaseSync() {
+  if (!sb || !sbSession) return;
+  CFG.driver = 'supabase';
+  await saveConfig();
+  const ok = await remotePull();
+  if (ok) await remoteSave();
+  render();
 }
 
 // ── Local cache (all four data slices) ───────────────────────────────────────
@@ -606,9 +716,85 @@ async function gistFetchAll() {
   } catch(e) { return null; }
 }
 
+// ── Remote payload (shared by both drivers) ──────────────────────────────────
+
+// The five collection payloads, built in ONE place — the single source of
+// the remote data shape for BOTH drivers. The Gist driver stringifies each
+// into its own file; the Supabase driver stores each as one user_blobs
+// row's jsonb content. Identical shape either way — that's what makes
+// switching drivers a transport change rather than a data migration.
+function buildRemotePayload() {
+  const ts = D.lastModified;
+  return {
+    sessions: { schema:SCHEMA_VERSION, sessions:D.sessions,  tombstones:D.tombstones.sessions, lastModified:ts },
+    library:  { schema:SCHEMA_VERSION, exercises:D.exercises, tombstones:D.tombstones.exercises, lastModified:ts },
+    plans:    { schema:SCHEMA_VERSION, plans:D.plans,         tombstones:D.tombstones.plans,     lastModified:ts },
+    weights:  { schema:SCHEMA_VERSION, weights:D.weights,     tombstones:D.tombstones.weights,   lastModified:ts },
+    gyms:     { schema:SCHEMA_VERSION, gyms:D.gyms,           tombstones:D.tombstones.gyms,      lastModified:ts },
+  };
+}
+
+const GIST_FILENAMES = {
+  sessions: 'gym-tracker-sessions.json',
+  library:  'gym-tracker-library.json',
+  plans:    'gym-tracker-plans.json',
+  weights:  'gym-tracker-weights.json',
+  gyms:     'gym-tracker-gyms.json',
+};
+
+function payloadToGistFiles(payload) {
+  const files = {};
+  Object.entries(payload).forEach(([k, content]) => {
+    files[GIST_FILENAMES[k]] = { content: JSON.stringify(content, null, 2) };
+  });
+  return files;
+}
+
+// ── Supabase data driver ──────────────────────────────────────────────────────
+
+// Maps user_blobs rows back into the exact {sessions, library, plans,
+// weights, gyms} shape gistFetchAll() returns, so mergeRemote() stays
+// driver-blind. Unknown collection names (a future app version's new
+// collection) are ignored rather than crashed on — the same tolerance the
+// Gist side gets for free by only parsing known filenames.
+function sbRowsToRemote(rows) {
+  const remote = { sessions:null, library:null, plans:null, weights:null, gyms:null };
+  (rows||[]).forEach(r => { if (r && r.collection in remote) remote[r.collection] = r.content; });
+  return remote;
+}
+
+async function sbFetchAll() {
+  if (!sb || !sbSession) return null;
+  try {
+    const { data, error } = await sb.from('user_blobs').select('collection,content');
+    if (error) return null;   // surfaced upstream exactly like a failed Gist fetch
+    return sbRowsToRemote(data);
+  } catch(e) { return null; }
+}
+
+async function sbWriteAll(payload) {
+  if (!sb || !sbSession) return false;
+  try {
+    // user_id must be set explicitly — the RLS insert/update policies
+    // require user_id = auth.uid(), they don't fill it in.
+    const uid = sbSession.user.id;
+    const rows = Object.entries(payload).map(([collection, content]) => ({ user_id: uid, collection, content }));
+    // upsert resolves conflicts on the table's composite primary key
+    // (user_id, collection) — five rows overwritten in place per push.
+    const { error } = await sb.from('user_blobs').upsert(rows);
+    return !error;
+  } catch(e) { return false; }
+}
+
+// Driver dispatch for the pull side — the push side dispatches inside
+// remoteSave() (it also has to build/format the payload per driver).
+async function remoteFetchAll() {
+  return syncDriver() === 'supabase' ? sbFetchAll() : gistFetchAll();
+}
+
 // ── Sync queue ──────────────────────────────────────────────────────────────
 //
-// Every push (gistSave) and pull (gistPull, loadData's background fetch)
+// Every push (remoteSave) and pull (remotePull, loadData's background fetch)
 // runs through this so they're never concurrent — a pull racing an
 // in-flight push could read a half-written remote state, and two
 // overlapping pushes could clobber each other's writes. A save that starts
@@ -631,18 +817,18 @@ let _syncQueued = false;
 let _syncFailStreak = 0;
 
 // Stamped on every successful fetch+merge (loadData's background pull and
-// gistPull) — read by the visibilitychange resume-pull below to rate-limit
+// remotePull) — read by the visibilitychange resume-pull below to rate-limit
 // itself.
 let _lastPullOk = 0;
 
 function releaseSyncSlot() {
   _syncBusy = false;
-  if (_syncQueued) { _syncQueued = false; gistSave(); }
+  if (_syncQueued) { _syncQueued = false; remoteSave(); }
 }
 
-// Push all four files to the Gist (fire-and-forget from persist())
-async function gistSave() {
-  if (!CFG.token) return;
+// Push all five payloads to the active driver (fire-and-forget from persist())
+async function remoteSave() {
+  if (!syncConfigured()) return;
   // Never let an app build overwrite data written by a NEWER one — this
   // flag is set when a pull saw a schema stamp ahead of ours (see
   // mergeRemote()). Checked before the busy/queue logic on purpose: a
@@ -651,14 +837,10 @@ async function gistSave() {
   if (_syncBusy) { _syncQueued = true; return; }
   _syncBusy = true;
   setSyncStatus('syncing');
-  const ts = D.lastModified;
-  const ok = await gistWriteFiles({
-    'gym-tracker-sessions.json': { content: JSON.stringify({ schema:SCHEMA_VERSION, sessions:D.sessions, tombstones:D.tombstones.sessions, lastModified:ts }, null,2) },
-    'gym-tracker-library.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, exercises:D.exercises, tombstones:D.tombstones.exercises, lastModified:ts }, null,2) },
-    'gym-tracker-plans.json':    { content: JSON.stringify({ schema:SCHEMA_VERSION, plans:D.plans, tombstones:D.tombstones.plans, lastModified:ts }, null,2) },
-    'gym-tracker-weights.json':  { content: JSON.stringify({ schema:SCHEMA_VERSION, weights:D.weights, tombstones:D.tombstones.weights, lastModified:ts }, null,2) },
-    'gym-tracker-gyms.json':     { content: JSON.stringify({ schema:SCHEMA_VERSION, gyms:D.gyms, tombstones:D.tombstones.gyms, lastModified:ts }, null,2) },
-  });
+  const payload = buildRemotePayload();
+  const ok = syncDriver() === 'supabase'
+    ? await sbWriteAll(payload)
+    : await gistWriteFiles(payloadToGistFiles(payload));
   if (ok) _syncFailStreak = 0;
   else if (navigator.onLine !== false) _syncFailStreak++;
   setSyncStatus(ok ? 'ok' : 'error');
@@ -675,12 +857,15 @@ async function gistSave() {
 // caller that chains a push off this (saveGithubConfig()) must never push
 // after a failed pull, or it would blind-overwrite the remote state it
 // just failed to read.
-async function gistPull() {
-  if (!CFG.token) { alert('Configure o token do GitHub primeiro.'); return false; }
+async function remotePull() {
+  if (!syncConfigured()) {
+    alert(syncDriver() === 'supabase' ? 'Entre com seu e-mail primeiro (Backup & Sync).' : 'Configure o token do GitHub primeiro.');
+    return false;
+  }
   while (_syncBusy) await new Promise(r => setTimeout(r, 50)); // wait for any in-flight push/pull
   _syncBusy = true;
   setSyncStatus('syncing');
-  const remote = await gistFetchAll();
+  const remote = await remoteFetchAll();
   if (!remote) { if (navigator.onLine !== false) _syncFailStreak++; setSyncStatus('error'); releaseSyncSlot(); return false; }
   if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return false; } // remote schema is newer than this app — see mergeRemote(); not a failure streak
   await persistLocal();
@@ -705,11 +890,11 @@ async function gistPull() {
 const RESUME_PULL_MIN_MS = 5 * 60 * 1000;
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') return;
-  if (!CFG.token || !CFG.gistId) return;   // sync not configured
+  if (!syncConfigured()) return;           // no driver ready (no Gist config / not logged in)
   if (_remoteSchemaAhead) return;          // frozen until a fresh reload anyway
   if (Date.now() - _lastPullOk < RESUME_PULL_MIN_MS) return;
-  const ok = await gistPull();             // queued — can never race an in-flight push
-  if (ok) gistSave();
+  const ok = await remotePull();             // queued — can never race an in-flight push
+  if (ok) remoteSave();
 });
 
 // Merges one collection: union by id with per-item last-writer-wins (the
@@ -722,7 +907,7 @@ document.addEventListener('visibilitychange', async () => {
 // the next time a stale device synced.
 function mergeCollection(local, remote, localTombstones, remoteTombstones) {
   const map = new Map(local.map(x => [x.id, x]));
-  // Per-item LWW, not blind "remote wins": gistSave() always uploads WHOLE
+  // Per-item LWW, not blind "remote wins": remoteSave() always uploads WHOLE
   // collections, so every push implicitly rewrites every item in them, not
   // just the one the user touched. Under blind remote-wins, any push from
   // a device holding a stale copy (e.g. a tab left open since yesterday
@@ -807,7 +992,7 @@ function mergeRemote(remote) {
 async function persist() {
   D.lastModified = Date.now();
   await persistLocal();
-  gistSave(); // fire-and-forget
+  remoteSave(); // fire-and-forget
 }
 
 // ── Load sequence ─────────────────────────────────────────────────────────────
@@ -854,18 +1039,23 @@ async function loadData() {
   // is already usable while this fetch is in flight.
   if (!D.exercises.length) await seedStarterLibrary();
 
-  if (!CFG.token || !CFG.gistId) return;
+  // Restore any persisted login BEFORE deciding whether sync can run — the
+  // SDK reads its stored session from localStorage asynchronously, and the
+  // supabase driver counts as configured only once that session exists.
+  if (sb) { try { const { data } = await sb.auth.getSession(); sbSession = data?.session || null; } catch(e) {} }
+  if (!syncConfigured()) return;
 
-  // Step 3 — background Gist fetch. Goes through the same sync queue as
-  // gistPull()/gistSave() (see their comment) so this can't race a push
-  // that's already in flight. Status is set to 'ok' only once the fetch+
-  // merge itself is actually done — it used to be set right after firing
-  // gistSave() without awaiting it, which could show "synced" a moment
-  // before the push had even started, let alone finished.
+  // Step 3 — background remote fetch (whichever driver is active). Goes
+  // through the same sync queue as remotePull()/remoteSave() (see their
+  // comment) so this can't race a push that's already in flight. Status is
+  // set to 'ok' only once the fetch+merge itself is actually done — it
+  // used to be set right after firing remoteSave() without awaiting it,
+  // which could show "synced" a moment before the push had even started,
+  // let alone finished.
   while (_syncBusy) await new Promise(r => setTimeout(r, 50));
   _syncBusy = true;
   setSyncStatus('syncing');
-  const remote = await gistFetchAll();
+  const remote = await remoteFetchAll();
   if (!remote) { if (navigator.onLine !== false) _syncFailStreak++; setSyncStatus('error'); releaseSyncSlot(); return; }
 
   if (!mergeRemote(remote)) { setSyncStatus('error'); releaseSyncSlot(); return; } // remote schema newer than this app — don't merge, don't push
@@ -875,7 +1065,7 @@ async function loadData() {
   setSyncStatus('ok');
   render();
   releaseSyncSlot();
-  gistSave(); // push merged result back so all devices converge — goes through the queue itself
+  remoteSave(); // push merged result back so all devices converge — goes through the queue itself
 }
 
 
@@ -2787,30 +2977,62 @@ function doSwapEx(i, newId) {
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  20. BACKUP & SYNC MODAL
 // ║
-// ║  Three sections in one modal:
-// ║    · GitHub Gist config — token + gistId, save & sync, force pull
+// ║  Sections in one modal:
+// ║    · Conta — Supabase login (magic link) / logged-in state / driver flip
+// ║    · GitHub Gist (legacy) — token + gistId; hidden entirely on devices
+// ║      that never configured it, so family installs never see PATs
 // ║    · Export — copy JSON to clipboard or download as file
 // ║    · Import — paste JSON to restore data
+// ║    · Snapshots locais — daily rolling snapshots, restore buttons
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function openBackup() {
   const date     = today();
   const fn       = `gym-tracker-${date}.json`;
   const json     = JSON.stringify(D, null, 2);
-  const syncMsg  = !CFG.token                   ? 'GitHub não configurado'
-    : _remoteSchemaAhead                         ? '⚠ Dados na nuvem vêm de uma versão mais nova do app — recarregue para atualizar'
+  const drv      = syncDriver();
+  const syncMsg  = _remoteSchemaAhead            ? '⚠ Dados na nuvem vêm de uma versão mais nova do app — recarregue para atualizar'
+    : !syncConfigured()                          ? (drv==='supabase' ? 'Entre com seu e-mail abaixo para ativar a sincronização' : 'GitHub não configurado')
     : _syncStatus?.state==='ok'                  ? `✓ Sincronizado · ${fmtTime(_syncStatus.time)}`
     : _syncStatus?.state==='error'               ? '⚠ Erro de sincronização'
     : _syncStatus?.state==='syncing'             ? '🔄 Sincronizando...'
     :                                              'Aguardando primeira sincronização';
 
-  showModal(`
-    <div style="font-size:17px;font-weight:700;margin-bottom:16px">Backup & Sync</div>
+  // The Gist card only exists for devices that ever configured it (or that
+  // explicitly run the gist driver) — a fresh family install sees ONLY the
+  // account flow, never PAT/Gist complexity.
+  const showGistCard = drv === 'gist' || !!CFG.token;
 
-    <!-- GitHub Gist -->
+  const accountBlock = sbSession ? `
+      <div style="font-size:13px;margin-bottom:10px">Conectado como <strong>${esc(sbSession.user?.email||'')}</strong></div>
+      <div style="display:flex;gap:8px">
+        ${drv!=='supabase'
+          ? Bs(CG,TX,'Usar esta conta para sincronizar','connectSupabaseSync().then(openBackup)',';flex:1;justify-content:center;padding:10px')
+          : Bs(BG2,TX,'↓ Forçar download','remotePull()',`;flex:1;justify-content:center;padding:10px;border:1px solid ${BD}`)}
+        ${Bs(BG2,TX,'Sair','sbSignOut()',`;flex:1;justify-content:center;padding:10px;border:1px solid ${BD}`)}
+      </div>`
+    : `
+      <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">E-mail</label>
+      <input id="sb-email" type="email" inputmode="email" placeholder="voce@exemplo.com"
+        style="background:${BG2};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+      <div id="sb-login-msg" style="font-size:12px;color:${DM};margin-bottom:8px;display:none"></div>
+      ${Bs(CG,TX,'Enviar link de acesso','sbSendLink()',';width:100%;justify-content:center;padding:10px')}
+      <div style="font-size:11px;color:${DM};margin-top:8px;line-height:1.5">Sem senha: você recebe um link por e-mail e toca nele <strong>neste aparelho</strong>. Contas novas são criadas por convite.</div>`;
+
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:6px">Backup & Sync</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:14px">${syncMsg}</div>
+
+    <!-- Account (Supabase) -->
     <div style="background:${BG3};border:1px solid ${BD};border-radius:10px;padding:14px;margin-bottom:16px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:4px">GitHub Gist Sync</div>
-      <div style="font-size:12px;color:${DM};margin-bottom:12px">${syncMsg}</div>
+      <div style="font-size:13px;font-weight:700;margin-bottom:10px">Conta</div>
+      ${accountBlock}
+    </div>
+
+    ${showGistCard ? `
+    <!-- GitHub Gist (legacy driver) -->
+    <div style="background:${BG3};border:1px solid ${BD};border-radius:10px;padding:14px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;margin-bottom:4px">GitHub Gist Sync <span style="font-weight:400;color:${DM}">(legado${drv==='gist'?' · ativo':''})</span></div>
       <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Personal Access Token</label>
       <input id="gh-token" type="password" placeholder="ghp_xxxxxxxxxxxx" value="${esc(CFG.token)}"
         style="background:${BG2};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
@@ -2819,9 +3041,9 @@ function openBackup() {
         style="background:${BG2};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;width:100%;outline:none;margin-bottom:10px;box-sizing:border-box">
       <div style="display:flex;gap:8px">
         ${Bs(CG,TX,'Salvar e sincronizar','saveGithubConfig()',';flex:1;justify-content:center;padding:10px')}
-        ${Bs(BG2,TX,'↓ Forçar download','gistPull()',`;flex:1;justify-content:center;padding:10px;border:1px solid ${BD}`)}
+        ${drv==='gist' ? Bs(BG2,TX,'↓ Forçar download','remotePull()',`;flex:1;justify-content:center;padding:10px;border:1px solid ${BD}`) : ''}
       </div>
-    </div>
+    </div>` : ''}
 
     <!-- Export -->
     <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Exportar — ${fn}</label>
@@ -2861,9 +3083,30 @@ function openBackup() {
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
 }
 
+// Sends the magic-link email from the Backup modal's account block and
+// narrates the outcome inline. Errors here are usually MEANINGFUL, not
+// technical: with public sign-ups disabled server-side, an uninvited
+// address is refused right here — that's the invite-only policy speaking.
+async function sbSendLink() {
+  const el  = document.getElementById('sb-email');
+  const msg = document.getElementById('sb-login-msg');
+  const email = (el ? el.value : '').trim();
+  if (!email || !msg) return;
+  msg.style.display = 'block'; msg.style.color = DM; msg.textContent = 'Enviando…';
+  const { error } = await sbSignIn(email);
+  msg.style.color   = error ? '#e57373' : '#6fcf97';
+  msg.textContent   = error
+    ? 'Não foi possível enviar: ' + (error.message || 'erro desconhecido')
+    : 'Link enviado — abra o e-mail neste aparelho e toque no link para entrar.';
+}
+
 async function saveGithubConfig() {
   CFG.token  = (document.getElementById('gh-token')?.value||'').trim();
   CFG.gistId = (document.getElementById('gh-gist')?.value||'').trim();
+  // Saving a Gist config is an explicit choice OF the gist driver — without
+  // this, a device that had flipped to supabase and then re-saved its token
+  // would keep pushing to supabase while looking like it configured Gist.
+  if (CFG.token) CFG.driver = 'gist';
   await saveConfig();
   closeModal();
   if (!CFG.token) return;
@@ -2877,13 +3120,13 @@ async function saveGithubConfig() {
     // side safe by construction; only push once the pull genuinely
     // succeeded — a failed fetch must NOT fall through to a blind
     // overwrite of remote state we couldn't read.
-    const ok = await gistPull();
-    if (ok) await gistSave();
+    const ok = await remotePull();
+    if (ok) await remoteSave();
   } else {
     // No Gist ID yet → there's no remote state to protect; pushing is what
     // CREATES the Gist (gistWriteFiles' POST path stores the new id).
     setSyncStatus('syncing');
-    await gistSave();
+    await remoteSave();
   }
   render();
 }
@@ -2961,9 +3204,10 @@ if ('serviceWorker' in navigator) {
 // ║  22. INIT — entry point
 // ║
 // ║  loadData() kicks off the full load sequence (see section 5):
-// ║    1. Load config (token, gistId) from localStorage / window.storage
+// ║    1. Load config (driver, token, gistId) from localStorage / window.storage
 // ║    2. Load local data → render immediately
-// ║    3. Fetch Gist in background → merge → re-render if newer
+// ║    3. Restore login session, fetch remote (active driver) in background
+// ║       → merge → re-render
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 // Ask the browser to mark this origin's storage persistent — best-effort,

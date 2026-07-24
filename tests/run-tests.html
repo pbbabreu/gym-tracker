@@ -88,6 +88,9 @@
     get TAB() { return TAB; }, set TAB(v) { TAB = v; },
     get schemaAhead() { return _remoteSchemaAhead; }, set schemaAhead(v) { _remoteSchemaAhead = v; },
     get gymId() { return _currentGymId; }, set gymId(v) { _currentGymId = v; },
+    get sb() { return sb; }, set sb(v) { sb = v; },
+    get sbSession() { return sbSession; }, set sbSession(v) { sbSession = v; },
+    get CFG() { return CFG; }, set CFG(v) { CFG = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym,
     SCHEMA_VERSION,
   })`);
@@ -465,6 +468,112 @@
     T.D.gyms = [{ id: 'gx', name: 'Iron Temple', updatedAt: 1 }];
     t('with gyms → named pill + manager pill', W.gymSelectorHTML().includes('Iron Temple') && W.gymSelectorHTML().includes('⚙'));
     T.D.gyms = keepGyms;
+  }
+
+  // ── sync drivers (M1: Supabase + legacy Gist behind one interface) ─────────
+  g('sync drivers (M1)');
+  {
+    const realSb = T.sb, realSession = T.sbSession, realCFG = { ...T.CFG };
+
+    // shared payload builder — the single source of the remote shape
+    const payload = W.buildRemotePayload();
+    t('payload has exactly the five collections', eq(Object.keys(payload).sort(), ['gyms','library','plans','sessions','weights']));
+    t('every payload slice stamped schema 3 with own tombstones', Object.values(payload).every(p => p.schema === 3 && typeof p.tombstones === 'object'));
+    const files = W.payloadToGistFiles(payload);
+    t('gist mapping produces the five known filenames', eq(Object.keys(files).sort(), ['gym-tracker-gyms.json','gym-tracker-library.json','gym-tracker-plans.json','gym-tracker-sessions.json','gym-tracker-weights.json']));
+    t('gist file content round-trips the payload', eq(JSON.parse(files['gym-tracker-library.json'].content), payload.library));
+
+    // row mapping (supabase → mergeRemote shape)
+    const mapped = W.sbRowsToRemote([
+      { collection: 'sessions', content: { schema: 3, sessions: [] } },
+      { collection: 'gyms', content: { schema: 3, gyms: [] } },
+      { collection: 'hologram-deck', content: {} }, // future/unknown collection
+    ]);
+    t('rows map into the gistFetchAll shape', mapped.sessions?.schema === 3 && mapped.gyms?.schema === 3 && mapped.library === null);
+    t('unknown collections ignored, not crashed on', !('hologram-deck' in mapped));
+    t('null-safe on garbage rows', W.sbRowsToRemote(null).sessions === null);
+
+    // driver resolution + configured state
+    T.CFG = { token: '', gistId: '', driver: '' };
+    T.sbSession = null;
+    t('fresh install resolves to supabase driver', W.syncDriver() === 'supabase');
+    t('...but is not configured until logged in', W.syncConfigured() === false);
+    T.CFG = { token: 'tok', gistId: 'gid', driver: '' };
+    t('existing gist config resolves to gist driver', W.syncDriver() === 'gist' && W.syncConfigured() === true);
+    T.CFG = { token: 'tok', gistId: 'gid', driver: 'supabase' };
+    t('explicit driver choice beats the default', W.syncDriver() === 'supabase');
+
+    // fake supabase client — capture-and-reply harness
+    const fakeSession = { user: { id: 'user-uuid-1', email: 'teste@exemplo.com' } };
+    let upserted = null, selectReply = { data: [], error: null };
+    const fakeSb = {
+      from: (table) => ({
+        select: async () => (table === 'user_blobs' ? selectReply : { data: null, error: { message: 'wrong table' } }),
+        upsert: async (rows) => { upserted = { table, rows }; return { error: null }; },
+      }),
+      auth: { getSession: async () => ({ data: { session: fakeSession } }) },
+    };
+    T.sb = fakeSb; T.sbSession = fakeSession;
+    T.CFG = { token: '', gistId: '', driver: 'supabase' };
+
+    // pull path end-to-end: fake remote row → remotePull → merged into D
+    const keepSess = T.D.sessions.slice();
+    selectReply = { data: [{ collection: 'sessions', content: { schema: 3, sessions: [{ id: 'sb-sess-1', date: '2026-07-20', exercises: [], updatedAt: 50 }], tombstones: {}, lastModified: 50 } }], error: null };
+    const pulled = await W.remotePull();
+    t('supabase pull fetches, merges, returns true', pulled === true && T.D.sessions.some(s => s.id === 'sb-sess-1'));
+
+    // push path: remoteSave upserts five rows with user_id + jsonb content
+    await W.remoteSave();
+    t('supabase push upserts into user_blobs', upserted?.table === 'user_blobs' && upserted.rows.length === 5);
+    t('rows carry user_id (RLS requires it) + collection + content', upserted.rows.every(r => r.user_id === 'user-uuid-1' && r.collection && typeof r.content === 'object'));
+    t('pushed sessions row contains the merged session', upserted.rows.find(r => r.collection === 'sessions').content.sessions.some(s => s.id === 'sb-sess-1'));
+
+    // error and no-session degradation
+    selectReply = { data: null, error: { message: 'boom' } };
+    t('driver error surfaces as null fetch (same as gist)', (await W.sbFetchAll()) === null);
+    T.sbSession = null;
+    t('no session → fetch null, write false, not configured', (await W.sbFetchAll()) === null && (await W.sbWriteAll(payload)) === false && !W.syncConfigured());
+    T.sbSession = fakeSession;
+
+    // legacy gist path still whole behind the same interface (mocked fetch)
+    T.CFG = { token: 'tok', gistId: 'gid', driver: 'gist' };
+    const realFetch = W.fetch;
+    const calls = [];
+    W.fetch = async (url, opts = {}) => {
+      const method = opts.method || 'GET';
+      calls.push({ method, url: String(url), body: opts.body });
+      if (method === 'GET') return new W.Response(JSON.stringify({ files: { 'gym-tracker-plans.json': { content: JSON.stringify({ schema: 3, plans: [{ id: 'gist-plan-1', name: 'GP', exercises: [], updatedAt: 60 }], tombstones: {}, lastModified: 60 }) } } }), { status: 200 });
+      return new W.Response('{}', { status: 200 });
+    };
+    const gPulled = await W.remotePull();
+    t('gist pull still merges through the same interface', gPulled === true && T.D.plans.some(p => p.id === 'gist-plan-1'));
+    await W.remoteSave();
+    const patch = calls.find(c => c.method === 'PATCH');
+    t('gist push PATCHes all five files', !!patch && Object.keys(JSON.parse(patch.body).files).length === 5);
+    W.fetch = realFetch;
+    T.D.plans = T.D.plans.filter(p => p.id !== 'gist-plan-1');
+    T.D.sessions = keepSess;
+
+    // Backup modal account states
+    T.CFG = { token: '', gistId: '', driver: '' }; // fresh-install look
+    T.sbSession = null;
+    W.openBackup();
+    let modalTxt = W.document.getElementById('modal-ov').textContent;
+    t('logged-out modal shows email login, no PAT anywhere', modalTxt.includes('Enviar link de acesso') && !modalTxt.includes('Personal Access Token'));
+    W.closeModal();
+    T.sbSession = fakeSession;
+    W.openBackup();
+    modalTxt = W.document.getElementById('modal-ov').textContent;
+    t('logged-in modal shows the account email', modalTxt.includes('teste@exemplo.com'));
+    W.closeModal();
+    T.CFG = { token: 'tok', gistId: 'gid', driver: 'gist' };
+    W.openBackup();
+    modalTxt = W.document.getElementById('modal-ov').textContent;
+    t('gist-configured device still sees the legacy card', modalTxt.includes('Personal Access Token') && modalTxt.includes('legado'));
+    W.closeModal();
+
+    // restore the app's real state
+    T.sb = realSb; T.sbSession = realSession; T.CFG = realCFG;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

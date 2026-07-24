@@ -25,17 +25,15 @@ Works offline after the first load — the service worker keeps the offline copy
 
 ## Cross-device sync setup
 
-Sync uses a **private GitHub Gist** you own. One-time setup:
+**Account sync (default):** open **Histórico → ⬆ Backup & Sync**, enter your e-mail, and tap the magic link that arrives — no password exists. Your data syncs to a private per-user store (Supabase, guarded by row-level security); logging in on another device pulls and merges your history before anything is ever pushed, so a fresh phone can never overwrite it. Accounts are invite-only: the instance owner adds new users.
 
-1. Create a fine-grained personal access token at github.com → Settings → Developer settings → **Fine-grained tokens**, with **only the Gists permission (read/write)**. Note the expiry you choose — when it lapses, sync fails quietly (the app shows a banner after repeated failures) until you paste a fresh token.
-2. In the app: **Histórico → ⬆ Backup & Sync** → paste the token, leave Gist ID blank → *Salvar e sincronizar*. The app creates the Gist and fills in its ID.
-3. On another device: paste the **same token and Gist ID** → *Salvar e sincronizar*. The app pulls and merges the existing remote data before its first push, so configuring a fresh device never overwrites your history.
+**Legacy Gist sync:** earlier installs synced via a private GitHub Gist (fine-grained PAT with gists-only scope). That driver still works and remains available on devices that configured it, until they migrate to an account. New installs never see it.
 
 Data notes:
 
-- All workout data lives in your browser's localStorage and your private Gist — nowhere else. The token/Gist ID are stored locally only and are **never** included in exports.
-- Merging is per-item last-writer-wins with deletion tombstones, so devices can be used independently and converge safely.
-- Recovery of last resort: the Gist's own revision history (gist.github.com → your data gist → Revisions).
+- All workout data lives in your browser's localStorage and your own private sync store — nowhere else. Login/config state is stored locally only and is **never** included in exports.
+- Merging is per-item last-writer-wins with deletion tombstones, so devices can be used independently — even offline — and converge safely.
+- The app additionally keeps rolling daily local snapshots (last 7 days), restorable from the Backup & Sync modal.
 
 ## Development
 

@@ -1,0 +1,29 @@
+# Supabase free-tier projects are paused after ~1 week with zero API
+# activity. The owner training several times a week makes that unlikely,
+# but a vacation shouldn't take the family's sync down — this weekly ping
+# is the insurance. Any authenticated-endpoint hit counts as activity;
+# /auth/v1/settings is public, harmless, and needs no table grants.
+#
+# The apikey below is the PUBLISHABLE key — public by design (it ships
+# inside index.html to every visitor); committing it here adds zero
+# exposure. RLS is the security boundary; the service_role key is the one
+# that must never appear in this repo.
+#
+# Note: GitHub disables cron workflows after 60 days without repo activity
+# — pushes reset that clock, and the Actions tab shows a re-enable button
+# if it ever trips.
+name: Supabase keepalive
+on:
+  schedule:
+    - cron: '17 12 * * 1'   # Mondays 12:17 UTC (09:17 São Paulo)
+  workflow_dispatch: {}      # manual run button, for testing
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase
+        run: |
+          curl -sf "https://grjssghmulifsaumweci.supabase.co/auth/v1/settings" \
+            -H "apikey: sb_publishable_XFfBUF2CPjA-mJEbp90zYw_lgTQL-f0" \
+            -o /dev/null -w "HTTP %{http_code}\n"
