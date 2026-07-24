@@ -25,7 +25,9 @@ Works offline after the first load — the service worker keeps the offline copy
 
 ## Cross-device sync setup
 
-**Account sync (default):** open **Histórico → ⬆ Backup & Sync**, enter your e-mail, and tap the magic link that arrives — no password exists. Your data syncs to a private per-user store (Supabase, guarded by row-level security); logging in on another device pulls and merges your history before anything is ever pushed, so a fresh phone can never overwrite it. Accounts are invite-only: the instance owner adds new users.
+**Account sync (default):** open **Histórico → ⬆ Backup & Sync**, enter your e-mail, and either type the **6-digit code** from the e-mail into the app or tap the magic link — no password exists. (On iPhone, use the code: e-mail links open in Safari, outside the installed app.) Your data syncs to a private per-user store (Supabase, guarded by row-level security); logging in on another device pulls and merges your history before anything is ever pushed, so a fresh phone can never overwrite it. Accounts are invite-only: the instance owner adds new users.
+
+**Onboarding a new user:** the owner invites their e-mail (Supabase dashboard → Authentication → Users → Invite). The person installs the PWA, opens Backup & Sync, enters that e-mail, and types the code they receive. From there they can be sent workout plans in-app (✉ on any plan → appears under *Planos recebidos*) and pull curated exercises from the shared catalog (Biblioteca → ⟳ Catálogo).
 
 **Legacy Gist sync:** earlier installs synced via a private GitHub Gist (fine-grained PAT with gists-only scope). That driver still works and remains available on devices that configured it, until they migrate to an account. New installs never see it.
 

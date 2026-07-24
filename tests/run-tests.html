@@ -91,6 +91,8 @@
     get sb() { return sb; }, set sb(v) { sb = v; },
     get sbSession() { return sbSession; }, set sbSession(v) { sbSession = v; },
     get CFG() { return CFG; }, set CFG(v) { CFG = v; },
+    get shares() { return _receivedShares; }, set shares(v) { _receivedShares = v; },
+    get catalogRows() { return _catalogRows; }, set catalogRows(v) { _catalogRows = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym,
     SCHEMA_VERSION,
   })`);
@@ -559,7 +561,7 @@
     T.sbSession = null;
     W.openBackup();
     let modalTxt = W.document.getElementById('modal-ov').textContent;
-    t('logged-out modal shows email login, no PAT anywhere', modalTxt.includes('Enviar link de acesso') && !modalTxt.includes('Personal Access Token'));
+    t('logged-out modal shows email login, no PAT anywhere', modalTxt.includes('Enviar código de acesso') && !modalTxt.includes('Personal Access Token'));
     W.closeModal();
     T.sbSession = fakeSession;
     W.openBackup();
@@ -574,6 +576,118 @@
 
     // restore the app's real state
     T.sb = realSb; T.sbSession = realSession; T.CFG = realCFG;
+  }
+
+  // ── sharing & catalog (M2) ─────────────────────────────────────────────────
+  g('sharing & catalog (M2)');
+  {
+    const realSb2 = T.sb, realSession2 = T.sbSession, realCFG2 = { ...T.CFG };
+
+    // buildPlanPayload — the shared unit for file export AND in-app send
+    const bench2 = T.D.exercises.find(e => e.id === 'bench-press');
+    bench2.gyms = ['gym-local-x'];
+    T.D.plans.push({ id: 'pp1', name: 'Peito Teste', exercises: ['bench-press'], updatedAt: 1 });
+    const pl = W.buildPlanPayload(T.D.plans.find(p => p.id === 'pp1'));
+    t('payload carries type/name/exercise snapshot', pl.type === 'gym-tracker-plan' && pl.name === 'Peito Teste' && pl.exercises.length === 1 && pl.exercises[0].id === 'bench-press');
+    t('payload excludes sender-local gym tags', !('gyms' in pl.exercises[0]));
+    delete bench2.gyms;
+
+    // normalizeExerciseDef — extraction must preserve the import hardening
+    const norm = W.normalizeExerciseDef({ id: 'nx', name: 'NX', type: 'weird', regime: 'eccentric', compound: 'yes', mainMuscle: 'quadzilla', movementPattern: 'zzz', accessoryMuscles: ['nope', 'biceps'] });
+    t('normalizeExerciseDef coerces every enum', norm.type === 'hypertrophy' && norm.regime === 'weighted' && norm.compound === null && norm.mainMuscle === 'undefined' && norm.movementPattern === 'undefined' && eq(norm.accessoryMuscles, ['biceps']));
+    t('normalizeExerciseDef backfills a missing id', !!W.normalizeExerciseDef({ name: 'NoId' }).id);
+
+    // catalogNewEntries — the tombstone rule is the important half
+    const cat = [
+      { id: 'bench-press', data: { id: 'bench-press', name: 'Bench press' } },       // already in library
+      { id: 'brand-new-move', data: { id: 'brand-new-move', name: 'Novo Movimento', type: 'hypertrophy' } },
+      { id: 'deleted-once', data: { id: 'deleted-once', name: 'Excluído' } },
+      { id: 'broken-row', data: {} },                                                 // malformed
+    ];
+    T.D.tombstones.exercises['deleted-once'] = 123;
+    const news = W.catalogNewEntries(cat);
+    t('catalog offers only the genuinely new entry', news.length === 1 && news[0].id === 'brand-new-move');
+    delete T.D.tombstones.exercises['deleted-once'];
+
+    // fake sb for the sharing queries
+    const fakeSession2 = { user: { id: 'uid-2', email: 'Dono@Exemplo.com' } };
+    let inserted = null, updated = null;
+    let sharesReply = { data: [], error: null };
+    // upsert included because persist() inside import/add flows fires
+    // remoteSave() → sbWriteAll() against this same fake — it must succeed
+    // quietly or it would pollute the failure streak mid-test.
+    const mkQuery = (reply) => { const q = { select: () => q, is: () => q, order: async () => reply, insert: async (row) => { inserted = row; return { error: null }; }, upsert: async () => ({ error: null }), update: (patch) => ({ eq: async (col, val) => { updated = { patch, col, val }; return { error: null }; } }) }; return q; };
+    const fakeSb2 = { from: (tbl) => mkQuery(tbl === 'shared_plans' ? sharesReply : { data: [], error: null }), auth: { verifyOtp: async (args) => { fakeSb2._otpArgs = args; return { error: null }; } } };
+    T.sb = fakeSb2; T.sbSession = fakeSession2; T.CFG = { token: '', gistId: '', driver: 'supabase' };
+
+    // send: identity pinned from the session, address lowercased
+    await W.sendPlanShare('Amiga@Exemplo.com', T.D.plans.find(p => p.id === 'pp1'));
+    t('share insert carries pinned identity + lowercased address', inserted && inserted.from_user === 'uid-2' && inserted.from_email === 'Dono@Exemplo.com' && inserted.to_email === 'amiga@exemplo.com');
+    t('share insert payload is the plan-file shape', inserted.payload.type === 'gym-tracker-plan' && inserted.payload.exercises.length === 1);
+
+    // receive: inbox populates; errors keep the app calm
+    sharesReply = { data: [{ id: 'sh1', from_email: 'amigo@ex.com', created_at: 'x', payload: { type: 'gym-tracker-plan', name: 'Recebido', exercises: [{ id: 'bench-press', name: 'Bench press' }] } }], error: null };
+    await W.loadReceivedShares();
+    t('inbox populates from the query', T.shares.length === 1 && T.shares[0].id === 'sh1');
+    const planCount2 = T.D.plans.length;
+    await W.importShare('sh1');
+    t('importShare creates the plan through the hardened pipeline', T.D.plans.length === planCount2 + 1 && T.D.plans.some(p => p.name === 'Recebido'));
+    t('importShare claims the row and clears the inbox', T.shares.length === 0 && updated && updated.col === 'id' && updated.val === 'sh1' && !!updated.patch.claimed_at);
+    T.D.plans = T.D.plans.filter(p => p.name !== 'Recebido');
+
+    // malformed share payload → rejected before touching state
+    T.shares = [{ id: 'sh2', from_email: 'x@y.z', payload: { type: 'wrong', exercises: 'nope' } }];
+    const realAlert = W.alert; let alerted = ''; W.alert = (m) => { alerted = m; };
+    const plansBefore = T.D.plans.length;
+    await W.importShare('sh2');
+    W.alert = realAlert;
+    t('malformed share rejected with no state change', alerted.includes('inválido') && T.D.plans.length === plansBefore && T.shares.length === 1);
+    T.shares = [];
+
+    // dismiss claims without importing
+    updated = null;
+    T.shares = [{ id: 'sh3', from_email: 'x@y.z', payload: { type: 'gym-tracker-plan', name: 'N', exercises: [] } }];
+    await W.dismissShare('sh3');
+    t('dismiss claims the row, imports nothing', T.shares.length === 0 && updated?.val === 'sh3' && T.D.plans.length === plansBefore);
+
+    // error tolerance: query failure keeps the previous inbox
+    T.shares = [{ id: 'keep-me', from_email: 'a@b.c', payload: { type: 'gym-tracker-plan', name: 'K', exercises: [] } }];
+    sharesReply = { data: null, error: { message: 'relation does not exist' } };
+    await W.loadReceivedShares();
+    t('a missing table / failed query never breaks the inbox', T.shares.length === 1 && T.shares[0].id === 'keep-me');
+    T.shares = [];
+
+    // catalog add runs the same normalization
+    T.catalogRows = [{ id: 'brand-new-move', data: { id: 'brand-new-move', name: 'Novo Movimento', type: 'weird', regime: 'eccentric' } }];
+    const exCount2 = T.D.exercises.length;
+    W.addCatalogExercise('brand-new-move');
+    const added = T.D.exercises.find(e => e.id === 'brand-new-move');
+    t('catalog add normalizes like any foreign definition', T.D.exercises.length === exCount2 + 1 && added.type === 'hypertrophy' && added.regime === 'weighted');
+    T.D.exercises = T.D.exercises.filter(e => e.id !== 'brand-new-move');
+
+    // OTP verify wiring
+    T.CFG = { token: '', gistId: '', driver: '' }; T.sbSession = null;
+    W.openBackup();
+    W.document.getElementById('sb-email').value = 'eu@exemplo.com';
+    W.document.getElementById('sb-otp-row').style.display = 'block';
+    W.document.getElementById('sb-otp').value = ' 123456 ';
+    await W.sbVerifyCode();
+    t('verifyOtp called with email + trimmed code + type email', eq(fakeSb2._otpArgs, { email: 'eu@exemplo.com', token: '123456', type: 'email' }));
+    t('successful code entry closes the modal', !W.document.getElementById('modal-ov'));
+
+    // UI presence checks
+    T.sbSession = fakeSession2;
+    T.shares = [{ id: 'ui1', from_email: 'irmã@ex.com', payload: { type: 'gym-tracker-plan', name: 'Upper A', exercises: [{}, {}] } }];
+    const plansHtml = W.buildPlans();
+    t('Plans tab renders the inbox with sender + count', plansHtml.includes('Planos recebidos (1)') && plansHtml.includes('irmã@ex.com') && plansHtml.includes('Upper A'));
+    t('plan rows offer ✉ when connected', plansHtml.includes('✉'));
+    T.shares = [];
+    t('Library header offers the catalog when connected', W.buildLibrary().includes('⟳ Catálogo'));
+    T.sbSession = null;
+    t('...and hides it logged out', !W.buildLibrary().includes('⟳ Catálogo'));
+
+    T.D.plans = T.D.plans.filter(p => p.id !== 'pp1');
+    T.sb = realSb2; T.sbSession = realSession2; T.CFG = realCFG2; T.catalogRows = null;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────
