@@ -14,20 +14,17 @@ Personal workout-tracking PWA — strength & hypertrophy, progressive-overload s
 - **Peso** — bodyweight log; feeds real-load math for assisted (bodyweight − counterweight) and bodyweight exercises.
 - **Sync & backup** — cross-device sync via a private GitHub Gist; manual JSON export/import; automatic daily local snapshots (last 7 days, restorable in-app).
 
-## Install as an app (PWA)
+## Using it
 
-Open the live URL, then:
+Just open the live URL in your browser — that's the supported way to use it, on every platform. It works offline after the first load (the service worker keeps the offline copy current with your last online visit), and a home-screen shortcut that opens a browser tab is a perfectly good "app icon".
 
-- **Android (Chrome):** menu ⋮ → *Add to Home screen* / *Install app*.
-- **iOS (Safari):** Share → *Add to Home Screen*.
-
-Works offline after the first load — the service worker keeps the offline copy current with the last online visit.
+> Installing as a standalone PWA also works on Android, but is deliberately not the recommended path for now: on iOS, login e-mail links open in Safari — *outside* a standalone app — which strands the session. Browser usage sidesteps that entirely. (A type-in login code that fixes standalone iOS exists in the app and activates once custom SMTP is configured for the project.)
 
 ## Cross-device sync setup
 
-**Account sync (default):** open **Histórico → ⬆ Backup & Sync**, enter your e-mail, and either type the **6-digit code** from the e-mail into the app or tap the magic link — no password exists. (On iPhone, use the code: e-mail links open in Safari, outside the installed app.) Your data syncs to a private per-user store (Supabase, guarded by row-level security); logging in on another device pulls and merges your history before anything is ever pushed, so a fresh phone can never overwrite it. Accounts are invite-only: the instance owner adds new users.
+**Account sync (default):** open **Histórico → ⬆ Backup & Sync**, enter your e-mail, and tap the magic link that arrives — no password exists. (The app also has a 6-digit-code field, which activates once the project's login e-mails carry a code — pending custom SMTP setup.) Your data syncs to a private per-user store (Supabase, guarded by row-level security); logging in on another device pulls and merges your history before anything is ever pushed, so a fresh phone can never overwrite it. Accounts are invite-only: the instance owner adds new users.
 
-**Onboarding a new user:** the owner invites their e-mail (Supabase dashboard → Authentication → Users → Invite). The person installs the PWA, opens Backup & Sync, enters that e-mail, and types the code they receive. From there they can be sent workout plans in-app (✉ on any plan → appears under *Planos recebidos*) and pull curated exercises from the shared catalog (Biblioteca → ⟳ Catálogo).
+**Onboarding a new user:** the owner invites their e-mail (Supabase dashboard → Authentication → Users → Invite). The person opens the app URL in their browser, goes to Backup & Sync, enters that e-mail, and taps the login link they receive. From there they can be sent workout plans in-app (✉ on any plan → appears under *Planos recebidos*) and pull curated exercises from the shared catalog (Biblioteca → ⟳ Catálogo).
 
 **Legacy Gist sync:** earlier installs synced via a private GitHub Gist (fine-grained PAT with gists-only scope). That driver still works and remains available on devices that configured it, until they migrate to an account. New installs never see it.
 
