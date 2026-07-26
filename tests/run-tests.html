@@ -373,7 +373,7 @@
   // ── gym profiles (M0) ──────────────────────────────────────────────────────
   g('gym profiles (M0)');
   {
-    t('SCHEMA_VERSION bumped to 3 for the gyms era', T.SCHEMA_VERSION === 3);
+    t('SCHEMA_VERSION at 4 (per-exercise rest era)', T.SCHEMA_VERSION === 4);
 
     // availability semantics — absent/empty = everywhere, null gym = no filtering
     t('no gym selected → everything available', T.availableAtGym({ gyms: ['g9'] }, null) === true);
@@ -482,7 +482,7 @@
     // shared payload builder — the single source of the remote shape
     const payload = W.buildRemotePayload();
     t('payload has exactly the five collections', eq(Object.keys(payload).sort(), ['gyms','library','plans','sessions','weights']));
-    t('every payload slice stamped schema 3 with own tombstones', Object.values(payload).every(p => p.schema === 3 && typeof p.tombstones === 'object'));
+    t('every payload slice stamped with the current schema (4) + own tombstones', Object.values(payload).every(p => p.schema === 4 && typeof p.tombstones === 'object'));
     const files = W.payloadToGistFiles(payload);
     t('gist mapping produces the five known filenames', eq(Object.keys(files).sort(), ['gym-tracker-gyms.json','gym-tracker-library.json','gym-tracker-plans.json','gym-tracker-sessions.json','gym-tracker-weights.json']));
     t('gist file content round-trips the payload', eq(JSON.parse(files['gym-tracker-library.json'].content), payload.library));
@@ -698,13 +698,17 @@
     W.localStorage.removeItem('gym:timers');
     T.timerCfgVar = null; // force reload from defaults
 
-    // the owner's scheme IS the shipped default
-    t('hypertrophy: WU→WU 1:00', W.restDurationFor('hypertrophy', 'warmup', 'warmup') === 60);
-    t('hypertrophy: WU→W 3:00', W.restDurationFor('hypertrophy', 'warmup', 'work') === 180);
-    t('hypertrophy: W→W 3:00', W.restDurationFor('hypertrophy', 'work', 'work') === 180);
-    t('strength: WU→WU 1:00 (same as hypertrophy)', W.restDurationFor('strength', 'warmup', 'warmup') === 60);
-    t('strength: WU→W 3:00', W.restDurationFor('strength', 'warmup', 'work') === 180);
-    t('strength: W→W 5:00', W.restDurationFor('strength', 'work', 'work') === 300);
+    // the owner's scheme IS the shipped default (ex with no override —
+    // restDurationFor takes the session-exercise object since the
+    // per-exercise cascade landed)
+    t('hypertrophy: WU→WU 1:00', W.restDurationFor({ type: 'hypertrophy' }, 'warmup', 'warmup') === 60);
+    t('hypertrophy: WU→W 3:00', W.restDurationFor({ type: 'hypertrophy' }, 'warmup', 'work') === 180);
+    t('hypertrophy: W→W 3:00', W.restDurationFor({ type: 'hypertrophy' }, 'work', 'work') === 180);
+    t('strength: WU→WU 1:00 (same as hypertrophy)', W.restDurationFor({ type: 'strength' }, 'warmup', 'warmup') === 60);
+    t('strength: WU→W 3:00', W.restDurationFor({ type: 'strength' }, 'warmup', 'work') === 180);
+    t('strength: W→W 5:00', W.restDurationFor({ type: 'strength' }, 'work', 'work') === 300);
+    t('per-exercise override wins per key, others fall through', W.restDurationFor({ type: 'strength', rest: { ww: 240 } }, 'work', 'work') === 240 && W.restDurationFor({ type: 'strength', rest: { ww: 240 } }, 'warmup', 'warmup') === 60);
+    t('explicit per-exercise 0 disables (0 is data, not absence)', W.restDurationFor({ type: 'hypertrophy', rest: { ww: 0 } }, 'work', 'work') === 0);
     t('fmtRest formats M:SS', T.fmtRest(300) === '5:00' && T.fmtRest(61) === '1:01' && T.fmtRest(0) === '0:00');
 
     // transition detection through a real session block
@@ -783,9 +787,111 @@
     // corrupted stored config falls back to defaults
     W.localStorage.setItem('gym:timers', '{broken');
     T.timerCfgVar = null;
-    t('corrupted stored timers → defaults', W.restDurationFor('strength', 'work', 'work') === 300);
+    t('corrupted stored timers → defaults', W.restDurationFor({ type: 'strength' }, 'work', 'work') === 300);
     W.localStorage.removeItem('gym:timers');
     T.timerCfgVar = null;
+  }
+
+  // ── per-exercise rest & plan reconciliation ────────────────────────────────
+  g('per-exercise rest & plan reconciliation');
+  {
+    W.localStorage.removeItem('gym:timers'); T.timerCfgVar = null; // known defaults
+
+    // sanitizeRest — the one gate every rest value passes
+    t('sanitizeRest keeps valid ints incl. 0, drops junk', eq(W.sanitizeRest({ wuwu: '90', wuw: 0, ww: 'abc' }), { wuwu: 90, wuw: 0 }));
+    t('sanitizeRest → undefined when nothing valid', W.sanitizeRest({ ww: '' }) === undefined && W.sanitizeRest(null) === undefined);
+    t('sanitizeRest rejects out-of-range', W.sanitizeRest({ ww: 9999 }) === undefined && eq(W.sanitizeRest({ ww: -5, wuw: 120 }), { wuw: 120 }));
+
+    // seeding cascade: plan override beats library, key by key
+    const bench3 = T.D.exercises.find(e => e.id === 'bench-press');
+    bench3.rest = { ww: 200, wuwu: 45 };
+    T.D.plans.push({ id: 'rp1', name: 'RestPlan', exercises: ['bench-press', 'zercher-squat'], rests: { 'bench-press': { ww: 150 } }, updatedAt: 1 });
+    t('seed: plan key beats library key, others pass through', eq(W.seedRestFor('bench-press', 'rp1'), { ww: 150, wuwu: 45 }));
+    t('seed: library-only when plan silent', eq(W.seedRestFor('bench-press', null), { ww: 200, wuwu: 45 }));
+    t('seed: undefined when neither has anything', W.seedRestFor('zercher-squat', 'rp1') === undefined);
+
+    // startPlan carries the seed into the session; timer uses it
+    W.startPlan('rp1');
+    t('startPlan seeds session rest from plan+library', eq(T.S.exercises[0].rest, { ww: 150, wuwu: 45 }) && T.S.exercises[1].rest === undefined);
+    T.restTimer = null;
+    T.S.exercises[0].sets = [{ intent: 'work' }, { intent: 'work' }];
+    W.startRestTimer(0, 0);
+    t('timer honors the per-exercise override (150s not type default)', T.restTimer?.total === 150);
+
+    // no-touch save: seeded values alone must NOT trigger the plan prompt
+    t('sessionPlanDiff null when nothing plan-relevant changed', W.sessionPlanDiff() === null);
+
+    // in-session change → diff detected; save-time reconciliation paths
+    T.S.exercises[0].rest = { ww: 90 };
+    let diff = W.sessionPlanDiff();
+    t('rest change vs seed → diff (restsChanged)', !!diff && diff.restsChanged && !diff.listChanged);
+    T.S.exercises.reverse();
+    diff = W.sessionPlanDiff();
+    t('reorder → diff (listChanged)', !!diff && diff.listChanged);
+    T.S.exercises.reverse();
+
+    // collectSessionRests: plan gets what differs from the LIBRARY, not frozen lib copies
+    let collected = W.collectSessionRests();
+    t('collect keeps the changed override, skips lib-identical', eq(collected, { 'bench-press': { ww: 90 } }));
+    T.S.exercises[0].rest = { ww: 200, wuwu: 45 }; // exactly the library values
+    t('collect drops overrides identical to library defaults', eq(W.collectSessionRests(), {}));
+    T.S.exercises[0].rest = { ww: 90 };
+
+    // doSaveSession('update') writes list+rests into the plan
+    T.S.exercises[0].sets = [{ intent: 'work', reps: 5, kg: 100 }];
+    const planBefore = T.D.plans.find(p => p.id === 'rp1');
+    const updBefore = planBefore.updatedAt;
+    W.doSaveSession('update');
+    const planAfter = T.D.plans.find(p => p.id === 'rp1');
+    t("'update' rewrites plan exercises + rests + updatedAt", eq(planAfter.rests, { 'bench-press': { ww: 90 } }) && planAfter.updatedAt > updBefore && eq(planAfter.exercises, ['bench-press', 'zercher-squat']));
+    const savedSess = T.D.sessions.find(s => s.planId === 'rp1');
+    t('session saved with its rest override intact', !!savedSess && eq(savedSess.exercises[0].rest, { ww: 90 }));
+    T.D.sessions = T.D.sessions.filter(s => s !== savedSess);
+
+    // doSaveSession('new') forks a plan and retags the session
+    W.startPlan('rp1');
+    T.S.exercises[0].sets = [{ intent: 'work', reps: 5, kg: 100 }];
+    T.S.exercises[0].rest = { ww: 75 };
+    W.openSaveOptions({ plan: planAfter, listChanged: false, restsChanged: true });
+    W.document.getElementById('save-new-plan-name').value = 'Forked Plan';
+    const planCount3 = T.D.plans.length;
+    W.doSaveSession('new');
+    const forked = T.D.plans.find(p => p.name === 'Forked Plan');
+    t("'new' creates the fork with the session's shape", T.D.plans.length === planCount3 + 1 && !!forked && eq(forked.rests, { 'bench-press': { ww: 75 } }));
+    const sess2 = T.D.sessions.find(s => s.planId === forked.id);
+    t('session retagged to the forked plan', !!sess2 && sess2.planName === 'Forked Plan');
+    t('original plan untouched by the fork', eq(T.D.plans.find(p => p.id === 'rp1').rests, { 'bench-press': { ww: 90 } }));
+    T.D.sessions = T.D.sessions.filter(s => s !== sess2);
+    T.D.plans = T.D.plans.filter(p => p.id !== forked.id);
+
+    // 'keep' leaves the plan alone entirely
+    W.startPlan('rp1');
+    T.S.exercises[0].sets = [{ intent: 'work', reps: 5, kg: 100 }];
+    T.S.exercises[0].rest = { ww: 60 };
+    W.doSaveSession('keep');
+    t("'keep' saves the session, plan intact", eq(T.D.plans.find(p => p.id === 'rp1').rests, { 'bench-press': { ww: 90 } }));
+    T.D.sessions = T.D.sessions.filter(s => s.planId !== 'rp1');
+
+    // sharing round-trip: payload carries rests + exercise rest; import remaps + sanitizes
+    const pl4 = W.buildPlanPayload(T.D.plans.find(p => p.id === 'rp1'));
+    t('payload ships plan rests and exercise rest', eq(pl4.rests, { 'bench-press': { ww: 90 } }) && eq(pl4.exercises[0].rest, { ww: 200, wuwu: 45 }));
+    const exCount4 = T.D.exercises.length;
+    W.applyImportedPlan({ name: 'RImp', exercises: [{ id: 'foreign-b', name: 'BENCH PRESS', rest: { ww: 111 } }], rests: { 'foreign-b': { ww: 141, wuw: 'junk' }, 'ghost': { ww: 99 } } });
+    const rImp = T.D.plans.find(p => p.name === 'RImp');
+    t('import remaps sender rest keys to resolved local ids + sanitizes', eq(rImp.rests, { 'bench-press': { ww: 141 } }) && T.D.exercises.length === exCount4);
+    T.D.plans = T.D.plans.filter(p => p.name !== 'RImp');
+
+    // plan editor state fns: setPlanRest + collectPlanRests prune
+    W.eval("_planExs = ['bench-press']; _planRests = {};");
+    W.setPlanRest('bench-press', 'ww', '210');
+    W.setPlanRest('bench-press', 'wuw', '');
+    t('setPlanRest stores valid keys, ignores blanks', eq(W.eval('_planRests')['bench-press'], { ww: 210 }));
+    W.setPlanRest('bench-press', 'ww', '');
+    t('clearing the last key removes the override entirely', W.eval("_planRests['bench-press']") === undefined);
+
+    delete bench3.rest;
+    T.D.plans = T.D.plans.filter(p => p.id !== 'rp1');
+    W.cancelSession();
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

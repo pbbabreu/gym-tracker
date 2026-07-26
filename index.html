@@ -313,8 +313,13 @@ let _aFMuscle = null, _aFPattern = null;
 let _peFType = null, _peFMove = null, _peSearch = '', _peAlpha = false;
 let _peFMuscle = null, _peFPattern = null;
 
-// Plan editor working state
-let _planExs = [], _planId = null;
+// Plan editor working state. _planRests maps exId → rest override for THIS
+// plan ({wuwu?,wuw?,ww?}, seconds) — plans can't hold duplicate exercises
+// (addExToPlan guards), so keying by exId is safe. _planRestEdit is the
+// exId whose row is currently expanded into its three rest inputs (inline
+// expansion instead of a sub-modal: showModal() would replace the plan
+// editor modal and lose its inputs).
+let _planExs = [], _planId = null, _planRests = {}, _planRestEdit = null;
 
 // Exercise modal working state
 let _newType = 'hypertrophy', _newCompound = true, _newRegime = 'weighted';
@@ -326,6 +331,9 @@ let _newCompoundTouched = false;
 // valve rather than nullable, so no _touched flag is needed: every save
 // path writes them unconditionally.
 let _newMuscle = 'undefined', _newPattern = 'undefined', _newAccessory = [];
+// Exercise modal rest override working state — strings straight from the
+// inputs ('' = inherit); sanitizeRest() turns them into the stored shape.
+let _newRest = { wuwu:'', wuw:'', ww:'' };
 
 // Pick-exercise modal working state
 let _pickType = 'hypertrophy', _pickRegime = 'weighted';
@@ -408,6 +416,21 @@ const availableAtGym = (ex, gymId) => !gymId || !(ex.gyms||[]).length || (ex.gym
 // via merge) degrades safely to "no gym selected" instead of dangling.
 const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 
+// Normalizes a rest-override object ({wuwu?,wuw?,ww?} in seconds) from ANY
+// source — modal inputs, an imported plan, a catalog row — keeping only
+// finite integers in [0, 3600] (0 is a real value: "no timer for this
+// transition"). Returns undefined when nothing valid remains, so callers
+// can store "no override" as an absent field instead of an empty object.
+function sanitizeRest(r) {
+  if (!r || typeof r !== 'object') return undefined;
+  const out = {};
+  ['wuwu', 'wuw', 'ww'].forEach(k => {
+    const n = typeof r[k] === 'string' && r[k].trim() === '' ? NaN : Math.round(Number(r[k]));
+    if (Number.isFinite(n) && n >= 0 && n <= 3600) out[k] = n;
+  });
+  return Object.keys(out).length ? out : undefined;
+}
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  5. STORAGE & SYNC — localStorage · window.storage · remote driver
@@ -465,7 +488,11 @@ const currentGym = () => D.gyms.find(g => g.id === _currentGymId) || null;
 //     a v2 app re-saving an edited session would silently drop its gym tag,
 //     so v2 devices freeze sync until reloaded (which the v3 service worker
 //     makes automatic when online).
-const SCHEMA_VERSION = 3;
+// 4 = per-exercise rest timings: optional `rest` on library exercises and
+//     session exercises, and a `rests` map on plans — a v3 app's
+//     savePlan() rebuilds the plan object without `rests`, silently
+//     dropping every per-plan timing, so v3 devices freeze until reloaded.
+const SCHEMA_VERSION = 4;
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -1950,6 +1977,7 @@ function buildExBlock(ex, i) {
         <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
           <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px 6px;line-height:1;margin-top:-2px">×</button>
           <button onclick="openSwapEx(${i})" title="Trocar exercício" style="background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:2px 6px;line-height:1">⇄</button>
+          <button onclick="openExRest(${i})" title="Descanso deste exercício" style="background:none;border:none;color:${ex.rest?'#6fcf97':DM};font-size:13px;cursor:pointer;padding:2px 6px;line-height:1">⏱</button>
         </div>
       </div>
       <!-- Set rows -->
@@ -2266,8 +2294,8 @@ function buildPlans() {
         }).join('')}`;
 }
 
-function openNewPlan()   { _planExs=[]; _planId=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(''); }
-function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=[...(p.exercises||[])]; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(p.name); }
+function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planRestEdit=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(''); }
+function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=[...(p.exercises||[])]; _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planRestEdit=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(p.name); }
 
 function showPlanEditor(name) {
   showModal(`
@@ -2342,28 +2370,68 @@ function refreshPlanExList() {
   c.innerHTML = _planExs.map((exId,i) => {
     const ex = D.exercises.find(e => e.id===exId);
     const isFirst=i===0, isLast=i===_planExs.length-1;
-    return `<div style="display:flex;align-items:center;gap:6px;padding:7px 0;border-bottom:.5px solid ${BD}">
-      <div style="display:flex;flex-direction:column;gap:2px">
-        <button onclick="movePlanEx(${i},-1)" ${isFirst?'disabled':''} style="background:none;border:none;color:${isFirst?BD:DM};font-size:13px;cursor:${isFirst?'default':'pointer'};padding:1px 3px;line-height:1">▲</button>
-        <button onclick="movePlanEx(${i},1)"  ${isLast?'disabled':''}  style="background:none;border:none;color:${isLast?BD:DM};font-size:13px;cursor:${isLast?'default':'pointer'};padding:1px 3px;line-height:1">▼</button>
+    const hasRest = !!_planRests[exId];
+    // Inline expansion for this plan's per-exercise rest override — a
+    // sub-modal would replace the plan editor modal itself (showModal()
+    // closes the previous one), so the row expands in place instead.
+    const restRow = _planRestEdit === exId ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:4px 0 10px 24px">
+        ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']].map(([k,lbl]) => `
+        <div>
+          <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
+          <input type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${_planRests[exId]?.[k] ?? ''}"
+            onchange="setPlanRest('${exId}','${k}',this.value)"
+            style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:7px 4px;text-align:center;outline:none;box-sizing:border-box">
+        </div>`).join('')}
+      </div>` : '';
+    return `<div style="border-bottom:.5px solid ${BD}">
+      <div style="display:flex;align-items:center;gap:6px;padding:7px 0">
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <button onclick="movePlanEx(${i},-1)" ${isFirst?'disabled':''} style="background:none;border:none;color:${isFirst?BD:DM};font-size:13px;cursor:${isFirst?'default':'pointer'};padding:1px 3px;line-height:1">▲</button>
+          <button onclick="movePlanEx(${i},1)"  ${isLast?'disabled':''}  style="background:none;border:none;color:${isLast?BD:DM};font-size:13px;cursor:${isLast?'default':'pointer'};padding:1px 3px;line-height:1">▼</button>
+        </div>
+        <span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>
+        <span style="flex:1;font-size:14px">${esc(ex?ex.name:'(removido)')}</span>
+        ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
+        <button onclick="togglePlanRestEdit('${exId}')" title="Descanso neste plano" style="background:none;border:none;color:${hasRest||_planRestEdit===exId?'#6fcf97':DM};font-size:14px;cursor:pointer;padding:4px">⏱</button>
+        <button onclick="rmPlanEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px">×</button>
       </div>
-      <span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>
-      <span style="flex:1;font-size:14px">${esc(ex?ex.name:'(removido)')}</span>
-      ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
-      <button onclick="rmPlanEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px">×</button>
+      ${restRow}
     </div>`;
   }).join('');
 }
 
+function togglePlanRestEdit(exId) { _planRestEdit = _planRestEdit === exId ? null : exId; refreshPlanExList(); }
+
+// onchange from the inline rest inputs — keeps only valid entries so a
+// cleared field genuinely means "back to inheriting" for that transition.
+function setPlanRest(exId, key, val) {
+  const cur = { ..._planRests[exId], [key]: val };
+  const clean = sanitizeRest(cur);
+  if (clean) _planRests[exId] = clean; else delete _planRests[exId];
+}
+
 function movePlanEx(i,dir) { const j=i+dir; if(j<0||j>=_planExs.length)return; [_planExs[i],_planExs[j]]=[_planExs[j],_planExs[i]]; refreshPlanExList(); }
 function addExToPlan(id)   { if(!id||_planExs.includes(id))return; _planExs.push(id); refreshPlanExList(); }
-function rmPlanEx(i)       { _planExs.splice(i,1); refreshPlanExList(); }
+// Removing an exercise also drops its per-plan rest override — re-adding
+// it later silently resurrecting old timings would surprise more than help.
+function rmPlanEx(i)       { delete _planRests[_planExs[i]]; _planExs.splice(i,1); refreshPlanExList(); }
+
+// Prunes _planRests to the exercises actually in the plan (a guard, not a
+// normal path — rmPlanEx already cleans as it goes) and drops empty
+// overrides, so a stored plan never carries dead rest entries.
+function collectPlanRests() {
+  const out = {};
+  _planExs.forEach(exId => { const r = sanitizeRest(_planRests[exId]); if (r) out[exId] = r; });
+  return out;
+}
 
 function savePlan() {
   const name = (document.getElementById('plan-name')?.value||'').trim();
   if (!name) return;
-  if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=[..._planExs];p.updatedAt=Date.now();} }
-  else D.plans.push({ id:uid(), name, exercises:[..._planExs], updatedAt:Date.now() });
+  const rests = collectPlanRests();
+  if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=[..._planExs];p.rests=rests;p.updatedAt=Date.now();} }
+  else D.plans.push({ id:uid(), name, exercises:[..._planExs], rests, updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function delPlan(id) { D.tombstones.plans[id]=Date.now(); D.plans=D.plans.filter(p=>p.id!==id); persist(); render(); }
@@ -2387,9 +2455,12 @@ function buildPlanPayload(p) {
   const exercises = (p.exercises||[])
     .map(exId => D.exercises.find(e => e.id === exId))
     .filter(Boolean)
+    // rest DOES travel (unlike gyms): per-exercise timings are part of the
+    // training prescription — the coach-sends-a-plan case wants them.
     .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime,
-      mainMuscle:e.mainMuscle, movementPattern:e.movementPattern, accessoryMuscles:e.accessoryMuscles||[] }));
-  return { type: 'gym-tracker-plan', name: p.name, exercises };
+      mainMuscle:e.mainMuscle, movementPattern:e.movementPattern, accessoryMuscles:e.accessoryMuscles||[],
+      ...(e.rest ? { rest: e.rest } : {}) }));
+  return { type: 'gym-tracker-plan', name: p.name, exercises, ...(p.rests && Object.keys(p.rests).length ? { rests: p.rests } : {}) };
 }
 
 function exportPlan(id) {
@@ -2454,7 +2525,8 @@ function normalizeExerciseDef(imp) {
     ? imp.movementPattern : (mainMuscle==='undefined'?'undefined':'other');
   const accessoryMuscles = Array.isArray(imp.accessoryMuscles)
     ? imp.accessoryMuscles.filter(m => typeof m==='string' && m!=='undefined' && MUSCLE_GROUPS[m]) : [];
-  return { id: imp.id || uid(), name: imp.name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles, updatedAt: Date.now() };
+  const rest = sanitizeRest(imp.rest); // same [0,3600]-integer discipline as every rest input
+  return { id: imp.id || uid(), name: imp.name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles, ...(rest ? { rest } : {}), updatedAt: Date.now() };
 }
 
 // Merges an imported plan's exercises into the local library and creates a
@@ -2467,6 +2539,10 @@ function normalizeExerciseDef(imp) {
 // sender's own id — keeping a second import of the same plan idempotent
 // against the exercise list rather than creating duplicates.
 function applyImportedPlan(data) {
+  // sender exId → resolved local exId, for remapping the plan-level rests
+  // map below (its keys are the SENDER's ids, which may resolve to
+  // different local ids via the name-match fallback).
+  const idMap = {};
   const exIds = data.exercises
     // A plan file is untrusted input (from another user, possibly hand-
     // edited) — an entry with no usable name can't become a real library
@@ -2484,13 +2560,23 @@ function applyImportedPlan(data) {
         local = normalizeExerciseDef(imp);
         D.exercises.push(local);
       }
+      if (imp.id) idMap[imp.id] = local.id;
       return local.id;
     });
   // De-duplicate — the plan editor's own addExToPlan() already refuses to
   // add the same exercise to a plan twice; an imported file isn't bound by
   // that same guard, so enforce it here too.
   const uniqueExIds = [...new Set(exIds)];
-  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: uniqueExIds, updatedAt: Date.now() });
+  // Remap + sanitize the per-plan rest overrides: untrusted input like
+  // everything else in the file, and only meaningful for exercises that
+  // actually resolved into this plan.
+  const rests = {};
+  Object.entries(data.rests || {}).forEach(([senderId, r]) => {
+    const localId = idMap[senderId];
+    const clean = sanitizeRest(r);
+    if (localId && clean && uniqueExIds.includes(localId)) rests[localId] = clean;
+  });
+  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: uniqueExIds, rests, updatedAt: Date.now() });
   persist(); render();
 }
 
@@ -2686,6 +2772,16 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
         `<button id="gav-${gm.id}" onclick="exF('gymav','${gm.id}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newGyms.includes(gm.id)?'#0a2e24':BG3};color:${_newGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
       ).join('')}
     </div>` : ''}
+    <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Descanso deste exercício (opcional, segundos)</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Em branco = usa o padrão do tipo (⏱ no treino). 0 desliga o timer da transição. Planos podem sobrescrever por exercício.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:20px">
+      ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']].map(([k,lbl]) => `
+      <div>
+        <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
+        <input id="ex-rest-${k}" type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${_newRest[k]}"
+          style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
+      </div>`).join('')}
+    </div>
     ${B(CG,TX,'Salvar',saveFn)}
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`;
 }
@@ -2746,9 +2842,18 @@ function exF(field, val) {
   }
 }
 
+// Reads the three rest inputs from the open exercise modal into the shape
+// sanitizeRest() expects — shared by saveNewEx()/saveEditEx().
+function readModalRest() {
+  const v = {};
+  ['wuwu','wuw','ww'].forEach(k => { v[k] = document.getElementById('ex-rest-'+k)?.value ?? ''; });
+  return sanitizeRest(v);
+}
+
 function openNewEx()  {
   _newType='hypertrophy'; _newCompound=true; _newRegime='weighted';
   _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[]; _newGyms=[];
+  _newRest={ wuwu:'', wuw:'', ww:'' };
   showModal(exModalBody('Novo exercício','','saveNewEx()'));
 }
 function openEditEx(id) {
@@ -2771,13 +2876,15 @@ function openEditEx(id) {
   // another device before its delGym cleanup arrives — filter to real gyms
   // so the modal never shows phantom chips.
   _newGyms = (ex.gyms||[]).filter(id => D.gyms.some(g => g.id === id));
+  _newRest = { wuwu: ex.rest?.wuwu ?? '', wuw: ex.rest?.wuw ?? '', ww: ex.rest?.ww ?? '' };
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
 function saveNewEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim(); if(!name)return;
+  const rest = readModalRest();
   D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime,
     mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
-    gyms:[..._newGyms], updatedAt:Date.now() });
+    gyms:[..._newGyms], ...(rest ? { rest } : {}), updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -2796,6 +2903,8 @@ function saveEditEx() {
     ex.name=name; ex.type=_newType; if(_newCompoundTouched) ex.compound=_newCompound; ex.regime=_newRegime;
     ex.mainMuscle=_newMuscle; ex.movementPattern=_newPattern; ex.accessoryMuscles=[..._newAccessory];
     ex.gyms=[..._newGyms];
+    const rest = readModalRest();
+    if (rest) ex.rest = rest; else delete ex.rest; // all-blank inputs mean "back to inheriting"
     ex.updatedAt=Date.now();
   }
   persist(); closeModal(); render();
@@ -2921,7 +3030,10 @@ function setPickRegime(r) {
 
 function addPickedEx(exId) {
   const ex = D.exercises.find(e=>e.id===exId); if(!ex||!S)return;
-  const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, sets:[] };
+  // Rest seeding includes the followed plan's override even for an exercise
+  // added mid-session — if the plan prescribes timings for it, they apply
+  // regardless of when it joined the session.
+  const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, rest: seedRestFor(exId, S.planId), sets:[] };
   o.sets = buildSetsFromMemory(o);
   S.exercises.push(o); closeModal(); render();
 }
@@ -2936,7 +3048,7 @@ function createAndAdd() {
   // follow-up Library edit, exactly like fixing a mis-tagged regime already
   // does today.
   D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', mainMuscle:'undefined', movementPattern:'undefined', accessoryMuscles:[], updatedAt:Date.now() });
-  if (S) { const o={exId:id,exName:name,type:_newType,compound:true,regime:'weighted',sets:[]}; o.sets=buildSetsFromMemory(o); S.exercises.push(o); }
+  if (S) { const o={exId:id,exName:name,type:_newType,compound:true,regime:'weighted',rest:seedRestFor(id,S.planId),sets:[]}; o.sets=buildSetsFromMemory(o); S.exercises.push(o); }
   persist(); closeModal(); render();
 }
 
@@ -2966,7 +3078,8 @@ function startPlan(id) {
       const ex = D.exercises.find(e=>e.id===exId);
       // '(removido)' — same label the Plans tab itself shows for a plan
       // entry whose exercise was deleted from the library, not a bare '?'.
-      const o  = { exId, exName:ex?ex.name:'(removido)', type:ex?.type||'hypertrophy', compound:ex?.compound, regime:ex?.regime||'weighted', sets:[] };
+      const o  = { exId, exName:ex?ex.name:'(removido)', type:ex?.type||'hypertrophy', compound:ex?.compound, regime:ex?.regime||'weighted',
+                   rest: seedRestFor(exId, p.id), sets:[] };
       o.sets   = buildSetsFromMemory(o);
       return o;
     })
@@ -2977,8 +3090,91 @@ function startPlan(id) {
 function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; render(); }
 function cancelSession() { S=null; _restTimer=null; render(); }
 
+// ── Saving a session vs. its plan ─────────────────────────────────────────────
+//
+// A session is always a free copy of its plan — reorder, swap, add, drop,
+// retime, nothing touches the plan while training. The reconciliation
+// happens ONCE, at save: if the session still points at an existing plan
+// and drifted from it in a plan-representable way, the user chooses to
+// update that plan, fork a new one, or save the session alone. Only two
+// kinds of drift ARE plan-representable and thus compared: the exercise id
+// list in order, and per-exercise rest overrides (compared against what
+// the session was SEEDED with, so library-inherited values the user never
+// touched don't trigger the prompt). Set counts, reps/kg, and type/regime
+// toggles are session-only by design — plans don't model them.
+
+const sessionIdList = () => S.exercises.map(e => e.exId);
+
+function sessionPlanDiff() {
+  if (!S || !S.planId || S._editId) return null; // re-edits of old sessions save silently — the prompt is a live-workout affordance
+  const plan = D.plans.find(p => p.id === S.planId);
+  if (!plan) return null; // plan deleted meanwhile — nothing to reconcile against
+  const listChanged = JSON.stringify(sessionIdList()) !== JSON.stringify(plan.exercises || []);
+  // BOTH sides pass through sanitizeRest — not for validation (the seed is
+  // already clean) but for CANONICAL KEY ORDER: seedRestFor()'s spread
+  // merge emits keys in insertion order, and JSON.stringify comparison
+  // would read {ww,wuwu} vs {wuwu,ww} as a difference that isn't one.
+  const restsChanged = S.exercises.some(ex =>
+    JSON.stringify(sanitizeRest(ex.rest) || null) !== JSON.stringify(sanitizeRest(seedRestFor(ex.exId, plan.id)) || null));
+  return (listChanged || restsChanged) ? { plan, listChanged, restsChanged } : null;
+}
+
+// The rests map a written-back plan should carry: each session exercise's
+// current override, MINUS entries identical to the library exercise's own
+// default — the plan stores what's plan-specific, not a frozen copy of
+// library values (which would pin them against future library edits).
+// Duplicate exercises (supersets) share one exId key — last occurrence wins.
+function collectSessionRests() {
+  const out = {};
+  S.exercises.forEach(ex => {
+    const r = sanitizeRest(ex.rest);
+    const lib = sanitizeRest(D.exercises.find(e => e.id === ex.exId)?.rest);
+    if (r && JSON.stringify(r) !== JSON.stringify(lib)) out[ex.exId] = r;
+    else delete out[ex.exId];
+  });
+  return out;
+}
+
+function openSaveOptions(diff) {
+  const what = [diff.listChanged ? 'exercícios/ordem' : null, diff.restsChanged ? 'descansos' : null].filter(Boolean).join(' e ');
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Treino diferente do plano</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:16px">Este treino mudou <strong style="color:${TX}">${what}</strong> em relação a "${esc(diff.plan.name)}". O que fazer com o plano?</div>
+    ${B(CG,TX,`Atualizar "${esc(diff.plan.name)}"`,"doSaveSession('update')")}
+    <div style="height:1px;background:${BD};margin:4px 0 12px"></div>
+    <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome do novo plano</label>
+    <input id="save-new-plan-name" type="text" value="${esc(diff.plan.name)} (2)"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    ${B(BG3,TX,'Criar novo plano com este treino',"doSaveSession('new')")}
+    <div style="height:1px;background:${BD};margin:4px 0 12px"></div>
+    ${B(BG3,TX,'Salvar só o treino (plano intacto)',"doSaveSession('keep')")}
+    ${B(BG3,DM,'Voltar ao treino','closeModal()',';margin-bottom:0')}`);
+}
+
 function saveSession() {
   if (!S||!S.exercises.length) return;
+  const diff = sessionPlanDiff();
+  if (diff) { openSaveOptions(diff); return; }
+  doSaveSession('keep');
+}
+
+function doSaveSession(mode) {
+  if (!S||!S.exercises.length) return;
+  if (mode === 'update') {
+    const plan = D.plans.find(p => p.id === S.planId);
+    if (plan) {
+      plan.exercises = sessionIdList(); // duplicates preserved on purpose — a superset session IS the intended plan shape
+      plan.rests     = collectSessionRests();
+      plan.updatedAt = Date.now();
+    }
+  } else if (mode === 'new') {
+    const name = (document.getElementById('save-new-plan-name')?.value || '').trim() || `${S.planName || 'Treino'} (2)`;
+    const np = { id: uid(), name, exercises: sessionIdList(), rests: collectSessionRests(), updatedAt: Date.now() };
+    D.plans.push(np);
+    // The session record belongs to the plan it actually represents now.
+    S.planId = np.id; S.planName = np.name;
+  }
+  closeModal();
   // Strip the render-only _sug cache before persisting — it's a snapshot
   // of computeSuggestion() from whenever the exercise was added/refreshed
   // this session and must never be saved as if it were real data.
@@ -3133,17 +3329,44 @@ function timerCfg() {
   return _timerCfg;
 }
 
-function restDurationFor(type, fromIntent, toIntent) {
-  const cfg = timerCfg()[type === 'strength' ? 'strength' : 'hypertrophy'];
-  if (fromIntent === 'warmup') return toIntent === 'warmup' ? cfg.wuwu : cfg.wuw;
-  return cfg.ww; // work → anything rests like work→work (a manual W-before-WU reorder is the user's own exotic choice)
+const restKeyFor = (fromIntent, toIntent) =>
+  fromIntent === 'warmup' ? (toIntent === 'warmup' ? 'wuwu' : 'wuw') : 'ww';
+  // work → anything rests like work→work (a manual W-before-WU reorder is
+  // the user's own exotic choice)
+
+// Rest resolution cascade, per TRANSITION KEY independently:
+//   1. the session exercise's own `rest` override — which was seeded at
+//      add-time from plan-per-exercise + library-per-exercise values (see
+//      seedRestFor()) and is editable mid-session (openExRest());
+//   2. the device's per-type defaults (timerCfg()).
+// An explicit 0 at level 1 means "no timer for this transition" (deliberate
+// disable), which is why the check is != null rather than truthy — the same
+// 0-is-real-data philosophy hasKg() applies to sets.
+function restDurationFor(ex, fromIntent, toIntent) {
+  const key = restKeyFor(fromIntent, toIntent);
+  const own = ex?.rest?.[key];
+  if (own != null && own !== '') return own;
+  const cfg = timerCfg()[ex?.type === 'strength' ? 'strength' : 'hypertrophy'];
+  return cfg[key];
+}
+
+// The rest override a session exercise starts with: the followed plan's
+// per-exercise timing wins over the library exercise's own default, key by
+// key (both partial-friendly). Returns undefined when neither has anything
+// — an absent override means "live-inherit the device defaults", so
+// tweaking ⏱ settings mid-session still reaches non-overridden exercises.
+function seedRestFor(exId, planId) {
+  const lib  = D.exercises.find(e => e.id === exId);
+  const plan = planId ? D.plans.find(p => p.id === planId) : null;
+  const merged = { ...(lib?.rest || {}), ...(plan?.rests?.[exId] || {}) };
+  return Object.keys(merged).length ? merged : undefined;
 }
 
 function startRestTimer(i, j) {
   const ex = S?.exercises[i]; if (!ex) return;
   const s  = ex.sets[j]; if (!s) return;
   const next = ex.sets[j + 1];
-  const secs = restDurationFor(ex.type, s.intent, next ? next.intent : 'work');
+  const secs = restDurationFor(ex, s.intent, next ? next.intent : 'work');
   if (!secs || secs <= 0) return; // a zeroed-out custom value means "no timer for this transition"
   const isWU = s.intent === 'warmup' && next && next.intent === 'warmup';
   _restTimer = {
@@ -3244,7 +3467,7 @@ function openTimerSettings() {
     </div>`;
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">Descanso entre séries</div>
-    <div style="font-size:12px;color:${DM};margin-bottom:12px">Segundos por transição — o timer dispara ao marcar ✓ numa série. Um valor 0 desliga o timer daquela transição. Ajustes valem neste aparelho.</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Padrões deste aparelho, em segundos por transição — o timer dispara ao marcar ✓ numa série. Um valor 0 desliga o timer daquela transição. Exercícios (Biblioteca) e planos podem sobrescrever por exercício; no treino, o ⏱ de cada exercício ajusta na hora.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${Object.entries(TIMER_PRESETS).map(([k, p]) => presetPill(k, p.label)).join('')}${presetPill('custom', 'Personalizado')}</div>
     ${grid('Hipertrofia', 'tm-h', cfg.hypertrophy)}
     ${grid('Força', 'tm-s', cfg.strength)}
@@ -3290,6 +3513,38 @@ function saveTimerSettings() {
   openTimerSettings.__pendingPreset = null;
   closeModal();
   render();
+}
+
+// Per-exercise rest editor for the ACTIVE session — edits ex.rest on the
+// session copy only (the plan/library stay untouched until the save-time
+// choice, see saveSession's options). Placeholders show what "blank"
+// currently inherits, so the three states read clearly: number = override,
+// 0 = timer off, blank = inherit the device default.
+function openExRest(i) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  const cfg = timerCfg()[ex.type === 'strength' ? 'strength' : 'hypertrophy'];
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Descanso — ${esc(ex.exName)}</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Segundos por transição, só para este exercício neste treino. Em branco = padrão do tipo (mostrado como dica). 0 desliga. Ao salvar o treino você decide se isso vai para o plano.</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+      ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']].map(([k,lbl]) => `
+      <div>
+        <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
+        <input id="sxr-${k}" type="number" inputmode="numeric" min="0" step="5" placeholder="${cfg[k]}" value="${ex.rest?.[k] ?? ''}"
+          style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
+      </div>`).join('')}
+    </div>
+    ${B(CG,TX,'Aplicar',`saveExRest(${i})`)}
+    ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
+}
+
+function saveExRest(i) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  const v = {};
+  ['wuwu','wuw','ww'].forEach(k => { v[k] = document.getElementById('sxr-'+k)?.value ?? ''; });
+  const rest = sanitizeRest(v);
+  if (rest) ex.rest = rest; else delete ex.rest;
+  closeModal(); render();
 }
 
 // Marks a set (work OR warm-up) as actually performed. Separate from just
@@ -3396,7 +3651,7 @@ function doSwapEx(i, newId) {
   const old = S.exercises[i];
   const hasData = (old.sets||[]).some(s => hasReps(s) || hasKg(s));
   if (hasData && !confirm(`Substituir "${old.exName}" por "${ne.name}"?\n\nAs séries já preenchidas serão descartadas.`)) return;
-  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound, regime: ne.regime||'weighted', sets: [] };
+  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound, regime: ne.regime||'weighted', rest: seedRestFor(ne.id, S.planId), sets: [] };
   o.sets = buildSetsFromMemory(o);
   S.exercises[i] = o;
   closeModal();
