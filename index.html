@@ -4374,6 +4374,13 @@ function openBackup() {
       }).join('');
     })()}
 
+    <!-- Danger zone -->
+    <div style="border:1px solid #3a1010;background:#160808;border-radius:10px;padding:12px 14px;margin-top:20px">
+      <div style="font-size:13px;font-weight:700;color:${CR};margin-bottom:4px">Zona de perigo</div>
+      <div style="font-size:11px;color:${DM};margin-bottom:10px;line-height:1.5">Apaga treinos, planos, pesos, academias e exercícios personalizados — deste aparelho, da sua conta e dos outros aparelhos na próxima sincronização. A biblioteca volta à lista original. Login e configurações de descanso são mantidos.</div>
+      ${Bs('#1a0808',CR,'⚠ Apagar tudo e recomeçar','factoryReset()',`;width:100%;justify-content:center;padding:10px;border:1px solid #3a1010`)}
+    </div>
+
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
 }
 
@@ -4514,6 +4521,62 @@ function applyData(p) {
   // And the same for set scaffolding in sessions saved before the
   // saveSession() metadata strip — see scrubSessionSetMetadata() (section 2).
   scrubSessionSetMetadata();
+}
+
+// ── Factory reset ─────────────────────────────────────────────────────────────
+//
+// Wipes all training data and rebuilds the exercise library from the
+// curated seed, so every device (and every user) lands on an identical,
+// consistent starting state.
+//
+// The subtle part is making it STICK across devices. The merge is a union
+// by id: an empty local state merged against a device that still holds the
+// old data would simply get all of it back. So the reset TOMBSTONES every
+// id it removes — the same mechanism that keeps a normal delete from being
+// resurrected — which means a stale device syncing later loses its copies
+// instead of restoring them. Exercises that are part of the curated seed
+// are NOT tombstoned: they're re-seeded under the same stable slug ids, so
+// id-union + last-writer-wins converges on the fresh copy.
+//
+// Deliberately preserved: the login/sync config (you stay signed in) and
+// per-device preferences (rest timers). A pre-reset snapshot is stashed
+// locally first — invisible unless needed, and the one-tap way back if
+// this turns out to have been a mistake.
+async function factoryReset() {
+  const counts = `${D.sessions.length} treino(s), ${D.plans.length} plano(s), ${D.weights.length} peso(s), ${D.gyms.length} academia(s)`;
+  if (!confirm(`APAGAR TUDO?\n\nSerão excluídos: ${counts} e todos os exercícios personalizados.\n\nA biblioteca volta à lista original de exercícios. Seu login e as configurações de descanso são mantidos.\n\nIsto também apaga os dados na sua conta (nuvem) e nos outros aparelhos na próxima sincronização.`)) return;
+  if (!confirm('Tem certeza? Esta ação não pode ser desfeita pelo app.\n\n(Uma cópia local de segurança fica guardada em "antes da última restauração", nos snapshots.)')) return;
+
+  stashPreRestore();
+
+  const now = Date.now();
+  ['sessions', 'plans', 'weights', 'gyms'].forEach(coll => {
+    (D[coll] || []).forEach(item => { if (item?.id) D.tombstones[coll][item.id] = now; });
+    D[coll] = [];
+  });
+
+  // Anything not in the curated seed is a personal/duplicate entry: tombstone
+  // it. The seeded ids are left untombstoned so the re-seed below can restore
+  // them cleanly under the same ids.
+  let seedIds = new Set();
+  try {
+    const r = await fetch('library.json', { cache: 'no-store' });
+    if (r.ok) seedIds = new Set(((await r.json()).exercises || []).map(e => e.id));
+  } catch (e) {}
+  (D.exercises || []).forEach(ex => { if (ex?.id && !seedIds.has(ex.id)) D.tombstones.exercises[ex.id] = now; });
+  D.exercises = [];
+
+  // Live UI state that could still reference deleted data
+  S = null; EXP = null; _restTimer = null; _receivedShares = [];
+  _currentGymId = null; LS.set('gym:currentGym', '');
+  D.lastModified = now;
+
+  await seedStarterLibrary();   // refetches library.json, repopulates, persists (and pushes)
+  await persist();              // ensures the tombstones + cleared collections reach the remote
+  render();
+  alert(D.exercises.length
+    ? `Pronto. Biblioteca restaurada com ${D.exercises.length} exercícios; todo o resto foi apagado.`
+    : 'Dados apagados, mas não foi possível baixar a biblioteca inicial — reconecte e use "Tentar novamente" na Biblioteca.');
 }
 
 function importBackup() {

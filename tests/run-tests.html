@@ -1190,6 +1190,63 @@
     ['dup-b','dup-c','dup-y'].forEach(k => delete T.D.tombstones.exercises[k]);
   }
 
+  // ── factory reset ──────────────────────────────────────────────────────────
+  g('factory reset');
+  {
+    const realConfirm = W.confirm, realAlert = W.alert;
+    W.confirm = () => true; W.alert = () => {};
+
+    // a realistic mess: history, plans, weights, a gym, and custom exercises
+    T.D.sessions = [{ id: 'rs1', date: '2026-07-01', updatedAt: 5, exercises: [{ exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 100 }] }] }];
+    T.D.plans    = [{ id: 'rp1', name: 'Plano velho', exercises: ['bench-press'], rests: {}, updatedAt: 5 }];
+    T.D.weights  = [{ id: 'rw1', date: '2026-07-01', kg: 80, updatedAt: 5 }];
+    T.D.gyms     = [{ id: 'rg1', name: 'Academia velha', updatedAt: 5 }];
+    T.D.exercises.push({ id: 'custom-junk', name: 'Duplicado bagunçado', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'undefined', movementPattern: 'undefined', accessoryMuscles: [], updatedAt: 5 });
+    T.CFG = { token: '', gistId: '', driver: 'supabase' };
+    T.gymId = 'rg1';
+    const cfgBefore = JSON.stringify(T.CFG);
+
+    await W.factoryReset();
+
+    t('all training data wiped', T.D.sessions.length === 0 && T.D.plans.length === 0 && T.D.weights.length === 0 && T.D.gyms.length === 0);
+    t('library restored to the curated seed (44)', T.D.exercises.length === 44 && T.D.exercises.every(e => e.mainMuscle));
+    t('custom/duplicate exercise gone', !T.D.exercises.some(e => e.id === 'custom-junk'));
+    t('deletions tombstoned so they propagate', 'rs1' in T.D.tombstones.sessions && 'rp1' in T.D.tombstones.plans
+      && 'rw1' in T.D.tombstones.weights && 'rg1' in T.D.tombstones.gyms && 'custom-junk' in T.D.tombstones.exercises);
+    t('seeded ids NOT tombstoned (they must survive the re-seed)', !('bench-press' in T.D.tombstones.exercises));
+    t('login/sync config preserved', JSON.stringify(T.CFG) === cfgBefore);
+    t('live UI state cleared', T.S === null && T.gymId === null);
+    t('pre-reset safety snapshot stashed', W.listSnapshots().some(s => s.slot === 'prerestore'));
+
+    // THE property that makes a reset stick: a stale device syncing its old
+    // data afterwards must NOT resurrect any of it.
+    const staleRemote = {
+      sessions: { schema: 4, sessions: [{ id: 'rs1', date: '2026-07-01', updatedAt: 5, exercises: [] }], tombstones: {} },
+      plans:    { schema: 4, plans:    [{ id: 'rp1', name: 'Plano velho', exercises: [], updatedAt: 5 }], tombstones: {} },
+      weights:  { schema: 4, weights:  [{ id: 'rw1', date: '2026-07-01', kg: 80, updatedAt: 5 }], tombstones: {} },
+      gyms:     { schema: 4, gyms:     [{ id: 'rg1', name: 'Academia velha', updatedAt: 5 }], tombstones: {} },
+      library:  { schema: 4, exercises: [{ id: 'custom-junk', name: 'Duplicado bagunçado', updatedAt: 5 }], tombstones: {} },
+    };
+    W.mergeRemote(staleRemote);
+    t('a stale device cannot resurrect the wiped data', T.D.sessions.length === 0 && T.D.plans.length === 0
+      && T.D.weights.length === 0 && T.D.gyms.length === 0 && !T.D.exercises.some(e => e.id === 'custom-junk'));
+    t('...and the clean library survives that merge', T.D.exercises.length === 44);
+
+    W.confirm = () => false;
+    T.D.sessions = [{ id: 'keep-me', date: '2026-07-02', updatedAt: 9, exercises: [] }];
+    await W.factoryReset();
+    t('declining the confirmation changes nothing', T.D.sessions.length === 1 && T.D.sessions[0].id === 'keep-me');
+
+    W.confirm = realConfirm; W.alert = realAlert;
+    T.D.sessions = []; T.D.plans = []; T.D.weights = []; T.D.gyms = [];
+    ['rs1'].forEach(k => delete T.D.tombstones.sessions[k]);
+    ['rp1'].forEach(k => delete T.D.tombstones.plans[k]);
+    ['rw1'].forEach(k => delete T.D.tombstones.weights[k]);
+    ['rg1'].forEach(k => delete T.D.tombstones.gyms[k]);
+    delete T.D.tombstones.exercises['custom-junk'];
+    ['0','1','2','3','4','5','6','prerestore'].forEach(s => W.localStorage.removeItem('gym:snapshot:' + s));
+  }
+
   // ── wrap-up ────────────────────────────────────────────────────────────────
   g('wrap-up');
   // Persist the restored (clean) state: several tests persist() mid-run
