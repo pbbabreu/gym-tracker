@@ -46,8 +46,9 @@ python -m http.server 8742        # from the repo root
 ```
 
 - Develop against `http://localhost:8742/` — `file://` breaks reloads and service workers.
-- **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (100+ checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
+- **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (250+ checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
 - Service-worker gotcha: if an edit doesn't seem to take effect, the SW may be serving cache — unregister it and hard-reload (the test runner does this automatically).
+- `supabase/` holds the canonical database SQL (01 = per-user storage, 02 = sharing tables + catalog seed); `.github/workflows/keepalive.yml` pings the project weekly so the free tier never pauses.
 - Deploys are just pushes to `main` — GitHub Pages serves the repo root (~30s).
 
 ## License

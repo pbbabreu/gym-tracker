@@ -65,11 +65,13 @@ const TX=COLOR.text, DM=COLOR.dim, BD=COLOR.border;
 // ║  NOT an ongoing sync: once seeded, entries are indistinguishable from
 // ║  anything the user adds themselves (same array, same CRUD functions), so
 // ║  deleting a seeded exercise deletes it for good — it will not silently
-// ║  reappear because library.json still has it. There is currently exactly
-// ║  one user, so a shared/global library with a suggestion-and-approval
-// ║  workflow (originally considered) was deliberately deferred — see the
-// ║  project Log — this is scoped to just "give every install a starting
-// ║  library, including offline."
+// ║  reappear because library.json still has it. The SHARED library now
+// ║  exists server-side as the global_exercises catalog (same 44 entries,
+// ║  same slug ids — see supabase/02-sharing.sql): connected users pull new
+// ║  catalog entries opt-in via Biblioteca's ⟳ Catálogo (openCatalogUpdate,
+// ║  section 13), which honors deletions via the tombstone check. The
+// ║  in-app suggestion-and-approval workflow remains deferred to M3;
+// ║  catalog curation is dashboard-only until then.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 // Set on a failed seed fetch so buildLibrary() can offer a retry — the only
@@ -1417,13 +1419,18 @@ function buildSetsFromMemory(ex) {
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
-// ║  7. BODYWEIGHT & VOLUME HELPERS
+// ║  7. BODYWEIGHT, VOLUME & ANALYTICS HELPERS
 // ║
 // ║  Bodyweight is used in two ways:
 // ║    · Bodyweight exercises: actual load = BW (no input needed)
 // ║    · Assisted exercises:   actual load = BW − counterweight
 // ║
 // ║  Volume is calculated using actual load, not entered kg.
+// ║
+// ║  The analytics block below (epley1RM / exerciseProgress / weekStartOf /
+// ║  weeklyMuscleVolume) feeds the two read-only views: the per-exercise
+// ║  progress chart (openProgress, section 13) and the weekly muscle-volume
+// ║  table (openVolume, section 12).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function currentBW() {
@@ -1777,11 +1784,18 @@ function bwBanner() {
 // ║  11. TAB: LOG (Treino)
 // ║
 // ║  Two states:
-// ║    · No active session → plan picker + "free workout" button
-// ║    · Active session    → exercise blocks with set rows
+// ║    · No active session → gym selector (+ manager), plan picker,
+// ║      "free workout" button, ⏱ rest-timer settings entry
+// ║    · Active session    → sticky rest-timer banner + exercise blocks
 // ║
-// ║  Exercise block contains: name, type toggle, regime toggle, set rows
-// ║  Set row contains: W/WU toggle, reps input, kg input, reference chip, remove
+// ║  Exercise block (expanded): collapse chevron, reorder arrows, name,
+// ║  exercise-done ✓ (derived — see exIsDone), type/regime toggles,
+// ║  swap ⇄ / per-exercise rest ⏱ / remove buttons, availability banner
+// ║  when the session's gym can't do it, stall banner, estimate prompt,
+// ║  set rows. Collapsed (focus mode): one compact row — chevron, done ✓,
+// ║  name, checked-count.
+// ║  Set row: completed ✓ (drives the rest timer + collapse-and-advance),
+// ║  W/WU toggle, reps input, kg input, repeat/suggestion chips, remove.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildLog() {
@@ -2129,9 +2143,13 @@ function buildExBlock(ex, i) {
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  12. TAB: HISTORY (Histórico)
 // ║
-// ║  Sorted list of saved sessions, newest first.
-// ║  Each row is tappable to expand — shows per-exercise set detail.
-// ║  Actions: Edit (loads session back into Log tab), Delete.
+// ║  Sorted list of saved sessions, newest first — each collapsed row shows
+// ║  plan name, date, gym tag, counted-set count and volume; tappable to
+// ║  expand into per-exercise set detail.
+// ║  Actions: Edit (loads the session back into the Log tab), Criar plano
+// ║  (extracts it into a plan — openPlanFromSession, section 19), Delete.
+// ║  Header buttons: 📊 Volume (weekly muscle-volume table, below) and
+// ║  Backup & Sync (section 20).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildHistory() {
@@ -2234,6 +2252,9 @@ function openVolume() {
 // ║  Displays all exercises in D.exercises with filtering, search, and A-Z sort.
 // ║  Filter bar uses data-* attributes + bindLibraryFilters() after render.
 // ║  Search updates the results list in-place (no full re-render) to keep focus.
+// ║  Tapping a row's name/pills opens its progress chart (openProgress);
+// ║  ⟳ Catálogo (connected users) offers global-catalog entries this
+// ║  library lacks and never deleted (openCatalogUpdate).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildLibrary() {
@@ -2481,11 +2502,19 @@ function addCatalogExercise(catalogId) {
 // ║  Plan editor modal replaces the old <select> dropdown with a full
 // ║  search + filter + scrollable exercise picker (same UX as add-exercise).
 // ║
-// ║  Plan sharing — exportPlan()/importPlanFile()/applyImportedPlan() —
-// ║  ships one plan as its own JSON file (name + a snapshot of its
-// ║  exercises' definitions, not just their ids) for sending to another
-// ║  user. Separate from the full-state Backup & Sync export/import in
-// ║  section 20 — this is scoped to a single plan, and merges into the
+// ║  Plans carry a `rests` map (per-exercise rest overrides — edited via
+// ║  the per-row ⏱ inline expansion, see refreshPlanExList()).
+// ║
+// ║  Plan sharing, two transports over ONE payload (buildPlanPayload():
+// ║  name + a snapshot of the exercises' definitions + rests — never bare
+// ║  ids, and never gym tags):
+// ║    · file: exportPlan()/importPlanFile() — works with zero accounts
+// ║    · in-app: openSharePlan()/sendPlanShare() by e-mail; received ones
+// ║      land in the "Planos recebidos" inbox (receivedSharesHTML) with
+// ║      importShare()/dismissShare()
+// ║  Both import through the same shape guard + applyImportedPlan()
+// ║  hardening. Separate from the full-state Backup & Sync export/import
+// ║  in section 20 — this is scoped to a single plan, and merges into the
 // ║  local library on import rather than replacing it.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
@@ -2977,7 +3006,11 @@ function closeModal() { document.getElementById('modal-ov')?.remove(); }
 // ║  17. EXERCISE MODAL (Library: new / edit)
 // ║
 // ║  Used from the Library tab to create or edit an exercise definition.
-// ║  Fields: name, type (strength/hypertrophy), compound/isolation, regime.
+// ║  Fields: name, type (strength/hypertrophy), compound/isolation, regime,
+// ║  muscle classification (cascading main-muscle select → that group's own
+// ║  movement patterns + accessory multi-select), gym availability chips
+// ║  (only when gyms exist), and the optional per-exercise rest override
+// ║  (blank = inherit, 0 = timer off — see the rest cascade, section 19).
 // ║  exF() updates button styles in-place without re-rendering the modal.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
@@ -3310,11 +3343,24 @@ function createAndAdd() {
 // ║  19. SESSION ACTIONS
 // ║
 // ║  Manages the active session (S):
-// ║    startPlan()    — loads a plan into S with memory-populated sets
-// ║    startFree()    — blank session
-// ║    saveSession()  — commits S to D.sessions, rebuilds memory, persists
+// ║    startPlan()    — loads a plan into S (history-driven sets, seeded
+// ║                     rest overrides, gym stamp)
+// ║    startFree()    — blank session (gym stamp only)
+// ║    saveSession()  — routes the save: plan drift → three-way
+// ║                     reconciliation modal (openSaveOptions), plan-less
+// ║                     first save → plan offer (openFreeSaveOptions),
+// ║                     otherwise straight to doSaveSession('keep')
+// ║    doSaveSession()— applies the chosen plan effect, strips render
+// ║                     scaffolding, commits S to D.sessions, persists
 // ║    editSess()     — loads a saved session back into S for editing
-// ║    cancelSession()— discards S
+// ║    cancelSession()— discards S (and any running rest timer)
+// ║    openPlanFromSession()/doPlanFromSession() — History's "Criar plano"
+// ║
+// ║  Also lives here: the swap-exercise flow (openSwapEx/doSwapEx —
+// ║  classification-ranked, gym-aware), the per-exercise rest editor
+// ║  (openExRest), the rest timer (startRestTimer/tick/banner/settings),
+// ║  and focus mode (exIsDone/toggleExCollapse/toggleExDone/
+// ║  collapseAndAdvance + toggleCompleted's cascade-down uncheck).
 // ║
 // ║  Per-set mutations (addSet, rmSet, toggleIntent, setVal) are called
 // ║  directly from oninput/onclick attributes in the exercise block HTML.

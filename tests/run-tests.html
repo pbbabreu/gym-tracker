@@ -27,10 +27,14 @@
 
   Every test sets up its own state inside the iframe and restores what it
   touched, so order doesn't matter. Add a test for every bug fixed — the
-  suite is the project's memory of what must never break again. Current
-  coverage: the 2026-07-22 fix pass (local dates, per-item LWW merge,
-  schema guard, set-metadata strip/scrub, snapshots) plus the core
-  progression/warm-up/filter/import algorithms.
+  suite is the project's memory of what must never break again. Coverage
+  spans the whole app: sync integrity (per-item LWW merge, tombstones,
+  schema guard, both drivers behind one interface), data hygiene (strip/
+  scrub, snapshots), the progression engine (profiles, warm-up ramps,
+  graduation/stall, estimate prefill), gym profiles + swap ranking, the
+  rest-timer cascade + plan reconciliation, sharing (send/receive/claim,
+  catalog, import hardening), focus mode, and the analytics
+  (progress/regimes, weekly volume).
   ══════════════════════════════════════════════════════════════════════════
 -->
 <style>
