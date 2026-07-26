@@ -1953,18 +1953,44 @@ function buildExBlock(ex, i) {
     </div>`;
   }).join('');
 
+  // Exercise-level done state is DERIVED from the sets (every set
+  // explicitly completed), never stored — the two ways of finishing an
+  // exercise (checking its header box, or checking every set) converge on
+  // the same data. _collapsed is the only stored flag, and it's live-
+  // session UI state, stripped at save.
+  const done = exIsDone(ex);
+  const doneCheck = `<button onclick="toggleExDone(${i})" aria-label="Exercício concluído" style="flex-shrink:0;width:26px;height:26px;border-radius:7px;border:1px solid ${done?CG:BD};background:${done?CG:'transparent'};color:#fff;font-size:13px;font-weight:700;cursor:pointer;padding:0">${done?'✓':''}</button>`;
+
+  // Collapsed: one compact row — chevron/name to expand, the done box, and
+  // a set-count summary. Everything else (toggles, sets, banners, buttons)
+  // stays out of the way; that's the point of focus mode.
+  if (ex._collapsed) {
+    const checked = ex.sets.filter(s => s.completed === true).length;
+    return `
+    <div id="exblk-${i}" style="background:${BG2};border:1px solid ${done?'#1a4a3a':(isDuplicated?CA:BD)};border-radius:10px;margin-bottom:8px;overflow:hidden;opacity:${done?'.75':'1'}">
+      <div style="display:flex;align-items:center;gap:8px;padding:9px 12px">
+        <button onclick="toggleExCollapse(${i})" style="background:none;border:none;color:${DM};font-size:12px;cursor:pointer;padding:2px;flex-shrink:0">▸</button>
+        ${doneCheck}
+        <button onclick="toggleExCollapse(${i})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:14px;cursor:pointer;font-family:inherit;text-align:left;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
+        <span style="flex-shrink:0;font-size:12px;color:${done?'#6fcf97':DM}">${checked}/${ex.sets.length} ✓</span>
+      </div>
+    </div>`;
+  }
+
   return `
-    <div style="background:${BG2};border:1px solid ${isDuplicated?CA:BD};border-radius:10px;margin-bottom:12px;overflow:hidden">
-      <!-- Exercise header: reorder arrows, name, type/regime toggles, remove -->
+    <div id="exblk-${i}" style="background:${BG2};border:1px solid ${isDuplicated?CA:BD};border-radius:10px;margin-bottom:12px;overflow:hidden">
+      <!-- Exercise header: collapse chevron, reorder arrows, name, done box, type/regime toggles, buttons -->
       <div style="padding:10px 12px 10px 10px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid ${BD};gap:8px">
         <div style="display:flex;flex-direction:column;gap:2px;padding-top:2px;flex-shrink:0">
           <button onclick="moveEx(${i},-1)" ${isFirst?'disabled':''} style="background:none;border:none;color:${isFirst?BD:DM};font-size:14px;cursor:${isFirst?'default':'pointer'};padding:1px 4px;line-height:1">▲</button>
           <button onclick="moveEx(${i},1)"  ${isLast?'disabled':''} style="background:none;border:none;color:${isLast?BD:DM};font-size:14px;cursor:${isLast?'default':'pointer'};padding:1px 4px;line-height:1">▼</button>
         </div>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:15px;margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px">
-            <span style="overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</span>
+          <div style="font-weight:700;font-size:15px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
+            <button onclick="toggleExCollapse(${i})" title="Minimizar" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:12px;cursor:pointer;padding:2px">▾</button>
+            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</span>
             ${isDuplicated ? `<button onclick="alert('Este exercício aparece mais de uma vez neste treino (mesmo tipo e regime). O histórico combina os dados das duas entradas para sugestões futuras, mas cada uma é salva separadamente, na ordem em que foram adicionadas.')" style="flex-shrink:0;background:none;border:1px solid ${CA};color:${CA};border-radius:99px;width:16px;height:16px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0">i</button>` : ''}
+            ${doneCheck}
           </div>
           <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
             <button onclick="setExType(${i},'strength')"    style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isS?'#A32D2D':BG3};color:${isS?TX:DM}">Força</button>
@@ -2044,6 +2070,7 @@ function buildHistory() {
       detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${exRows}
         <div style="display:flex;gap:8px;margin-top:12px">
           ${Bs(BG3,TX,'Editar',`editSess('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
+          ${Bs(BG3,TX,'Criar plano',`openPlanFromSession('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
           ${Bs('#1a0808',CR,'Excluir',`delSess('${s.id}')`,`;flex:1;padding:10px;justify-content:center;border:1px solid #3a1010`)}
         </div>
       </div>`;
@@ -3119,14 +3146,16 @@ function sessionPlanDiff() {
   return (listChanged || restsChanged) ? { plan, listChanged, restsChanged } : null;
 }
 
-// The rests map a written-back plan should carry: each session exercise's
+// The rests map a plan built FROM a session should carry: each exercise's
 // current override, MINUS entries identical to the library exercise's own
 // default — the plan stores what's plan-specific, not a frozen copy of
 // library values (which would pin them against future library edits).
 // Duplicate exercises (supersets) share one exId key — last occurrence wins.
-function collectSessionRests() {
+// Takes any session-shaped exercise list: the LIVE session (save-time
+// reconciliation) or a SAVED one (History's "Criar plano").
+function collectRestsFrom(exList) {
   const out = {};
-  S.exercises.forEach(ex => {
+  (exList||[]).forEach(ex => {
     const r = sanitizeRest(ex.rest);
     const lib = sanitizeRest(D.exercises.find(e => e.id === ex.exId)?.rest);
     if (r && JSON.stringify(r) !== JSON.stringify(lib)) out[ex.exId] = r;
@@ -3134,6 +3163,7 @@ function collectSessionRests() {
   });
   return out;
 }
+const collectSessionRests = () => collectRestsFrom(S.exercises);
 
 function openSaveOptions(diff) {
   const what = [diff.listChanged ? 'exercícios/ordem' : null, diff.restsChanged ? 'descansos' : null].filter(Boolean).join(' e ');
@@ -3151,10 +3181,28 @@ function openSaveOptions(diff) {
     ${B(BG3,DM,'Voltar ao treino','closeModal()',';margin-bottom:0')}`);
 }
 
+// A free workout's save offers plan creation too (the user asked for the
+// option "in the moment of saving") — a lighter two-choice modal, since
+// there's no existing plan to reconcile against. Re-edits of old sessions
+// still save silently; History's "Criar plano" covers extracting plans
+// from anything already saved.
+function openFreeSaveOptions() {
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Salvar treino livre</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:14px">Quer criar um plano com estes exercícios (ordem e descansos incluídos) para repetir depois?</div>
+    <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome do plano</label>
+    <input id="save-new-plan-name" type="text" value="Treino ${esc(fmt(S.date))}"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    ${B(CG,TX,'Criar plano e salvar',"doSaveSession('new')")}
+    ${B(BG3,TX,'Salvar só o treino',"doSaveSession('keep')")}
+    ${B(BG3,DM,'Voltar ao treino','closeModal()',';margin-bottom:0')}`);
+}
+
 function saveSession() {
   if (!S||!S.exercises.length) return;
   const diff = sessionPlanDiff();
   if (diff) { openSaveOptions(diff); return; }
+  if (!S.planId && !S._editId) { openFreeSaveOptions(); return; }
   doSaveSession('keep');
 }
 
@@ -3193,7 +3241,9 @@ function doSaveSession(mode) {
   // load anyway, and chips are rebuilt from live history, not saved data.
   // scrubSessionSetMetadata() (section 2) is this strip's cleanup twin for
   // sessions saved before it existed.
-  const exercises = S.exercises.map(({_sug, ...ex}) => ({
+  // _collapsed joins _sug in the strip: both are live-session UI state
+  // (which blocks are folded right now), meaningless as history.
+  const exercises = S.exercises.map(({_sug, _collapsed, ...ex}) => ({
     ...ex,
     sets: (ex.sets||[]).map(s => {
       const set = { intent: s.intent, reps: s.reps, kg: s.kg };
@@ -3235,6 +3285,43 @@ function editSess(id) {
 
 function delSess(id)     { D.tombstones.sessions[id]=Date.now(); D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; persist(); render(); }
 function toggleExp(id)   { EXP=EXP===id?null:id; render(); }
+
+// ── Plan from a saved session (History's "Criar plano") ──────────────────────
+//
+// Any saved session — free workout, plan-based, old or new — can be
+// extracted into a plan: its exercise order (duplicates preserved, a
+// superset session IS a valid plan shape) plus whatever per-exercise rest
+// overrides it carried (minus library-identical ones, same rule the
+// save-time reconciliation applies). Unlike save-time "criar novo plano",
+// the SESSION IS NOT RETAGGED: it already happened, possibly under another
+// plan's name, and extracting a plan from it shouldn't rewrite history.
+function openPlanFromSession(sessId) {
+  const s = D.sessions.find(x => x.id === sessId); if (!s) return;
+  const suggested = s.planName ? `${s.planName} (2)` : `Treino ${fmt(s.date)}`;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Criar plano deste treino</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:14px">${esc(s.planName||'Treino livre')} · ${fmt(s.date)} — ${s.exercises.length} exercício${s.exercises.length!==1?'s':''}, na ordem em que foram feitos, com os descansos usados.</div>
+    <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome do plano</label>
+    <input id="pfs-name" type="text" value="${esc(suggested)}"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    ${B(CG,TX,'Criar plano',`doPlanFromSession('${s.id}')`)}
+    ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
+}
+
+function doPlanFromSession(sessId) {
+  const s = D.sessions.find(x => x.id === sessId); if (!s) return;
+  const name = (document.getElementById('pfs-name')?.value || '').trim() || `Treino ${fmt(s.date)}`;
+  D.plans.push({
+    id: uid(), name,
+    exercises: s.exercises.map(e => e.exId),
+    rests: collectRestsFrom(s.exercises),
+    updatedAt: Date.now(),
+  });
+  persist();
+  closeModal();
+  TAB = 'plans'; // land where the result is
+  render();
+}
 
 // Per-set mutations — called from inline event handlers in buildExBlock()
 function addSet(i)            { S.exercises[i].sets.push({intent:'work',reps:'',kg:'',lastReps:null,lastKg:null,sugReps:null,sugKg:null}); render(); }
@@ -3561,8 +3648,61 @@ function saveExRest(i) {
 function toggleCompleted(i,j) {
   const s = S.exercises[i].sets[j];
   s.completed = !s.completed;
-  if (s.completed) { s.repsEdited = true; s.kgEdited = true; startRestTimer(i, j); }
+  if (s.completed) {
+    s.repsEdited = true; s.kgEdited = true;
+    startRestTimer(i, j);
+    // Checking the LAST remaining set finishes the exercise — same
+    // collapse-and-advance the header box does, per the requested "either
+    // marks this exercise-level check mark or marks all the individual
+    // sets" equivalence.
+    if (exIsDone(S.exercises[i])) { collapseAndAdvance(i); return; }
+  }
   render();
+}
+
+// ── Exercise-level done & focus mode (collapse/expand) ───────────────────────
+
+// "Done" means every set EXPLICITLY completed — the strict ===true check,
+// not isCountedWork()'s counted-by-default leniency: this drives the
+// header checkbox and auto-collapse, and only deliberate checks should
+// trigger those. An exercise with no sets can't be done.
+const exIsDone = ex => (ex.sets||[]).length > 0 && ex.sets.every(s => s.completed === true);
+
+function toggleExCollapse(i) {
+  const ex = S.exercises[i];
+  ex._collapsed = !ex._collapsed;
+  render();
+}
+
+// The header checkbox: checking marks EVERY set completed (with the same
+// implicit "yes, that's what I did" confirmation semantics a per-set check
+// carries), fires the rest timer for the last set's transition, and
+// collapses-and-advances. Unchecking reverts the sets to the NEUTRAL
+// unset state — not completed:false, which would silently exclude them
+// from history/suggestions (isCountedWork) over what's usually a mistap —
+// and re-expands the block.
+function toggleExDone(i) {
+  const ex = S.exercises[i]; if (!ex) return;
+  if (!exIsDone(ex)) {
+    ex.sets.forEach(s => { s.completed = true; s.repsEdited = true; s.kgEdited = true; });
+    if (ex.sets.length) startRestTimer(i, ex.sets.length - 1);
+    collapseAndAdvance(i);
+  } else {
+    ex.sets.forEach(s => { delete s.completed; });
+    ex._collapsed = false;
+    render();
+  }
+}
+
+// Fold the finished exercise, unfold the next unfinished one below it, and
+// bring that one into view — the "focus mode" loop the whole feature
+// exists for. Scroll happens after render() so the target element exists.
+function collapseAndAdvance(i) {
+  S.exercises[i]._collapsed = true;
+  const next = S.exercises.findIndex((e, idx) => idx > i && !exIsDone(e));
+  if (next !== -1) S.exercises[next]._collapsed = false;
+  render();
+  if (next !== -1) document.getElementById('exblk-' + next)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 // Type/regime changes re-run auto-population from memory — DESTRUCTIVE by

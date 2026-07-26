@@ -95,7 +95,7 @@
     get catalogRows() { return _catalogRows; }, set catalogRows(v) { _catalogRows = v; },
     get restTimer() { return _restTimer; }, set restTimer(v) { _restTimer = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
-    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest,
+    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests,
     SCHEMA_VERSION,
   })`);
 
@@ -326,7 +326,7 @@
         { intent: 'warmup', reps: 10, kg: 25, repsEdited: true },
       ],
     }] };
-    W.saveSession();
+    W.doSaveSession('keep'); // bypass the free-save plan prompt — it has its own tests
     const saved = T.D.sessions.find(s => s.date === '2026-01-01');
     t('saved sets carry only intent/reps/kg/completed', saved.exercises[0].sets.every(s => Object.keys(s).every(k => ['intent', 'reps', 'kg', 'completed'].includes(k))));
     t('explicit true / explicit false / absent all preserved', saved.exercises[0].sets[0].completed === true && saved.exercises[0].sets[1].completed === false && !('completed' in saved.exercises[0].sets[2]));
@@ -396,7 +396,7 @@
     W.startFree();
     t('startFree stamps gymId + gymName snapshot', T.S.gymId === 'g1' && T.S.gymName === 'Gym One');
     T.S.exercises = [{ exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 100 }] }];
-    W.saveSession();
+    W.doSaveSession('keep'); // bypass the free-save plan prompt — it has its own tests
     const gymSess = T.D.sessions.find(s => s.gymId === 'g1');
     t('saved session carries gymId + gymName', !!gymSess && gymSess.gymName === 'Gym One');
     T.D.sessions = T.D.sessions.filter(s => s !== gymSess);
@@ -831,10 +831,10 @@
     T.S.exercises.reverse();
 
     // collectSessionRests: plan gets what differs from the LIBRARY, not frozen lib copies
-    let collected = W.collectSessionRests();
+    let collected = T.collectSessionRests();
     t('collect keeps the changed override, skips lib-identical', eq(collected, { 'bench-press': { ww: 90 } }));
     T.S.exercises[0].rest = { ww: 200, wuwu: 45 }; // exactly the library values
-    t('collect drops overrides identical to library defaults', eq(W.collectSessionRests(), {}));
+    t('collect drops overrides identical to library defaults', eq(T.collectSessionRests(), {}));
     T.S.exercises[0].rest = { ww: 90 };
 
     // doSaveSession('update') writes list+rests into the plan
@@ -891,6 +891,93 @@
 
     delete bench3.rest;
     T.D.plans = T.D.plans.filter(p => p.id !== 'rp1');
+    W.cancelSession();
+  }
+
+  // ── plan-from-session & focus mode ─────────────────────────────────────────
+  g('plan-from-session & focus mode');
+  {
+    // free-workout save now offers plan creation
+    W.startFree();
+    T.S.exercises = [
+      { exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', rest: { ww: 111 }, sets: [{ intent: 'work', reps: 5, kg: 100 }] },
+      { exId: 'zercher-squat', exName: 'Zercher', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 60 }] },
+    ];
+    W.saveSession();
+    let modal = W.document.getElementById('modal-ov');
+    t('free save opens the plan offer', !!modal && modal.textContent.includes('Salvar treino livre'));
+    W.doSaveSession('keep');
+    t("'só o treino' saves without creating a plan", T.D.sessions.some(s => s.planId === null) && !W.document.getElementById('modal-ov'));
+    T.D.sessions = T.D.sessions.filter(s => s.planId !== null || s.exercises.length !== 2);
+
+    // free save → create plan: order + rests captured, session retagged
+    W.startFree();
+    T.S.exercises = [
+      { exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', rest: { ww: 111 }, sets: [{ intent: 'work', reps: 5, kg: 100 }] },
+    ];
+    W.saveSession();
+    W.document.getElementById('save-new-plan-name').value = 'Do Livre';
+    W.doSaveSession('new');
+    const livrePlan = T.D.plans.find(p => p.name === 'Do Livre');
+    t('free save can fork a plan (ids + non-lib rests)', !!livrePlan && eq(livrePlan.exercises, ['bench-press']) && eq(livrePlan.rests, { 'bench-press': { ww: 111 } }));
+    const livreSess = T.D.sessions.find(s => s.planId === livrePlan?.id);
+    t('the saved free session is retagged to the new plan', !!livreSess && livreSess.planName === 'Do Livre');
+    t('saved exercises carry no _collapsed scaffolding', livreSess.exercises.every(e => !('_collapsed' in e)));
+
+    // re-edit of a saved session stays silent (no prompt of either kind)
+    W.editSess(livreSess.id);
+    W.saveSession();
+    t('re-edits save silently (no prompt, session closed)', !W.document.getElementById('modal-ov') && T.S === null);
+
+    // History: any session → plan, without retagging
+    const histSess = T.D.sessions.find(s => s.planId === livrePlan.id);
+    W.openPlanFromSession(histSess.id);
+    t('History modal proposes a name', !!W.document.getElementById('pfs-name'));
+    W.document.getElementById('pfs-name').value = 'Extraído';
+    W.doPlanFromSession(histSess.id);
+    const extPlan = T.D.plans.find(p => p.name === 'Extraído');
+    t('plan extracted from saved session (ids + rests)', !!extPlan && eq(extPlan.exercises, ['bench-press']) && eq(extPlan.rests, { 'bench-press': { ww: 111 } }));
+    t('extraction does NOT retag the session', T.D.sessions.find(s => s.id === histSess.id).planName === 'Do Livre');
+    t('lands on the Plans tab', T.TAB === 'plans');
+    T.D.sessions = T.D.sessions.filter(s => s.id !== histSess.id);
+    T.D.plans = T.D.plans.filter(p => p !== livrePlan && p !== extPlan);
+
+    // focus mode: exIsDone strictness
+    t('exIsDone: strict ===true on every set', T.exIsDone({ sets: [{ completed: true }, { completed: true }] }) === true
+      && T.exIsDone({ sets: [{ completed: true }, {}] }) === false
+      && T.exIsDone({ sets: [] }) === false);
+
+    // header box: batch-complete, collapse, advance, timer
+    W.startFree();
+    T.S.exercises = [
+      { exId: 'bench-press', exName: 'A', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 100 }, { intent: 'work', reps: 5, kg: 100 }] },
+      { exId: 'zercher-squat', exName: 'B', type: 'strength', regime: 'weighted', _collapsed: true, sets: [{ intent: 'work', reps: 5, kg: 60 }] },
+    ];
+    T.restTimer = null;
+    W.toggleExDone(0);
+    const exA = T.S.exercises[0], exB = T.S.exercises[1];
+    t('header ✓ completes every set with confirmation flags', exA.sets.every(s => s.completed === true && s.repsEdited === true));
+    t('header ✓ collapses this and expands the next unfinished', exA._collapsed === true && exB._collapsed === false);
+    t('header ✓ fires the last-set rest (strength W→W 5:00)', T.restTimer?.total === 300);
+    W.skipRestTimer();
+
+    // collapsed block renders compact; expanded shows sets
+    let html = W.buildExBlock(exA, 0);
+    t('collapsed block is compact (count, no set inputs)', html.includes('2/2 ✓') && html.includes('▸') && !html.includes('+ Série'));
+    html = W.buildExBlock(exB, 1);
+    t('expanded block still full (has + Série)', html.includes('+ Série'));
+
+    // unchecking the header reverts to NEUTRAL (unset), never false
+    W.toggleExDone(0);
+    t('header un-✓ → sets back to counted-by-default unset, expanded', exA.sets.every(s => !('completed' in s)) && exA._collapsed === false);
+
+    // per-set path converges: checking the last remaining set auto-advances
+    exB._collapsed = true; // reset target
+    W.toggleCompleted(0, 0);
+    t('partial checks do not collapse', exA._collapsed === false);
+    W.toggleCompleted(0, 1);
+    t('last set checked → same collapse-and-advance', exA._collapsed === true && exB._collapsed === false);
+    W.skipRestTimer();
     W.cancelSession();
   }
 
