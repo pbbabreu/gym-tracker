@@ -93,7 +93,9 @@
     get CFG() { return CFG; }, set CFG(v) { CFG = v; },
     get shares() { return _receivedShares; }, set shares(v) { _receivedShares = v; },
     get catalogRows() { return _catalogRows; }, set catalogRows(v) { _catalogRows = v; },
-    hasKg, hasReps, round, esc, today, availableAtGym, currentGym,
+    get restTimer() { return _restTimer; }, set restTimer(v) { _restTimer = v; },
+    get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
+    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest,
     SCHEMA_VERSION,
   })`);
 
@@ -688,6 +690,102 @@
 
     T.D.plans = T.D.plans.filter(p => p.id !== 'pp1');
     T.sb = realSb2; T.sbSession = realSession2; T.CFG = realCFG2; T.catalogRows = null;
+  }
+
+  // ── rest timer ─────────────────────────────────────────────────────────────
+  g('rest timer');
+  {
+    W.localStorage.removeItem('gym:timers');
+    T.timerCfgVar = null; // force reload from defaults
+
+    // the owner's scheme IS the shipped default
+    t('hypertrophy: WU→WU 1:00', W.restDurationFor('hypertrophy', 'warmup', 'warmup') === 60);
+    t('hypertrophy: WU→W 3:00', W.restDurationFor('hypertrophy', 'warmup', 'work') === 180);
+    t('hypertrophy: W→W 3:00', W.restDurationFor('hypertrophy', 'work', 'work') === 180);
+    t('strength: WU→WU 1:00 (same as hypertrophy)', W.restDurationFor('strength', 'warmup', 'warmup') === 60);
+    t('strength: WU→W 3:00', W.restDurationFor('strength', 'warmup', 'work') === 180);
+    t('strength: W→W 5:00', W.restDurationFor('strength', 'work', 'work') === 300);
+    t('fmtRest formats M:SS', T.fmtRest(300) === '5:00' && T.fmtRest(61) === '1:01' && T.fmtRest(0) === '0:00');
+
+    // transition detection through a real session block
+    T.restTimer = null;
+    T.S = { date: '2026-01-01', planId: null, planName: null, exercises: [{
+      exId: 'bench-press', exName: 'Bench', type: 'strength', regime: 'weighted',
+      sets: [ { intent: 'warmup', reps: 10, kg: 25 }, { intent: 'warmup', reps: 6, kg: 85 }, { intent: 'work', reps: 5, kg: 100 }, { intent: 'work', reps: 5, kg: 100 } ],
+    }] };
+    W.startRestTimer(0, 0);
+    t('WU with WU next → 60s timer', T.restTimer?.total === 60);
+    W.startRestTimer(0, 1);
+    t('last WU (work next) → 180s timer', T.restTimer?.total === 180);
+    W.startRestTimer(0, 2);
+    t('strength W with W next → 300s timer', T.restTimer?.total === 300);
+    W.startRestTimer(0, 3);
+    t('final set still rests (work rule past the end)', T.restTimer?.total === 300);
+
+    // toggleCompleted integration: check starts, uncheck does not
+    T.restTimer = null;
+    W.toggleCompleted(0, 2);
+    t('checking ✓ starts the timer', !!T.restTimer && T.restTimer.total === 300);
+    T.restTimer = null;
+    W.toggleCompleted(0, 2); // uncheck
+    t('unchecking starts nothing', T.restTimer === null);
+
+    // extend & skip semantics
+    T.restTimer = { endsAt: Date.now() + 10_000, total: 10, label: 'x', done: false };
+    W.extendRestTimer(60);
+    t('+1:00 extends endsAt and total', T.restTimer.total === 70 && T.restTimer.endsAt > Date.now() + 60_000);
+    T.restTimer.done = true;
+    W.extendRestTimer(60);
+    t('extending a finished rest restarts from now', T.restTimer.done === false && T.restTimer.endsAt > Date.now() + 55_000 && T.restTimer.endsAt < Date.now() + 65_000);
+    W.skipRestTimer();
+    t('skip clears the timer', T.restTimer === null);
+
+    // banner render states
+    T.restTimer = { endsAt: Date.now() + 90_000, total: 180, label: 'descanso entre séries', done: false };
+    let html = W.restTimerHTML();
+    t('running banner shows countdown + label + +1:00', html.includes('1:30') && html.includes('descanso entre séries') && html.includes('+1:00'));
+    T.restTimer.done = true;
+    html = W.restTimerHTML();
+    t('done banner flips to "Bora!"', html.includes('Bora!') && html.includes('concluído'));
+    T.restTimer = null;
+    t('no timer → no banner', W.restTimerHTML() === '');
+
+    // session lifecycle always clears a dangling countdown
+    T.restTimer = { endsAt: Date.now() + 9e5, total: 900, label: 'x', done: false };
+    W.cancelSession();
+    t('cancelSession clears the timer', T.restTimer === null);
+    T.restTimer = { endsAt: Date.now() + 9e5, total: 900, label: 'x', done: false };
+    W.startFree();
+    t('starting a session clears any stale timer', T.restTimer === null);
+    W.cancelSession();
+
+    // custom values: zero disables a transition; settings persist + preset detection
+    T.timerCfgVar = { preset: 'custom', hypertrophy: { wuwu: 60, wuw: 180, ww: 0 }, strength: { wuwu: 60, wuw: 180, ww: 300 } };
+    T.S = { date: '2026-01-01', planId: null, planName: null, exercises: [{ exId: 'e', exName: 'E', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work' }, { intent: 'work' }] }] };
+    T.restTimer = null;
+    W.startRestTimer(0, 0);
+    t('a zeroed transition starts no timer', T.restTimer === null);
+    T.S = null;
+
+    W.openTimerSettings();
+    t('settings modal shows presets + 6 fields', !!W.document.getElementById('tm-h-wuwu') && W.document.getElementById('modal-ov').textContent.includes('Recomendado'));
+    W.applyTimerPreset('recomendado');
+    t('preset tap fills the inputs', W.document.getElementById('tm-s-ww').value === '300' && W.document.getElementById('tm-h-wuwu').value === '60');
+    W.document.getElementById('tm-s-ww').value = '240'; // tweak → should become custom
+    W.saveTimerSettings();
+    t('tweaked values save as custom', T.timerCfgVar.preset === 'custom' && T.timerCfgVar.strength.ww === 240);
+    t('settings persist to localStorage', JSON.parse(W.localStorage.getItem('gym:timers')).strength.ww === 240);
+    W.openTimerSettings();
+    W.applyTimerPreset('recomendado');
+    W.saveTimerSettings();
+    t('exact preset values save under the preset name', T.timerCfgVar.preset === 'recomendado' && T.timerCfgVar.strength.ww === 300);
+
+    // corrupted stored config falls back to defaults
+    W.localStorage.setItem('gym:timers', '{broken');
+    T.timerCfgVar = null;
+    t('corrupted stored timers → defaults', W.restDurationFor('strength', 'work', 'work') === 300);
+    W.localStorage.removeItem('gym:timers');
+    T.timerCfgVar = null;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

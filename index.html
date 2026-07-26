@@ -330,6 +330,20 @@ let _newMuscle = 'undefined', _newPattern = 'undefined', _newAccessory = [];
 // Pick-exercise modal working state
 let _pickType = 'hypertrophy', _pickRegime = 'weighted';
 
+// Rest timer state — null when no rest is running. endsAt (absolute
+// timestamp) rather than a decrementing counter, so background-tab
+// throttling and re-renders can never drift the clock; `done` flips once
+// expiry has been signaled (vibration/beep fire exactly once). One global
+// timer: checking the next set simply replaces it — that IS the flow.
+let _restTimer = null; // { endsAt, total, label, done }
+let _restTimerInterval = null;
+
+// Rest durations (seconds) per type × transition, per-DEVICE (localStorage,
+// like the gym selection): rest preferences belong to whoever holds the
+// phone, and a settings sync would need a sixth collection + schema bump —
+// deliberately not worth it for six numbers. Loaded lazily via timerCfg().
+let _timerCfg = null;
+
 // In-app plan shares addressed to me, unclaimed — refreshed in the
 // background by loadReceivedShares() (on supabase pulls and on entering
 // the Planos tab); rendered as the "Planos recebidos" section there.
@@ -1770,8 +1784,12 @@ function buildLogSession() {
         <input type="date" value="${S.date}" onchange="S.date=this.value"
           style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:6px 10px;outline:none;width:auto">
       </div>
-      ${Bs(BG3,TX,'Cancelar','cancelSession()',';margin-left:8px;flex-shrink:0')}
+      <div style="display:flex;gap:6px;margin-left:8px;flex-shrink:0">
+        <button onclick="openTimerSettings()" title="Descanso entre séries" style="background:${BG3};border:none;border-radius:7px;color:${DM};font-size:15px;cursor:pointer;padding:7px 10px">⏱</button>
+        ${Bs(BG3,TX,'Cancelar','cancelSession()')}
+      </div>
     </div>
+    ${restTimerHTML()}
     ${S.exercises.map((ex,i) => buildExBlock(ex,i)).join('')}
     ${B(BG3,TX,'+ Exercício','openAddEx()')}
     ${B(S.exercises.length?CG:'#333',TX,isEdit?'Salvar alterações':'Salvar treino','saveSession()',';margin-bottom:0')}`;
@@ -2940,6 +2958,7 @@ function createAndAdd() {
 function startPlan(id) {
   const p = D.plans.find(x=>x.id===id); if(!p)return;
   const gm = currentGym(); // gymName is a snapshot, same pattern as planName — history survives a gym deletion
+  _restTimer = null;
   S = {
     planId: p.id, planName: p.name, date: today(),
     gymId: gm?.id || null, gymName: gm?.name || null,
@@ -2955,8 +2974,8 @@ function startPlan(id) {
   render();
 }
 
-function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; render(); }
-function cancelSession() { S=null; render(); }
+function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; render(); }
+function cancelSession() { S=null; _restTimer=null; render(); }
 
 function saveSession() {
   if (!S||!S.exercises.length) return;
@@ -2992,7 +3011,7 @@ function saveSession() {
   const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises, updatedAt:Date.now() };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
-  persist(); S=null; TAB='history'; render();
+  persist(); S=null; _restTimer=null; TAB='history'; render();
 }
 
 function editSess(id) {
@@ -3015,7 +3034,7 @@ function editSess(id) {
       sets: ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true})),
     };
   }), _editId:s.id };
-  TAB='log'; EXP=null; render();
+  TAB='log'; EXP=null; _restTimer=null; render();
 }
 
 function delSess(id)     { D.tombstones.sessions[id]=Date.now(); D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; persist(); render(); }
@@ -3081,6 +3100,198 @@ function applyChip(i, j, which) {
   render();
 }
 
+// ── Rest timer ────────────────────────────────────────────────────────────────
+//
+// Checking a set's ✓ starts a rest countdown sized by the TRANSITION being
+// rested through, not a single flat value — the owner's real scheme, now the
+// shipped default ("Recomendado"):
+//   hypertrophy: WU→WU 1:00 · WU→W 3:00 · W→W 3:00
+//   strength:    WU→WU 1:00 · WU→W 3:00 · W→W 5:00 ("at least 5" — the +1min
+//                button covers the "at least" part)
+// The transition is read from the checked set's intent and the NEXT row's
+// intent in the same block (past the end = treat as work: resting after a
+// block's last set is still real rest — the next exercise needs setting up).
+// Presets below are starting points; every number is editable in the ⏱
+// settings modal and persists per-device (see _timerCfg in section 3).
+
+const TIMER_PRESETS = {
+  recomendado: { label: 'Recomendado', hypertrophy: { wuwu: 60, wuw: 180, ww: 180 }, strength: { wuwu: 60, wuw: 180, ww: 300 } },
+  rapido:      { label: 'Rápido',      hypertrophy: { wuwu: 45, wuw: 90,  ww: 120 }, strength: { wuwu: 60, wuw: 120, ww: 180 } },
+  pesado:      { label: 'Pesado',      hypertrophy: { wuwu: 90, wuw: 180, ww: 240 }, strength: { wuwu: 90, wuw: 300, ww: 300 } },
+};
+
+function timerCfg() {
+  if (_timerCfg) return _timerCfg;
+  try {
+    const raw = LS.get('gym:timers');
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p?.hypertrophy?.ww && p?.strength?.ww) { _timerCfg = p; return _timerCfg; }
+    }
+  } catch(e) {}
+  _timerCfg = JSON.parse(JSON.stringify({ preset: 'recomendado', ...TIMER_PRESETS.recomendado })); // deep copy — custom edits must never mutate the preset table
+  return _timerCfg;
+}
+
+function restDurationFor(type, fromIntent, toIntent) {
+  const cfg = timerCfg()[type === 'strength' ? 'strength' : 'hypertrophy'];
+  if (fromIntent === 'warmup') return toIntent === 'warmup' ? cfg.wuwu : cfg.wuw;
+  return cfg.ww; // work → anything rests like work→work (a manual W-before-WU reorder is the user's own exotic choice)
+}
+
+function startRestTimer(i, j) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  const s  = ex.sets[j]; if (!s) return;
+  const next = ex.sets[j + 1];
+  const secs = restDurationFor(ex.type, s.intent, next ? next.intent : 'work');
+  if (!secs || secs <= 0) return; // a zeroed-out custom value means "no timer for this transition"
+  const isWU = s.intent === 'warmup' && next && next.intent === 'warmup';
+  _restTimer = {
+    endsAt: Date.now() + secs * 1000,
+    total: secs,
+    label: isWU ? 'descanso entre aquecimentos' : (s.intent === 'warmup' ? 'descanso antes da série de trabalho' : 'descanso entre séries'),
+    done: false,
+  };
+  if (!_restTimerInterval) _restTimerInterval = setInterval(restTimerTick, 500);
+}
+
+// Interval tick — updates the countdown text IN PLACE (the setVal()
+// philosophy: never a full render on a clock tick, it would blow away
+// whatever the user is typing mid-set). Full renders rebuild the banner
+// from _restTimer state anyway, so the two never disagree.
+function restTimerTick() {
+  if (!_restTimer) { clearInterval(_restTimerInterval); _restTimerInterval = null; return; }
+  const remaining = Math.max(0, Math.ceil((_restTimer.endsAt - Date.now()) / 1000));
+  const el = document.getElementById('rest-time');
+  if (el) el.textContent = fmtRest(remaining);
+  const bar = document.getElementById('rest-bar');
+  if (bar) bar.style.width = `${Math.max(0, Math.min(100, 100 * remaining / _restTimer.total))}%`;
+  if (remaining <= 0 && !_restTimer.done) {
+    _restTimer.done = true;
+    signalRestDone();
+    render(); // one full render to flip the banner into its "done" look — safe: nothing is mid-type right as a rest expires
+  }
+}
+
+const fmtRest = secs => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+
+// Expiry signal — best-effort on every front, silent where unsupported:
+// vibration is Android-browser territory (iOS has no navigator.vibrate),
+// and the beep needs an AudioContext, which browsers only allow after a
+// user gesture — the ✓ tap that started the timer was one, so creating the
+// context lazily HERE (post-gesture in the same page session) works.
+let _audioCtx = null;
+function signalRestDone() {
+  try { navigator.vibrate?.([200, 100, 200, 100, 400]); } catch(e) {}
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.25].forEach(t0 => {
+      const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(_audioCtx.destination);
+      g.gain.setValueAtTime(0.15, _audioCtx.currentTime + t0);
+      g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + t0 + 0.2);
+      o.start(_audioCtx.currentTime + t0); o.stop(_audioCtx.currentTime + t0 + 0.22);
+    });
+  } catch(e) {}
+}
+
+function skipRestTimer() { _restTimer = null; render(); }
+function extendRestTimer(secs) {
+  if (!_restTimer) return;
+  // Extending a finished rest restarts it from now — "+1:00 more" after the
+  // beep means one more minute, not total-elapsed arithmetic.
+  const base = _restTimer.done ? Date.now() : _restTimer.endsAt;
+  _restTimer.endsAt = base + secs * 1000;
+  _restTimer.total += secs;
+  _restTimer.done = false;
+  render();
+}
+
+// Sticky countdown banner, rendered inside the active session right under
+// the tab bar. Rebuilt from state on every render; the interval only
+// touches #rest-time/#rest-bar between renders.
+function restTimerHTML() {
+  if (!_restTimer) return '';
+  const remaining = Math.max(0, Math.ceil((_restTimer.endsAt - Date.now()) / 1000));
+  const done = _restTimer.done;
+  const pct = done ? 0 : Math.max(0, Math.min(100, 100 * remaining / _restTimer.total));
+  return `
+  <div style="position:sticky;top:46px;z-index:45;background:${done ? '#0a2e24' : BG2};border:1px solid ${done ? '#1a4a3a' : BD};border-radius:10px;margin-bottom:12px;overflow:hidden">
+    <div style="display:flex;align-items:center;gap:10px;padding:9px 12px">
+      <span id="rest-time" style="font-size:22px;font-weight:700;font-variant-numeric:tabular-nums;color:${done ? '#6fcf97' : TX}">${done ? 'Bora!' : fmtRest(remaining)}</span>
+      <span style="flex:1;font-size:11px;color:${DM}">${done ? 'descanso concluído' : esc(_restTimer.label)}</span>
+      ${done ? '' : Bs(BG3, TX, '+1:00', 'extendRestTimer(60)', ';padding:6px 10px;font-size:12px;flex-shrink:0')}
+      <button onclick="openTimerSettings()" title="Configurar descansos" style="background:none;border:none;color:${DM};font-size:14px;cursor:pointer;padding:4px;flex-shrink:0">⚙</button>
+      <button onclick="skipRestTimer()" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:2px 6px;line-height:1;flex-shrink:0">×</button>
+    </div>
+    <div id="rest-bar" style="height:3px;background:${CG};width:${pct}%;transition:width .4s linear"></div>
+  </div>`;
+}
+
+// ── Timer settings modal — presets + fully custom values ─────────────────────
+
+function openTimerSettings() {
+  const cfg = timerCfg();
+  const presetPill = (key, label) => `<button onclick="applyTimerPreset('${key}')" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${cfg.preset === key ? CG : BG3};color:${cfg.preset === key ? TX : DM}">${label}</button>`;
+  const num = (id, val) => `<input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
+    style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 6px;text-align:center;outline:none;box-sizing:border-box">`;
+  const grid = (title, p, v) => `
+    <div style="font-size:12px;font-weight:700;margin:12px 0 6px">${title}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+      <div><div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">Aquec.→Aquec.</div>${num(p + '-wuwu', v.wuwu)}</div>
+      <div><div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">Aquec.→Trab.</div>${num(p + '-wuw', v.wuw)}</div>
+      <div><div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">Trab.→Trab.</div>${num(p + '-ww', v.ww)}</div>
+    </div>`;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Descanso entre séries</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Segundos por transição — o timer dispara ao marcar ✓ numa série. Um valor 0 desliga o timer daquela transição. Ajustes valem neste aparelho.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${Object.entries(TIMER_PRESETS).map(([k, p]) => presetPill(k, p.label)).join('')}${presetPill('custom', 'Personalizado')}</div>
+    ${grid('Hipertrofia', 'tm-h', cfg.hypertrophy)}
+    ${grid('Força', 'tm-s', cfg.strength)}
+    ${B(CG, TX, 'Salvar', 'saveTimerSettings()', ';margin-top:16px')}
+    ${B(BG3, TX, 'Cancelar', 'closeModal()', ';margin-bottom:0')}`);
+}
+
+// Preset tap = fill the editable inputs with that preset's numbers (the
+// user can still tweak before saving — tweaking just makes it custom).
+function applyTimerPreset(key) {
+  const p = TIMER_PRESETS[key];
+  if (p) {
+    [['tm-h', p.hypertrophy], ['tm-s', p.strength]].forEach(([prefix, v]) =>
+      ['wuwu', 'wuw', 'ww'].forEach(k => { const el = document.getElementById(`${prefix}-${k}`); if (el) el.value = v[k]; }));
+  }
+  const cfg = timerCfg();
+  cfg.preset = key;
+  openTimerSettings.__pendingPreset = key; // remembered until Salvar actually persists
+  // re-highlight pills without rebuilding the whole modal (inputs hold edits)
+  document.querySelectorAll('#modal-ov button[onclick^="applyTimerPreset"]').forEach(b => {
+    const active = b.getAttribute('onclick').includes(`'${key}'`);
+    b.style.background = active ? CG : BG3;
+    b.style.color = active ? TX : DM;
+  });
+}
+
+function saveTimerSettings() {
+  const read = (prefix) => {
+    const v = {};
+    ['wuwu', 'wuw', 'ww'].forEach(k => {
+      const n = parseInt(document.getElementById(`${prefix}-${k}`)?.value, 10);
+      v[k] = Number.isNaN(n) || n < 0 ? 0 : n;
+    });
+    return v;
+  };
+  const h = read('tm-h'), s = read('tm-s');
+  const chosen = openTimerSettings.__pendingPreset || timerCfg().preset || 'custom';
+  const matchesPreset = TIMER_PRESETS[chosen]
+    && JSON.stringify(TIMER_PRESETS[chosen].hypertrophy) === JSON.stringify(h)
+    && JSON.stringify(TIMER_PRESETS[chosen].strength) === JSON.stringify(s);
+  _timerCfg = { preset: matchesPreset ? chosen : 'custom', hypertrophy: h, strength: s };
+  LS.set('gym:timers', JSON.stringify(_timerCfg));
+  openTimerSettings.__pendingPreset = null;
+  closeModal();
+  render();
+}
+
 // Marks a set (work OR warm-up) as actually performed. Separate from just
 // having numbers in the fields, since those numbers might just be an
 // autofilled/computed suggestion the user hasn't attempted yet — only
@@ -3090,10 +3301,12 @@ function applyChip(i, j, which) {
 // suggested reps/kg, checking "done" is itself an implicit "yes, that's what
 // I did," so the fields flip from dim to normal same as typing would.
 // One-directional on purpose — unchecking doesn't undo that confirmation.
+// Checking (not unchecking) also starts the rest timer — see the Rest timer
+// section above for the transition-based duration rules.
 function toggleCompleted(i,j) {
   const s = S.exercises[i].sets[j];
   s.completed = !s.completed;
-  if (s.completed) { s.repsEdited = true; s.kgEdited = true; }
+  if (s.completed) { s.repsEdited = true; s.kgEdited = true; startRestTimer(i, j); }
   render();
 }
 
