@@ -95,7 +95,7 @@
     get catalogRows() { return _catalogRows; }, set catalogRows(v) { _catalogRows = v; },
     get restTimer() { return _restTimer; }, set restTimer(v) { _restTimer = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
-    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests,
+    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
     SCHEMA_VERSION,
   })`);
 
@@ -1012,6 +1012,79 @@
     t('estimate: empty work rows prefilled with the guess, confirmed', eSets[3].kg === 100 && eSets[3].kgEdited === true && eSets[5].kg === 100);
     t('estimate: a hand-typed load is never overwritten', eSets[4].kg === 80);
     W.cancelSession();
+  }
+
+  // ── progress & volume analytics ────────────────────────────────────────────
+  g('progress & volume analytics');
+  {
+    const shift = (dateStr, days) => {
+      const d = new Date(dateStr + 'T12:00:00'); d.setDate(d.getDate() + days);
+      return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    };
+    t('epley1RM: 100×5 → 116.67', Math.abs(T.epley1RM(100, 5) - 116.6667) < 0.01);
+    t('weekStartOf: Sunday belongs to the Monday before it', W.weekStartOf('2026-07-26') === '2026-07-20');
+    t('weekStartOf: Monday maps to itself', W.weekStartOf('2026-07-20') === '2026-07-20');
+
+    const keepSess = T.D.sessions.slice();
+    const NOW = T.today();
+    // weighted progression: two sessions, with excluded noise in the newer
+    T.D.sessions = [
+      { id: 'pgA', date: shift(NOW, -10), updatedAt: 1, exercises: [{ exId: 'bench-press', type: 'strength', regime: 'weighted',
+        sets: [ { intent:'work', reps:5, kg:100, completed:true }, { intent:'work', reps:5, kg:95 } ] }] },
+      { id: 'pgB', date: shift(NOW, -3), updatedAt: 2, exercises: [{ exId: 'bench-press', type: 'strength', regime: 'weighted',
+        sets: [ { intent:'work', reps:3, kg:110 }, { intent:'work', reps:5, kg:200, completed:false }, { intent:'warmup', reps:10, kg:25 } ] }] },
+    ];
+    let prog = W.exerciseProgress('bench-press');
+    t('weighted: per-session max kg, oldest → newest', prog.regime === 'weighted' && prog.points.length === 2 && prog.points[0].metric === 100 && prog.points[1].metric === 110);
+    t('excluded sets (unchecked, warm-ups) never chart', prog.points[1].metric === 110); // the 200kg unchecked set would have won otherwise
+    t('e1rm rides along for weighted (Epley max)', Math.abs(prog.points[0].e1rm - 116.6667) < 0.01 && Math.abs(prog.points[1].e1rm - 121) < 0.01);
+    t('cap keeps the most recent sessions', W.exerciseProgress('bench-press', 1).points.length === 1 && W.exerciseProgress('bench-press', 1).points[0].metric === 110);
+
+    // regime follows the most recently logged one
+    T.D.sessions.push({ id: 'pgC', date: shift(NOW, -1), updatedAt: 3, exercises: [{ exId: 'bench-press', type: 'hypertrophy', regime: 'assisted',
+      sets: [ { intent:'work', reps:12, kg:20 }, { intent:'work', reps:10, kg:25 } ] }] });
+    prog = W.exerciseProgress('bench-press');
+    t('regime = most recently logged; older-regime sessions drop out', prog.regime === 'assisted' && prog.points.length === 1 && prog.points[0].metric === 20);
+
+    // bodyweight: reps are the metric
+    T.D.sessions.push({ id: 'pgD', date: NOW, updatedAt: 4, exercises: [{ exId: 'scapular-pull-up', type: 'hypertrophy', regime: 'bodyweight',
+      sets: [ { intent:'work', reps:8 }, { intent:'work', reps:11 } ] }] });
+    prog = W.exerciseProgress('scapular-pull-up');
+    t('bodyweight charts max reps', prog.regime === 'bodyweight' && prog.points[0].metric === 11);
+
+    // chart SVG shape
+    t('chart needs 2+ points', W.progressChartSVG({ regime:'weighted', points: [{ date: NOW, metric: 100 }] }) === '');
+    const svg = W.progressChartSVG(W.exerciseProgress('bench-press', 24).points.length >= 2 ? W.exerciseProgress('bench-press') : { regime:'weighted', points:[{date:shift(NOW,-7),metric:100,e1rm:116},{date:NOW,metric:110,e1rm:121}] });
+    t('chart renders polyline(s)', svg.includes('<polyline') && svg.includes('<svg'));
+
+    // weekly muscle volume: bench = chest main, triceps+shoulders accessories
+    T.D.sessions = [
+      { id: 'wvA', date: NOW, updatedAt: 1, exercises: [
+        { exId: 'bench-press', type:'strength', regime:'weighted', sets: [ {intent:'work',reps:5,kg:100}, {intent:'work',reps:5,kg:100,completed:true}, {intent:'work',reps:5,kg:100,completed:false}, {intent:'warmup',reps:10,kg:25} ] },
+        { exId: 'ghost-deleted-ex', sets: [ {intent:'work',reps:5,kg:50} ] },
+      ] },
+      { id: 'wvB', date: shift(NOW, -21), updatedAt: 2, exercises: [
+        { exId: 'seated-leg-curl', type:'hypertrophy', regime:'weighted', sets: [ {intent:'work',reps:10,kg:40} ] },
+      ] },
+    ];
+    const wv = W.weeklyMuscleVolume(4);
+    t('4 week columns ending in the current week', wv.mondays.length === 4 && wv.mondays[3] === W.weekStartOf(NOW));
+    t('main muscle credits 1 per counted set (2 of 4 bench sets count)', wv.rows.chest[3] === 2);
+    t('accessories credit ½ per counted set', wv.rows.triceps[3] === 1 && wv.rows.shoulders[3] === 1);
+    t('older session lands in its own week column', wv.rows.hamstrings[0] === 1 && wv.rows.hamstrings[3] === 0);
+    t('deleted exercises are skipped, zero rows still exist', wv.rows.quads.every(n => n === 0));
+
+    // UI: both modals render from real data
+    W.openProgress('bench-press');
+    let mtxt = W.document.getElementById('modal-ov').textContent;
+    t('progress modal renders stats incl. estimated 1RM', mtxt.includes('Progresso — Bench press') && mtxt.includes('1RM est.') && mtxt.includes('Último'));
+    W.closeModal();
+    W.openVolume();
+    mtxt = W.document.getElementById('modal-ov').textContent;
+    t('volume modal: guideline, groups, current-week header', mtxt.includes('10–20') && mtxt.includes('Peito') && mtxt.includes('agora'));
+    W.closeModal();
+
+    T.D.sessions = keepSess;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

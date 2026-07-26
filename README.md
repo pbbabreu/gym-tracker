@@ -6,13 +6,16 @@ Personal workout-tracking PWA — strength & hypertrophy, progressive-overload s
 
 ## Features
 
-- **Treino** — log workouts from reusable plans or free-form; warm-up sets auto-generated and scaled to today's suggested working weight (compound/isolation and weighted/assisted/bodyweight regimes each have their own ramp rules).
-- **Progressive overload** — set rows suggest a genuine next-session target, not a replay of last time: an exercise "graduates" to more weight only when the full prescribed set count hit the top of the rep range at one working weight. Fatigue drop-offs don't graduate; multi-session stalls get a visible nudge.
-- **Histórico** — past sessions with per-set detail, volume, and edit/delete.
-- **Biblioteca** — fully personal exercise library (seeded with 44 starters from `library.json`), classified by muscle group + movement pattern, filterable and searchable.
-- **Planos** — ordered exercise lists to start sessions from; shareable as self-contained JSON files (exercise definitions travel with the plan).
+- **Treino** — log workouts from reusable plans or free-form; warm-up sets auto-generated and scaled to today's suggested working weight (a first-ever exercise asks for an estimate and prefills warm-ups *and* work loads from it). Exercise blocks collapse into a focus mode: an exercise-level ✓ (or checking every set) folds the finished block and opens the next one.
+- **Rest timer** — checking a set starts a countdown sized by the transition (warm-up→warm-up / warm-up→work / work→work), with presets and custom values resolving per exercise → per plan → per exercise default → device defaults. Vibration + beep on expiry where supported.
+- **Progressive overload** — set rows suggest a genuine next-session target, not a replay of last time: an exercise "graduates" to more weight only when the full prescribed set count hit the top of the rep range at one working weight (strength 3×3–5, hypertrophy 1×6–10/12). Fatigue drop-offs don't graduate; multi-session stalls get a visible nudge.
+- **Gym profiles** — mark which gyms have which exercises; starting a plan at a gym flags what's unavailable and suggests equivalent swaps (same muscle + movement pattern). A ⇄ on every session block swaps any exercise for an equivalent, gym-aware when a gym is selected.
+- **Plans ↔ sessions** — plans carry per-exercise rest timings; a session started from a plan can drift freely, and saving offers to update the plan, fork a new one, or keep the plan untouched. Any saved session (or a free workout, at save time) can be turned into a plan.
+- **Sharing** — send a plan to another user by e-mail in-app (appears under *Planos recebidos*), or as a self-contained JSON file; pull curated exercises from the shared catalog (Biblioteca → ⟳ Catálogo).
+- **Histórico** — past sessions with per-set detail, volume, gym tag, and edit/delete/extract-to-plan.
+- **Biblioteca** — fully personal exercise library (seeded with 44 curated starters), classified by muscle group + movement pattern, filterable and searchable.
 - **Peso** — bodyweight log; feeds real-load math for assisted (bodyweight − counterweight) and bodyweight exercises.
-- **Sync & backup** — cross-device sync via a private GitHub Gist; manual JSON export/import; automatic daily local snapshots (last 7 days, restorable in-app).
+- **Sync & backup** — invite-only account sync (magic link / code); manual JSON export/import; automatic daily local snapshots (last 7 days, restorable in-app); legacy GitHub Gist driver for pre-account installs.
 
 ## Using it
 

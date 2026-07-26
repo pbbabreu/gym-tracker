@@ -1458,6 +1458,99 @@ function volEx(sets, regime) {
     }, 0);
 }
 
+// ── Progress & weekly-volume analytics ────────────────────────────────────────
+//
+// Read-only aggregations over D.sessions, feeding the two analytics views:
+// openProgress() (per-exercise chart, Biblioteca) and openVolume() (weekly
+// muscle-group sets, Histórico). Same counting discipline as everything
+// else: only isCountedWork() sets exist as far as analytics are concerned.
+
+// Epley estimated 1RM — the standard kg × (1 + reps/30). Only meaningful
+// for the weighted regime (assisted "kg" is a counterweight, bodyweight
+// has no kg at all), so only exerciseProgress()'s weighted branch uses it.
+const epley1RM = (kg, reps) => kg * (1 + reps / 30);
+
+// Per-session progress points for one exercise, oldest → newest (charts
+// read left-to-right in time), capped to the most recent `cap` sessions.
+// Charts ONE regime's series — kg means different things per regime
+// (weighted: load, more = better · assisted: counterweight, less = better
+// · bodyweight: no kg, reps are the metric) — chosen as the exercise's
+// most recently LOGGED regime, falling back to its library default, so
+// the chart always reflects how the exercise is being trained NOW.
+function exerciseProgress(exId, cap = 24) {
+  const lib = D.exercises.find(e => e.id === exId);
+  const sorted = [...D.sessions].sort((a, b) => a.date.localeCompare(b.date));
+  let regime = lib?.regime || 'weighted';
+  for (let k = sorted.length - 1; k >= 0; k--) {
+    const m = (sorted[k].exercises || []).find(e => e.exId === exId);
+    if (m) { regime = m.regime || 'weighted'; break; }
+  }
+  const points = [];
+  sorted.forEach(sess => {
+    const sets = (sess.exercises || [])
+      .filter(e => e.exId === exId && (e.regime || 'weighted') === regime)
+      .flatMap(e => (e.sets || []).filter(isCountedWork));
+    if (!sets.length) return;
+    const kgVals  = sets.filter(hasKg).map(s => Number(s.kg));
+    const repVals = sets.filter(hasReps).map(s => Number(s.reps));
+    const p = { date: sess.date };
+    if (regime === 'bodyweight') {
+      if (!repVals.length) return;
+      p.metric = Math.max(...repVals);
+    } else if (regime === 'assisted') {
+      if (!kgVals.length) return;
+      p.metric = Math.min(...kgVals); // the working counterweight — falling line = progress
+    } else {
+      if (!kgVals.length) return;
+      p.metric = Math.max(...kgVals);
+      const e1s = sets
+        .filter(s => hasKg(s) && hasReps(s) && Number(s.reps) > 0)
+        .map(s => epley1RM(Number(s.kg), Number(s.reps)));
+      if (e1s.length) p.e1rm = Math.max(...e1s);
+    }
+    points.push(p);
+  });
+  return { regime, points: points.slice(-cap) };
+}
+
+// Monday of the week containing dateStr, as a local YYYY-MM-DD — the same
+// noon-anchored parse fmt() uses, so timezones can't shift the day.
+function weekStartOf(dateStr) {
+  const d = new Date(dateStr + 'T12:00:00');
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // getDay(): 0=Sun → Monday is 6 back
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// Counted work sets per muscle group per week (columns oldest → newest,
+// ending in the current week). Main muscle credits 1 per set, each
+// accessory ½ — the usual way weekly-volume guidelines are tallied.
+// Muscle data comes from the LIBRARY entry (session entries don't carry
+// classification); deleted exercises are skipped, Undefined mains earn no
+// main credit but their (real) accessories still count.
+function weeklyMuscleVolume(nWeeks = 4) {
+  const mondays = [];
+  const cur = new Date(weekStartOf(today()) + 'T12:00:00');
+  for (let i = nWeeks - 1; i >= 0; i--) {
+    const d = new Date(cur); d.setDate(d.getDate() - 7 * i);
+    mondays.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+  }
+  const rows = {};
+  Object.keys(MUSCLE_GROUPS).filter(k => k !== 'undefined').forEach(k => { rows[k] = Array(nWeeks).fill(0); });
+  D.sessions.forEach(sess => {
+    const col = mondays.indexOf(weekStartOf(sess.date));
+    if (col === -1) return;
+    (sess.exercises || []).forEach(entry => {
+      const lib = D.exercises.find(e => e.id === entry.exId);
+      if (!lib) return;
+      const counted = (entry.sets || []).filter(isCountedWork).length;
+      if (!counted) return;
+      if (lib.mainMuscle && rows[lib.mainMuscle]) rows[lib.mainMuscle][col] += counted;
+      (lib.accessoryMuscles || []).forEach(m => { if (rows[m]) rows[m][col] += counted * 0.5; });
+    });
+  });
+  return { mondays, rows };
+}
+
 
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  8. UI HELPERS — buttons, pills, filter bars
@@ -2036,7 +2129,7 @@ function buildExBlock(ex, i) {
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildHistory() {
-  const bkp = `<div style="display:flex;justify-content:flex-end;margin-bottom:16px">${Bs(BG3,DM,'⬆ Backup & Sync','openBackup()')}</div>`;
+  const bkp = `<div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:16px">${Bs(BG3,DM,'📊 Volume','openVolume()')}${Bs(BG3,DM,'⬆ Backup & Sync','openBackup()')}</div>`;
   if (!D.sessions.length)
     return bkp + `<div style="text-align:center;color:${DM};padding:40px;font-size:14px">Nenhum treino salvo ainda.</div>`;
 
@@ -2100,6 +2193,35 @@ function buildHistory() {
 }
 
 
+// ── Weekly muscle-volume view (📊 Volume, Histórico header) ──────────────────
+//
+// Counted work sets per muscle group over the last 4 weeks, against the
+// usual 10–20 sets/week hypertrophy guideline — the first analytics payoff
+// of the muscle classification beyond filtering and swap suggestions.
+// Current-week cell is color-coded (amber under 10, green 10–20, red
+// over 20, dim zero); past weeks stay neutral — the guideline is about
+// steering THIS week, not grading history.
+function openVolume() {
+  const { mondays, rows } = weeklyMuscleVolume(4);
+  const dd = s => `${s.slice(8,10)}/${s.slice(5,7)}`;
+  const fmtN = n => n === 0 ? `<span style="color:${BD}">–</span>` : (Number.isInteger(n) ? n : n.toFixed(1));
+  const curColor = n => n === 0 ? BD : n < 10 ? '#e6c84a' : n <= 20 ? '#6fcf97' : '#e57373';
+  const header = `<div style="display:grid;grid-template-columns:1.6fr repeat(4, 1fr);gap:4px;padding:4px 0;border-bottom:1px solid ${BD}">
+    <span style="font-size:10px;color:${DM};text-transform:uppercase;letter-spacing:.04em">Grupo</span>
+    ${mondays.map((m, i) => `<span style="font-size:10px;color:${i === 3 ? TX : DM};text-align:center;font-weight:${i === 3 ? '700' : '400'}">${i === 3 ? 'agora' : dd(m)}</span>`).join('')}
+  </div>`;
+  const lines = Object.entries(rows).map(([muscle, counts]) => `
+    <div style="display:grid;grid-template-columns:1.6fr repeat(4, 1fr);gap:4px;padding:6px 0;border-bottom:.5px solid ${BD};align-items:center">
+      <span style="font-size:13px">${MUSCLE_GROUPS[muscle]}</span>
+      ${counts.map((n, i) => `<span style="font-size:13px;text-align:center;font-variant-numeric:tabular-nums;${i === 3 ? `font-weight:700;color:${curColor(n)}` : `color:${n === 0 ? BD : DM}`}">${fmtN(n)}</span>`).join('')}
+    </div>`).join('');
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Volume semanal por músculo</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Séries contadas por semana (seg–dom). Músculo principal vale 1, acessórios ½. Meta usual de hipertrofia: <strong style="color:#6fcf97">10–20</strong> séries/semana.</div>
+    ${header}${lines}
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
+}
+
 // ╔══════════════════════════════════════════════════════════════════════════════
 // ║  13. TAB: LIBRARY (Biblioteca)
 // ║
@@ -2158,10 +2280,11 @@ function buildLibrary() {
     </div>`;
 }
 
-// Single exercise row in the library list
+// Single exercise row in the library list. The name/pills area is the
+// progress-chart entry point (openProgress) — Editar/× keep their jobs.
 function libExRow(ex) {
   return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:7px;padding:12px 14px;display:flex;align-items:center;gap:10px">
-    <div style="flex:1;min-width:0">
+    <div onclick="openProgress('${ex.id}')" title="Ver progresso" style="flex:1;min-width:0;cursor:pointer">
       <div style="font-weight:600;font-size:14px;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.name)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap">
         ${ex.type?typePill(ex.type):''}
@@ -2173,6 +2296,78 @@ function libExRow(ex) {
     ${Bs(BG3,TX,'Editar',`openEditEx('${ex.id}')`,';padding:6px 10px;font-size:12px')}
     <button onclick="delEx('${ex.id}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
   </div>`;
+}
+
+// ── Per-exercise progress chart (tap an exercise in the Library) ─────────────
+
+// Inline SVG line chart — no libraries (CSP-clean, offline, ~zero bytes).
+// X = session order (even spacing; the question is "am I progressing per
+// session", not calendar density), Y = the regime's metric. Weighted gets
+// a second, dimmer estimated-1RM line. Assisted is deliberately NOT
+// inverted: the raw counterweight is plotted and the caption says falling
+// = progress — flipping the axis would make the numbers lie.
+function progressChartSVG(prog) {
+  const P = prog.points;
+  if (P.length < 2) return '';
+  const W = 420, H = 190, padL = 40, padR = 10, padT = 14, padB = 24;
+  const vals = P.flatMap(p => p.e1rm != null ? [p.metric, p.e1rm] : [p.metric]);
+  let min = Math.min(...vals), max = Math.max(...vals);
+  if (min === max) { min -= 1; max += 1; }
+  const span = max - min;
+  min -= span * 0.08; max += span * 0.08;
+  const x = i => padL + i * (W - padL - padR) / (P.length - 1);
+  const y = v => padT + (max - v) * (H - padT - padB) / (max - min);
+  const line = key => P.map((p, i) => p[key] == null ? null : `${x(i).toFixed(1)},${y(p[key]).toFixed(1)}`).filter(Boolean).join(' ');
+  const last = P[P.length - 1];
+  const dd = s => `${s.slice(8,10)}/${s.slice(5,7)}`;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">
+    <line x1="${padL}" y1="${y(min)}" x2="${W-padR}" y2="${y(min)}" stroke="${BD}" stroke-width="1"/>
+    ${prog.regime === 'weighted' && P.some(p => p.e1rm != null) ? `<polyline points="${line('e1rm')}" fill="none" stroke="${CB}" stroke-width="1.5" stroke-dasharray="4 3" opacity=".8"/>` : ''}
+    <polyline points="${line('metric')}" fill="none" stroke="${CG}" stroke-width="2.5" stroke-linejoin="round"/>
+    ${P.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.metric)}" r="2.5" fill="${CG}"/>`).join('')}
+    <circle cx="${x(P.length-1)}" cy="${y(last.metric)}" r="4.5" fill="${CG}" stroke="${BG}" stroke-width="1.5"/>
+    <text x="${padL-6}" y="${y(max - span*0)}" fill="${DM}" font-size="10" text-anchor="end" dominant-baseline="hanging">${Math.round(max)}</text>
+    <text x="${padL-6}" y="${y(min)}" fill="${DM}" font-size="10" text-anchor="end">${Math.round(min)}</text>
+    <text x="${padL}" y="${H-6}" fill="${DM}" font-size="10">${dd(P[0].date)}</text>
+    <text x="${W-padR}" y="${H-6}" fill="${DM}" font-size="10" text-anchor="end">${dd(last.date)}</text>
+  </svg>`;
+}
+
+function openProgress(exId) {
+  const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
+  const prog = exerciseProgress(exId);
+  const P = prog.points;
+  const unit = prog.regime === 'bodyweight' ? 'reps' : 'kg';
+  const metricName = prog.regime === 'bodyweight' ? 'Reps máx.' : prog.regime === 'assisted' ? 'Contrapeso' : 'Carga';
+  let body;
+  if (!P.length) {
+    body = `<div style="text-align:center;color:${DM};padding:24px 0;font-size:13px">Nenhum treino registrado com este exercício ainda.</div>`;
+  } else {
+    const last = P[P.length - 1];
+    const best = prog.regime === 'assisted' ? Math.min(...P.map(p => p.metric)) : Math.max(...P.map(p => p.metric));
+    const bestE = P.some(p => p.e1rm != null) ? Math.max(...P.map(p => p.e1rm || 0)) : null;
+    const stat = (lbl, val) => `<div style="flex:1;background:${BG3};border-radius:8px;padding:8px 10px;text-align:center">
+      <div style="font-size:10px;color:${DM};text-transform:uppercase;letter-spacing:.04em">${lbl}</div>
+      <div style="font-size:16px;font-weight:700;margin-top:2px">${val}</div>
+    </div>`;
+    body = `
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        ${stat('Último', `${last.metric} ${unit}`)}
+        ${stat(prog.regime === 'assisted' ? 'Melhor (menor)' : 'Melhor', `${best} ${unit}`)}
+        ${bestE ? stat('1RM est.', `${round(bestE, 0.5)} kg`) : stat('Treinos', P.length)}
+      </div>
+      ${P.length >= 2 ? progressChartSVG(prog) : `<div style="text-align:center;color:${DM};padding:14px 0;font-size:12px">Registre mais um treino para ver o gráfico.</div>`}
+      <div style="font-size:11px;color:${DM};margin-top:10px;line-height:1.5">
+        ${metricName} por treino (${P.length} treino${P.length!==1?'s':''}, séries contadas apenas).
+        ${prog.regime === 'assisted' ? 'Assistido: linha CAINDO = progresso (menos contrapeso).' : ''}
+        ${prog.regime === 'weighted' && bestE ? `Linha tracejada azul: 1RM estimado (Epley).` : ''}
+      </div>`;
+  }
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Progresso — ${esc(ex.name)}</div>
+    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
+    ${body}
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
 }
 
 // Attached after render — handles library filter pill clicks
