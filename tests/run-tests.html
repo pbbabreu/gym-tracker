@@ -1045,6 +1045,18 @@
       sets: [ { intent:'work', reps:12, kg:20 }, { intent:'work', reps:10, kg:25 } ] }] });
     prog = W.exerciseProgress('bench-press');
     t('regime = most recently logged; older-regime sessions drop out', prog.regime === 'assisted' && prog.points.length === 1 && prog.points[0].metric === 20);
+    t('regimes list: every regime with history, most recent first', eq(prog.regimes, ['assisted', 'weighted']));
+    t('explicit regime param charts that series instead', (() => { const p = W.exerciseProgress('bench-press', 24, 'weighted'); return p.regime === 'weighted' && p.points.length === 2 && p.points[1].metric === 110; })());
+    t('unknown regime param falls back to the default pick', W.exerciseProgress('bench-press', 24, 'nonsense').regime === 'assisted');
+
+    // dropdown: rendered only for multi-regime history; switch swaps the body in place
+    W.openProgress('bench-press');
+    const sel = W.document.querySelector('#modal-ov select');
+    t('multi-regime exercise gets the dropdown (Assistido first)', !!sel && sel.options.length === 2 && sel.options[0].value === 'assisted');
+    t('modal opens on the assisted series (CAINDO caption)', W.document.getElementById('prog-body').textContent.includes('CAINDO'));
+    W.progSwitch('bench-press', 'weighted');
+    t('switching regimes swaps the body in place (1RM appears)', W.document.getElementById('prog-body').textContent.includes('1RM est.') && !W.document.getElementById('prog-body').textContent.includes('CAINDO'));
+    W.closeModal();
 
     // bodyweight: reps are the metric
     T.D.sessions.push({ id: 'pgD', date: NOW, updatedAt: 4, exercises: [{ exId: 'scapular-pull-up', type: 'hypertrophy', regime: 'bodyweight',

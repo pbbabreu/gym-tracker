@@ -1472,32 +1472,38 @@ const epley1RM = (kg, reps) => kg * (1 + reps / 30);
 
 // Per-session progress points for one exercise, oldest → newest (charts
 // read left-to-right in time), capped to the most recent `cap` sessions.
-// Charts ONE regime's series — kg means different things per regime
-// (weighted: load, more = better · assisted: counterweight, less = better
-// · bodyweight: no kg, reps are the metric) — chosen as the exercise's
-// most recently LOGGED regime, falling back to its library default, so
-// the chart always reflects how the exercise is being trained NOW.
-function exerciseProgress(exId, cap = 24) {
+// Charts ONE regime's series at a time — kg means different things per
+// regime (weighted: load, more = better · assisted: counterweight, less =
+// better · bodyweight: no kg, reps are the metric). `regime` picks which;
+// when omitted, the exercise's most recently LOGGED regime (among those
+// with counted history) wins, so the default chart reflects how the
+// exercise is trained NOW. Returns `regimes` — every regime with counted
+// history, most recent first — which is what feeds the chart's dropdown.
+function exerciseProgress(exId, cap = 24, regime = null) {
   const lib = D.exercises.find(e => e.id === exId);
   const sorted = [...D.sessions].sort((a, b) => a.date.localeCompare(b.date));
-  let regime = lib?.regime || 'weighted';
+  const regimes = [];
   for (let k = sorted.length - 1; k >= 0; k--) {
-    const m = (sorted[k].exercises || []).find(e => e.exId === exId);
-    if (m) { regime = m.regime || 'weighted'; break; }
+    (sorted[k].exercises || []).forEach(e => {
+      if (e.exId !== exId) return;
+      const r = e.regime || 'weighted';
+      if (!regimes.includes(r) && (e.sets || []).some(isCountedWork)) regimes.push(r);
+    });
   }
+  const chosen = (regime && regimes.includes(regime)) ? regime : (regimes[0] || lib?.regime || 'weighted');
   const points = [];
   sorted.forEach(sess => {
     const sets = (sess.exercises || [])
-      .filter(e => e.exId === exId && (e.regime || 'weighted') === regime)
+      .filter(e => e.exId === exId && (e.regime || 'weighted') === chosen)
       .flatMap(e => (e.sets || []).filter(isCountedWork));
     if (!sets.length) return;
     const kgVals  = sets.filter(hasKg).map(s => Number(s.kg));
     const repVals = sets.filter(hasReps).map(s => Number(s.reps));
     const p = { date: sess.date };
-    if (regime === 'bodyweight') {
+    if (chosen === 'bodyweight') {
       if (!repVals.length) return;
       p.metric = Math.max(...repVals);
-    } else if (regime === 'assisted') {
+    } else if (chosen === 'assisted') {
       if (!kgVals.length) return;
       p.metric = Math.min(...kgVals); // the working counterweight — falling line = progress
     } else {
@@ -1510,7 +1516,7 @@ function exerciseProgress(exId, cap = 24) {
     }
     points.push(p);
   });
-  return { regime, points: points.slice(-cap) };
+  return { regime: chosen, regimes, points: points.slice(-cap) };
 }
 
 // Monday of the week containing dateStr, as a local YYYY-MM-DD — the same
@@ -2333,41 +2339,58 @@ function progressChartSVG(prog) {
   </svg>`;
 }
 
-function openProgress(exId) {
-  const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
-  const prog = exerciseProgress(exId);
+const REGIME_LABELS = { weighted: 'Carga', assisted: 'Assistido', bodyweight: 'Corporal' };
+
+// The stats + chart + caption for ONE regime's series — split out so the
+// regime dropdown can swap it in place (#prog-body) without rebuilding the
+// modal (showModal() would close it).
+function progressBodyHTML(exId, regime) {
+  const prog = exerciseProgress(exId, 24, regime || null);
   const P = prog.points;
+  if (!P.length) return `<div style="text-align:center;color:${DM};padding:24px 0;font-size:13px">Nenhum treino registrado com este exercício ainda.</div>`;
   const unit = prog.regime === 'bodyweight' ? 'reps' : 'kg';
   const metricName = prog.regime === 'bodyweight' ? 'Reps máx.' : prog.regime === 'assisted' ? 'Contrapeso' : 'Carga';
-  let body;
-  if (!P.length) {
-    body = `<div style="text-align:center;color:${DM};padding:24px 0;font-size:13px">Nenhum treino registrado com este exercício ainda.</div>`;
-  } else {
-    const last = P[P.length - 1];
-    const best = prog.regime === 'assisted' ? Math.min(...P.map(p => p.metric)) : Math.max(...P.map(p => p.metric));
-    const bestE = P.some(p => p.e1rm != null) ? Math.max(...P.map(p => p.e1rm || 0)) : null;
-    const stat = (lbl, val) => `<div style="flex:1;background:${BG3};border-radius:8px;padding:8px 10px;text-align:center">
-      <div style="font-size:10px;color:${DM};text-transform:uppercase;letter-spacing:.04em">${lbl}</div>
-      <div style="font-size:16px;font-weight:700;margin-top:2px">${val}</div>
+  const last = P[P.length - 1];
+  const best = prog.regime === 'assisted' ? Math.min(...P.map(p => p.metric)) : Math.max(...P.map(p => p.metric));
+  const bestE = P.some(p => p.e1rm != null) ? Math.max(...P.map(p => p.e1rm || 0)) : null;
+  const stat = (lbl, val) => `<div style="flex:1;background:${BG3};border-radius:8px;padding:8px 10px;text-align:center">
+    <div style="font-size:10px;color:${DM};text-transform:uppercase;letter-spacing:.04em">${lbl}</div>
+    <div style="font-size:16px;font-weight:700;margin-top:2px">${val}</div>
+  </div>`;
+  return `
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      ${stat('Último', `${last.metric} ${unit}`)}
+      ${stat(prog.regime === 'assisted' ? 'Melhor (menor)' : 'Melhor', `${best} ${unit}`)}
+      ${bestE ? stat('1RM est.', `${round(bestE, 0.5)} kg`) : stat('Treinos', P.length)}
+    </div>
+    ${P.length >= 2 ? progressChartSVG(prog) : `<div style="text-align:center;color:${DM};padding:14px 0;font-size:12px">Registre mais um treino neste regime para ver o gráfico.</div>`}
+    <div style="font-size:11px;color:${DM};margin-top:10px;line-height:1.5">
+      ${metricName} por treino (${P.length} treino${P.length!==1?'s':''}, séries contadas apenas).
+      ${prog.regime === 'assisted' ? 'Assistido: linha CAINDO = progresso (menos contrapeso).' : ''}
+      ${prog.regime === 'weighted' && bestE ? `Linha tracejada azul: 1RM estimado (Epley).` : ''}
     </div>`;
-    body = `
-      <div style="display:flex;gap:8px;margin-bottom:12px">
-        ${stat('Último', `${last.metric} ${unit}`)}
-        ${stat(prog.regime === 'assisted' ? 'Melhor (menor)' : 'Melhor', `${best} ${unit}`)}
-        ${bestE ? stat('1RM est.', `${round(bestE, 0.5)} kg`) : stat('Treinos', P.length)}
-      </div>
-      ${P.length >= 2 ? progressChartSVG(prog) : `<div style="text-align:center;color:${DM};padding:14px 0;font-size:12px">Registre mais um treino para ver o gráfico.</div>`}
-      <div style="font-size:11px;color:${DM};margin-top:10px;line-height:1.5">
-        ${metricName} por treino (${P.length} treino${P.length!==1?'s':''}, séries contadas apenas).
-        ${prog.regime === 'assisted' ? 'Assistido: linha CAINDO = progresso (menos contrapeso).' : ''}
-        ${prog.regime === 'weighted' && bestE ? `Linha tracejada azul: 1RM estimado (Epley).` : ''}
-      </div>`;
-  }
+}
+
+function openProgress(exId) {
+  const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
+  const prog = exerciseProgress(exId); // default regime pick + the regimes list for the dropdown
+  // Dropdown only when the exercise actually has history under more than
+  // one regime — options ordered most-recent first, matching the default.
+  const regimeSelect = prog.regimes.length > 1 ? `
+    <select onchange="progSwitch('${ex.id}', this.value)"
+      style="margin-left:auto;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:12px;padding:5px 8px;outline:none">
+      ${prog.regimes.map(r => `<option value="${r}" ${r === prog.regime ? 'selected' : ''}>${REGIME_LABELS[r] || r}</option>`).join('')}
+    </select>` : '';
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">Progresso — ${esc(ex.name)}</div>
-    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
-    ${body}
+    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap;align-items:center">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}${regimeSelect}</div>
+    <div id="prog-body">${progressBodyHTML(exId, prog.regime)}</div>
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
+}
+
+function progSwitch(exId, regime) {
+  const el = document.getElementById('prog-body');
+  if (el) el.innerHTML = progressBodyHTML(exId, regime);
 }
 
 // Attached after render — handles library filter pill clicks
