@@ -1,186 +1,6 @@
 {
   "exercises": [
     {
-      "id": "narrow-stance-sumo-deadlift",
-      "name": "Narrow stance sumo deadlift",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "hinge",
-      "accessoryMuscles": ["hamstrings", "glutes", "quads"]
-    },
-    {
-      "id": "wide-stance-sumo-deadlift",
-      "name": "Wide stance sumo deadlift",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "glutes",
-      "movementPattern": "hinge",
-      "accessoryMuscles": ["hamstrings", "quads"]
-    },
-    {
-      "id": "bent-over-barbell-row",
-      "name": "Bent-over barbell row",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "row",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "zercher-squat",
-      "name": "Zercher squat",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "quads",
-      "movementPattern": "squat",
-      "accessoryMuscles": ["glutes", "back"]
-    },
-    {
-      "id": "bench-press",
-      "name": "Bench press",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "chest",
-      "movementPattern": "press",
-      "accessoryMuscles": ["triceps", "shoulders"]
-    },
-    {
-      "id": "assisted-pull-up-gravitron",
-      "name": "Assisted pull-up (Gravitron)",
-      "type": "strength",
-      "compound": true,
-      "regime": "assisted",
-      "mainMuscle": "back",
-      "movementPattern": "pulldown",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "dip-gravitron",
-      "name": "Dip (Gravitron, leaning)",
-      "type": "strength",
-      "compound": true,
-      "regime": "assisted",
-      "mainMuscle": "chest",
-      "movementPattern": "press",
-      "accessoryMuscles": ["triceps", "shoulders"]
-    },
-    {
-      "id": "dip-gravitron-upright",
-      "name": "Dip (Gravitron, upright)",
-      "type": "strength",
-      "compound": true,
-      "regime": "assisted",
-      "mainMuscle": "triceps",
-      "movementPattern": "dip",
-      "accessoryMuscles": ["chest", "shoulders"]
-    },
-    {
-      "id": "kettlebell-swing",
-      "name": "Kettlebell swing",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "glutes",
-      "movementPattern": "hinge",
-      "accessoryMuscles": ["hamstrings", "back"]
-    },
-    {
-      "id": "incline-press-machine",
-      "name": "Incline press machine",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "chest",
-      "movementPattern": "press",
-      "accessoryMuscles": ["shoulders", "triceps"]
-    },
-    {
-      "id": "seated-cable-row",
-      "name": "Seated cable row",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "row",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "wide-grip-lat-pulldown",
-      "name": "Wide grip lat pulldown",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "pulldown",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "wide-grip-neutral-pulldown",
-      "name": "Wide grip neutral pulldown",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "pulldown",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "chest-supported-high-row",
-      "name": "Chest supported high row",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "row",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "machine-low-row",
-      "name": "Machine low row",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "row",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "v-squat-front-facing",
-      "name": "V-squat (front-facing)",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "quads",
-      "movementPattern": "squat",
-      "accessoryMuscles": ["glutes"]
-    },
-    {
-      "id": "bulgarian-split-squat",
-      "name": "Bulgarian split squat",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "quads",
-      "movementPattern": "lunge",
-      "accessoryMuscles": ["glutes", "hamstrings"]
-    },
-    {
-      "id": "hip-thrust",
-      "name": "Hip thrust",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "glutes",
-      "movementPattern": "hip_thrust",
-      "accessoryMuscles": ["hamstrings"]
-    },
-    {
       "id": "cable-low-to-high-fly",
       "name": "Cable low-to-high fly",
       "type": "hypertrophy",
@@ -188,7 +8,9 @@
       "regime": "weighted",
       "mainMuscle": "chest",
       "movementPattern": "fly",
-      "accessoryMuscles": ["shoulders"]
+      "accessoryMuscles": [
+        "shoulders"
+      ]
     },
     {
       "id": "pec-deck-fly",
@@ -201,18 +23,291 @@
       "accessoryMuscles": []
     },
     {
-      "id": "stiff-leg-deadlift",
-      "name": "Stiff-leg deadlift",
+      "id": "bench-press",
+      "name": "Bench press",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "accessoryMuscles": [
+        "triceps",
+        "shoulders"
+      ]
+    },
+    {
+      "id": "dip-gravitron",
+      "name": "Dip (Gravitron, leaning)",
+      "type": "strength",
+      "compound": true,
+      "regime": "assisted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "accessoryMuscles": [
+        "triceps",
+        "shoulders"
+      ]
+    },
+    {
+      "id": "incline-press-machine",
+      "name": "Incline press machine",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
-      "mainMuscle": "hamstrings",
-      "movementPattern": "hinge",
-      "accessoryMuscles": ["glutes", "back"]
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ]
     },
     {
-      "id": "overhead-cable-triceps",
-      "name": "Overhead cable triceps",
+      "id": "single-leg-45-back-extension",
+      "name": "Single leg 45° back extension",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "extension",
+      "accessoryMuscles": [
+        "hamstrings",
+        "glutes"
+      ]
+    },
+    {
+      "id": "narrow-stance-sumo-deadlift",
+      "name": "Narrow stance sumo deadlift",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "hinge",
+      "accessoryMuscles": [
+        "hamstrings",
+        "glutes",
+        "quads"
+      ]
+    },
+    {
+      "id": "scapular-pull-up",
+      "name": "Scapular pull-up",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "back",
+      "movementPattern": "other",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "assisted-pull-up-gravitron",
+      "name": "Assisted pull-up (Gravitron)",
+      "type": "strength",
+      "compound": true,
+      "regime": "assisted",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "wide-grip-lat-pulldown",
+      "name": "Wide grip lat pulldown",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "wide-grip-neutral-pulldown",
+      "name": "Wide grip neutral pulldown",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "bent-over-barbell-row",
+      "name": "Bent-over barbell row",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "chest-supported-high-row",
+      "name": "Chest supported high row",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "machine-low-row",
+      "name": "Machine low row",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "seated-cable-row",
+      "name": "Seated cable row",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "strict-halos",
+      "name": "Strict halos",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "other",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "seated-machine-shoulder-press",
+      "name": "Seated machine shoulder press",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "press",
+      "accessoryMuscles": [
+        "triceps"
+      ]
+    },
+    {
+      "id": "crucifix-swing",
+      "name": "Crucifix swing",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "hammer-curl-lateral-raise",
+      "name": "Hammer curl lateral raise",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "accessoryMuscles": [
+        "biceps"
+      ]
+    },
+    {
+      "id": "lateral-raise",
+      "name": "Lateral raise",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "face-pull",
+      "name": "Face pull",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "rear_delt",
+      "accessoryMuscles": [
+        "back"
+      ]
+    },
+    {
+      "id": "hammer-curl",
+      "name": "Hammer curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "accessoryMuscles": [
+        "forearms"
+      ]
+    },
+    {
+      "id": "incline-deficit-curl",
+      "name": "Incline deficit curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "reverse-grip-ez-bar-curl",
+      "name": "Reverse grip EZ bar curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "accessoryMuscles": [
+        "forearms"
+      ]
+    },
+    {
+      "id": "single-arm-preacher-curl",
+      "name": "Single arm preacher curl",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "dip-gravitron-upright",
+      "name": "Dip (Gravitron, upright)",
+      "type": "strength",
+      "compound": true,
+      "regime": "assisted",
+      "mainMuscle": "triceps",
+      "movementPattern": "dip",
+      "accessoryMuscles": [
+        "chest",
+        "shoulders"
+      ]
+    },
+    {
+      "id": "cable-triceps-kickback",
+      "name": "Cable triceps kickback",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
@@ -231,8 +326,8 @@
       "accessoryMuscles": []
     },
     {
-      "id": "cable-triceps-kickback",
-      "name": "Cable triceps kickback",
+      "id": "overhead-cable-triceps",
+      "name": "Overhead cable triceps",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
@@ -251,84 +346,52 @@
       "accessoryMuscles": []
     },
     {
-      "id": "single-arm-preacher-curl",
-      "name": "Single arm preacher curl",
+      "id": "leg-extension",
+      "name": "Leg extension",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
-      "mainMuscle": "biceps",
-      "movementPattern": "curl",
+      "mainMuscle": "quads",
+      "movementPattern": "extension",
       "accessoryMuscles": []
     },
     {
-      "id": "incline-deficit-curl",
-      "name": "Incline deficit curl",
+      "id": "bulgarian-split-squat",
+      "name": "Bulgarian split squat",
       "type": "hypertrophy",
-      "compound": false,
+      "compound": true,
       "regime": "weighted",
-      "mainMuscle": "biceps",
-      "movementPattern": "curl",
-      "accessoryMuscles": []
+      "mainMuscle": "quads",
+      "movementPattern": "lunge",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ]
     },
     {
-      "id": "hammer-curl",
-      "name": "Hammer curl",
+      "id": "v-squat-front-facing",
+      "name": "V-squat (front-facing)",
       "type": "hypertrophy",
-      "compound": false,
+      "compound": true,
       "regime": "weighted",
-      "mainMuscle": "biceps",
-      "movementPattern": "curl",
-      "accessoryMuscles": ["forearms"]
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "accessoryMuscles": [
+        "glutes"
+      ]
     },
     {
-      "id": "reverse-grip-ez-bar-curl",
-      "name": "Reverse grip EZ bar curl",
-      "type": "hypertrophy",
-      "compound": false,
+      "id": "zercher-squat",
+      "name": "Zercher squat",
+      "type": "strength",
+      "compound": true,
       "regime": "weighted",
-      "mainMuscle": "biceps",
-      "movementPattern": "curl",
-      "accessoryMuscles": ["forearms"]
-    },
-    {
-      "id": "hammer-curl-lateral-raise",
-      "name": "Hammer curl lateral raise",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "raise",
-      "accessoryMuscles": ["biceps"]
-    },
-    {
-      "id": "lateral-raise",
-      "name": "Lateral raise",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "raise",
-      "accessoryMuscles": []
-    },
-    {
-      "id": "crucifix-swing",
-      "name": "Crucifix swing",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "raise",
-      "accessoryMuscles": []
-    },
-    {
-      "id": "face-pull",
-      "name": "Face pull",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "rear_delt",
-      "accessoryMuscles": ["back"]
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "accessoryMuscles": [
+        "glutes",
+        "back"
+      ]
     },
     {
       "id": "seated-leg-curl",
@@ -338,16 +401,6 @@
       "regime": "weighted",
       "mainMuscle": "hamstrings",
       "movementPattern": "curl",
-      "accessoryMuscles": []
-    },
-    {
-      "id": "leg-extension",
-      "name": "Leg extension",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "quads",
-      "movementPattern": "extension",
       "accessoryMuscles": []
     },
     {
@@ -361,24 +414,17 @@
       "accessoryMuscles": []
     },
     {
-      "id": "single-leg-45-back-extension",
-      "name": "Single leg 45° back extension",
+      "id": "stiff-leg-deadlift",
+      "name": "Stiff-leg deadlift",
       "type": "hypertrophy",
-      "compound": false,
+      "compound": true,
       "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "extension",
-      "accessoryMuscles": ["hamstrings", "glutes"]
-    },
-    {
-      "id": "seated-machine-shoulder-press",
-      "name": "Seated machine shoulder press",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "press",
-      "accessoryMuscles": ["triceps"]
+      "mainMuscle": "hamstrings",
+      "movementPattern": "hinge",
+      "accessoryMuscles": [
+        "glutes",
+        "back"
+      ]
     },
     {
       "id": "hip-abduction-machine",
@@ -389,6 +435,44 @@
       "mainMuscle": "glutes",
       "movementPattern": "abduction",
       "accessoryMuscles": []
+    },
+    {
+      "id": "kettlebell-swing",
+      "name": "Kettlebell swing",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "glutes",
+      "movementPattern": "hinge",
+      "accessoryMuscles": [
+        "hamstrings",
+        "back"
+      ]
+    },
+    {
+      "id": "wide-stance-sumo-deadlift",
+      "name": "Wide stance sumo deadlift",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "glutes",
+      "movementPattern": "hinge",
+      "accessoryMuscles": [
+        "hamstrings",
+        "quads"
+      ]
+    },
+    {
+      "id": "hip-thrust",
+      "name": "Hip thrust",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "glutes",
+      "movementPattern": "hip_thrust",
+      "accessoryMuscles": [
+        "hamstrings"
+      ]
     },
     {
       "id": "hip-adduction-machine",
@@ -418,26 +502,6 @@
       "regime": "weighted",
       "mainMuscle": "calves",
       "movementPattern": "raise",
-      "accessoryMuscles": []
-    },
-    {
-      "id": "scapular-pull-up",
-      "name": "Scapular pull-up",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "bodyweight",
-      "mainMuscle": "back",
-      "movementPattern": "other",
-      "accessoryMuscles": []
-    },
-    {
-      "id": "strict-halos",
-      "name": "Strict halos",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "other",
       "accessoryMuscles": []
     }
   ]
