@@ -133,7 +133,7 @@
 
   // ── training profiles & progression ───────────────────────────────────────
   g('profiles & progression');
-  t('strength profile 3×2–5 regardless of regime', eq(W.profileFor('strength', 'assisted'), { targetWorkSets: 3, repLow: 2, repHigh: 5 }) && eq(W.profileFor('strength', 'weighted'), { targetWorkSets: 3, repLow: 2, repHigh: 5 }));
+  t('strength profile 3×3–5 regardless of regime (owner-corrected range)', eq(W.profileFor('strength', 'assisted'), { targetWorkSets: 3, repLow: 3, repHigh: 5 }) && eq(W.profileFor('strength', 'weighted'), { targetWorkSets: 3, repLow: 3, repHigh: 5 }));
   t('hypertrophy weighted 1×6–10', eq(W.profileFor('hypertrophy', 'weighted'), { targetWorkSets: 1, repLow: 6, repHigh: 10 }));
   t('hypertrophy assisted 1×6–12', eq(W.profileFor('hypertrophy', 'assisted'), { targetWorkSets: 1, repLow: 6, repHigh: 12 }));
   t('bumpWeight +2.5 weighted', W.bumpWeight(20, false) === 22.5);
@@ -176,7 +176,7 @@
     ])];
     sug = W.computeSuggestion('zercher-squat', 'strength', 'weighted', P);
     t('full target at top of range graduates', sug.graduated === true);
-    t('graduation bumps to 22.5 and resets reps to 2', sug.suggestedKg === 22.5 && sug.repsTarget === 2);
+    t('graduation bumps to 22.5 and resets reps to the range floor (3)', sug.suggestedKg === 22.5 && sug.repsTarget === 3);
 
     // assisted inversion incl. the 0kg full-graduation state
     const PA = W.profileFor('hypertrophy', 'assisted');
@@ -978,6 +978,39 @@
     W.toggleCompleted(0, 1);
     t('last set checked → same collapse-and-advance', exA._collapsed === true && exB._collapsed === false);
     W.skipRestTimer();
+
+    // downward cascade: unchecking a middle set unchecks everything below it
+    W.startFree();
+    T.S.exercises = [{ exId: 'bench-press', exName: 'C', type: 'strength', regime: 'weighted',
+      sets: Array.from({ length: 6 }, () => ({ intent: 'work', reps: 5, kg: 100, completed: true })) }];
+    T.S.exercises[0]._collapsed = false;
+    W.toggleCompleted(0, 3); // uncheck set 4 of 6
+    const cSets = T.S.exercises[0].sets;
+    t('uncheck cascades to the rows below (explicit false)', cSets[3].completed === false && cSets[4].completed === false && cSets[5].completed === false);
+    t('rows above the uncheck stay checked', cSets[0].completed === true && cSets[1].completed === true && cSets[2].completed === true);
+    t('cascaded rows are excluded like manual unchecks (volume = 3×5×100)', W.volEx(cSets, 'weighted') === 1500);
+    cSets[4].completed = true; delete cSets[5].completed;
+    W.toggleCompleted(0, 3); // re-CHECK set 4 — checking must never touch other rows
+    t('checking cascades nothing', cSets[4].completed === true && !('completed' in cSets[5]));
+    W.skipRestTimer();
+
+    // chevron: same glyph size, always the leftmost control in BOTH states
+    let xhtml = W.buildExBlock(T.S.exercises[0], 0);
+    t('expanded: chevron before reorder arrows, thumb-sized', xhtml.indexOf('▾') < xhtml.indexOf('▲') && xhtml.includes('font-size:17px;cursor:pointer;padding:6px 6px'));
+    T.S.exercises[0]._collapsed = true;
+    xhtml = W.buildExBlock(T.S.exercises[0], 0);
+    t('collapsed: chevron leftmost, same size', xhtml.indexOf('▸') < xhtml.indexOf('toggleExDone') && xhtml.includes('font-size:17px;cursor:pointer;padding:6px 6px'));
+    W.cancelSession();
+
+    // estimate prompt now prefills the WORK rows' load with the guess
+    W.startFree();
+    T.S.exercises = [{ exId: 'zercher-squat', exName: 'Z', type: 'strength', regime: 'weighted', compound: true,
+      sets: [ { intent: 'work', reps: '', kg: '' }, { intent: 'work', reps: '', kg: 80, kgEdited: true }, { intent: 'work', reps: '', kg: '' } ] }];
+    W.estimateWarmups(0, '100');
+    const eSets = T.S.exercises[0].sets;
+    t('estimate: 3 warm-ups prepended off the guess', eSets.slice(0, 3).every(s => s.intent === 'warmup') && eSets[0].kg === 25 && eSets[2].kg === 85);
+    t('estimate: empty work rows prefilled with the guess, confirmed', eSets[3].kg === 100 && eSets[3].kgEdited === true && eSets[5].kg === 100);
+    t('estimate: a hand-typed load is never overwritten', eSets[4].kg === 80);
     W.cancelSession();
   }
 

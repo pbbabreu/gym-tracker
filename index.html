@@ -1246,7 +1246,10 @@ const memKey = (exId, type, regime) => `${exId}:${type}:${regime||'weighted'}`;
 const isCountedWork = s => s.intent === 'work' && s.completed !== false;
 
 function profileFor(type, regime) {
-  if (type === 'strength') return { targetWorkSets: 3, repLow: 2, repHigh: 5 };
+  // 3–5, per the owner's explicit correction (2026-07-25). The earlier 2–5
+  // came from git archaeology of the pre-feature code and stood until the
+  // range got real-world use — user preference beats historical accuracy.
+  if (type === 'strength') return { targetWorkSets: 3, repLow: 3, repHigh: 5 };
   // Hypertrophy's 1 target work set is the same for compound and isolation
   // — only the warm-up count differs by isComp (3 vs 1, in
   // buildWarmupSets()), the work-set target doesn't.
@@ -1964,12 +1967,17 @@ function buildExBlock(ex, i) {
   // Collapsed: one compact row — chevron/name to expand, the done box, and
   // a set-count summary. Everything else (toggles, sets, banners, buttons)
   // stays out of the way; that's the point of focus mode.
+  // The chevron: SAME size and SAME leftmost position in both states —
+  // collapsed (▸) and expanded (▾) — so folding a block never makes the
+  // control jump around. Sized for thumbs (17px glyph, generous padding).
+  const chevron = open => `<button onclick="toggleExCollapse(${i})" title="${open?'Minimizar':'Expandir'}" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:17px;cursor:pointer;padding:6px 6px;line-height:1">${open?'▾':'▸'}</button>`;
+
   if (ex._collapsed) {
     const checked = ex.sets.filter(s => s.completed === true).length;
     return `
     <div id="exblk-${i}" style="background:${BG2};border:1px solid ${done?'#1a4a3a':(isDuplicated?CA:BD)};border-radius:10px;margin-bottom:8px;overflow:hidden;opacity:${done?'.75':'1'}">
-      <div style="display:flex;align-items:center;gap:8px;padding:9px 12px">
-        <button onclick="toggleExCollapse(${i})" style="background:none;border:none;color:${DM};font-size:12px;cursor:pointer;padding:2px;flex-shrink:0">▸</button>
+      <div style="display:flex;align-items:center;gap:8px;padding:7px 12px 7px 6px">
+        ${chevron(false)}
         ${doneCheck}
         <button onclick="toggleExCollapse(${i})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:14px;cursor:pointer;font-family:inherit;text-align:left;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
         <span style="flex-shrink:0;font-size:12px;color:${done?'#6fcf97':DM}">${checked}/${ex.sets.length} ✓</span>
@@ -1979,15 +1987,15 @@ function buildExBlock(ex, i) {
 
   return `
     <div id="exblk-${i}" style="background:${BG2};border:1px solid ${isDuplicated?CA:BD};border-radius:10px;margin-bottom:12px;overflow:hidden">
-      <!-- Exercise header: collapse chevron, reorder arrows, name, done box, type/regime toggles, buttons -->
-      <div style="padding:10px 12px 10px 10px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid ${BD};gap:8px">
+      <!-- Exercise header: chevron (always leftmost), reorder arrows, name, done box, type/regime toggles, buttons -->
+      <div style="padding:10px 12px 10px 6px;display:flex;align-items:flex-start;justify-content:space-between;border-bottom:1px solid ${BD};gap:6px">
+        <div style="display:flex;align-items:center;flex-shrink:0;align-self:stretch">${chevron(true)}</div>
         <div style="display:flex;flex-direction:column;gap:2px;padding-top:2px;flex-shrink:0">
           <button onclick="moveEx(${i},-1)" ${isFirst?'disabled':''} style="background:none;border:none;color:${isFirst?BD:DM};font-size:14px;cursor:${isFirst?'default':'pointer'};padding:1px 4px;line-height:1">▲</button>
           <button onclick="moveEx(${i},1)"  ${isLast?'disabled':''} style="background:none;border:none;color:${isLast?BD:DM};font-size:14px;cursor:${isLast?'default':'pointer'};padding:1px 4px;line-height:1">▼</button>
         </div>
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:15px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <button onclick="toggleExCollapse(${i})" title="Minimizar" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:12px;cursor:pointer;padding:2px">▾</button>
             <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</span>
             ${isDuplicated ? `<button onclick="alert('Este exercício aparece mais de uma vez neste treino (mesmo tipo e regime). O histórico combina os dados das duas entradas para sugestões futuras, mas cada uma é salva separadamente, na ordem em que foram adicionadas.')" style="flex-shrink:0;background:none;border:1px solid ${CA};color:${CA};border-radius:99px;width:16px;height:16px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0">i</button>` : ''}
             ${doneCheck}
@@ -3349,6 +3357,12 @@ function estimateWarmups(i, v) {
   if (Number.isNaN(kg) || kg < 0) return;
   const ex = S.exercises[i];
   ex.sets = [...buildWarmupSets(ex.regime||'weighted', ex.compound!==false, kg), ...ex.sets];
+  // The guess is also today's intended WORKING weight — prefill the work
+  // rows' load with it (kgEdited: the user typed this number themselves,
+  // it's not a machine suggestion to render dim). Only rows still empty:
+  // a load someone already typed directly into a row must never be
+  // overwritten by the estimate field.
+  ex.sets.forEach(s => { if (s.intent === 'work' && !hasKg(s)) { s.kg = kg; s.kgEdited = true; } });
   render();
 }
 
@@ -3646,7 +3660,8 @@ function saveExRest(i) {
 // Checking (not unchecking) also starts the rest timer — see the Rest timer
 // section above for the transition-based duration rules.
 function toggleCompleted(i,j) {
-  const s = S.exercises[i].sets[j];
+  const sets = S.exercises[i].sets;
+  const s = sets[j];
   s.completed = !s.completed;
   if (s.completed) {
     s.repsEdited = true; s.kgEdited = true;
@@ -3656,6 +3671,18 @@ function toggleCompleted(i,j) {
     // marks this exercise-level check mark or marks all the individual
     // sets" equivalence.
     if (exIsDone(S.exercises[i])) { collapseAndAdvance(i); return; }
+  } else {
+    // Unchecking CASCADES DOWNWARD: sets are performed in order, so "set 4
+    // didn't happen (yet)" implies 5 and 6 didn't either — the common case
+    // being an over-eager exercise-level ✓ (or check-all) walked back from
+    // the point of the mistake. Only rows BELOW, only ones currently
+    // checked, and they get the same explicit `false` a manual uncheck
+    // sets — this is the user declaring those sets not-done, not a reset
+    // to the neutral counted-by-default state (the header box's un-✓ does
+    // that whole-exercise reset instead).
+    for (let k = j + 1; k < sets.length; k++) {
+      if (sets[k].completed === true) sets[k].completed = false;
+    }
   }
   render();
 }
