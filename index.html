@@ -2276,6 +2276,15 @@ function buildLibrary() {
         ${Bs(CG,TX,'+ Novo','openNewEx()')}
       </div>
     </div>
+    ${(() => {
+      // Only surfaces when there's something to fix — doubles as the
+      // notification that a split history exists at all.
+      const n = duplicateGroups().length;
+      return n ? `<div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:10px;padding:9px 12px;margin-top:10px;display:flex;align-items:center;gap:10px">
+        <span style="flex:1;font-size:12px;color:#e6c84a">${n} exercício${n!==1?'s':''} duplicado${n!==1?'s':''} — o histórico está dividido entre as cópias.</span>
+        ${Bs(BG3,TX,'Revisar','openDuplicates()',';flex-shrink:0;padding:6px 10px;font-size:12px')}
+      </div>` : '';
+    })()}
 
     ${(!total && _libSeedError) ? `
       <div style="background:#2d1010;border:1px solid #5c1a1a;border-radius:10px;padding:12px 14px;margin:14px 0 0;display:flex;align-items:center;justify-content:space-between;gap:12px">
@@ -2480,6 +2489,133 @@ function renderCatalogList() {
       </div>
       ${Bs(CG,TX,'+ Adicionar',`addCatalogExercise('${esc(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
     </div>`).join('');
+}
+
+// ── Duplicate detection & merge ───────────────────────────────────────────────
+//
+// Duplicates aren't just clutter: the progression engine keys on exId
+// (getRecentWorkHistory/computeSuggestion), so two entries with the same
+// name mean two SPLIT histories — suggestions, graduation and the progress
+// chart all see half the story. Several paths could create them before the
+// guards added alongside this (mid-session quick-create, "+ Novo", a
+// catalog add whose id differs from a local hand-made copy), and no path
+// existed to find or fix them afterwards.
+
+function duplicateGroups() {
+  const by = {};
+  D.exercises.forEach(ex => { (by[nameKey(ex.name)] ||= []).push(ex); });
+  return Object.entries(by)
+    .filter(([, list]) => list.length > 1)
+    .map(([key, list]) => ({ key, name: list[0].name, entries: list }))
+    .sort((a, b) => b.entries.length - a.entries.length || a.name.localeCompare(b.name, 'pt'));
+}
+
+// How much history hangs off an exercise — decides which copy to keep and
+// warns before anything is discarded.
+function exerciseUsage(id) {
+  const sessions = D.sessions.filter(s => (s.exercises||[]).some(e => e.exId === id)).length;
+  const plans    = D.plans.filter(p => (p.exercises||[]).includes(id)).length;
+  return { sessions, plans };
+}
+
+// Rewrites every reference from the duplicates onto the keeper, then
+// tombstones them. Nothing is thrown away: sessions keep all their sets
+// (only the exId pointer moves — exName stays as the historical snapshot
+// of what it was called at the time), and plans keep their slot. Touched
+// records get updatedAt bumped so the merge propagates through the
+// per-item LWW sync instead of being undone by another device.
+function mergeExercises(keeperId, dupIds) {
+  const now = Date.now();
+  D.sessions.forEach(s => {
+    let touched = false;
+    (s.exercises||[]).forEach(e => { if (dupIds.includes(e.exId)) { e.exId = keeperId; touched = true; } });
+    if (touched) s.updatedAt = now;
+  });
+  D.plans.forEach(p => {
+    let touched = false;
+    if ((p.exercises||[]).some(id => dupIds.includes(id))) {
+      // Set-dedupe: a plan that referenced both the keeper and a duplicate
+      // would otherwise end up listing the keeper twice, which the plan
+      // editor itself refuses to create by hand.
+      p.exercises = [...new Set((p.exercises||[]).map(id => dupIds.includes(id) ? keeperId : id))];
+      touched = true;
+    }
+    dupIds.forEach(d => {
+      if (p.rests && p.rests[d]) {
+        if (!p.rests[keeperId]) p.rests[keeperId] = p.rests[d]; // keeper's own timing wins if it has one
+        delete p.rests[d];
+        touched = true;
+      }
+    });
+    if (touched) p.updatedAt = now;
+  });
+  dupIds.forEach(id => { D.tombstones.exercises[id] = now; });
+  D.exercises = D.exercises.filter(e => !dupIds.includes(e.id));
+  persist();
+}
+
+// Which copy each group is currently set to keep (defaults to the one
+// carrying the most history). Reset every time the modal opens.
+let _dupKeepers = {};
+
+function openDuplicates() {
+  const groups = duplicateGroups();
+  _dupKeepers = {};
+  groups.forEach(g => {
+    const best = [...g.entries].sort((a, b) => {
+      const ua = exerciseUsage(a.id), ub = exerciseUsage(b.id);
+      return (ub.sessions - ua.sessions) || (ub.plans - ua.plans);
+    })[0];
+    _dupKeepers[g.key] = best.id;
+  });
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Exercícios duplicados</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Exercícios com o mesmo nome dividem o histórico: as sugestões e o gráfico de progresso enxergam só metade dos treinos. Escolha qual manter e unifique — nenhum treino é perdido, as séries são reapontadas para o exercício escolhido.</div>
+    <div id="dup-body">${duplicatesBodyHTML()}</div>
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
+}
+
+function duplicatesBodyHTML() {
+  const groups = duplicateGroups();
+  if (!groups.length) return `<div style="text-align:center;color:#6fcf97;padding:20px 0;font-size:13px">Nenhum exercício duplicado ✓</div>`;
+  return groups.map(g => {
+    const keeper = _dupKeepers[g.key];
+    const rows = g.entries.map(ex => {
+      const u = exerciseUsage(ex.id);
+      const isKeeper = ex.id === keeper;
+      const use = [u.sessions ? `${u.sessions} treino${u.sessions !== 1 ? 's' : ''}` : null,
+                   u.plans ? `${u.plans} plano${u.plans !== 1 ? 's' : ''}` : null]
+                  .filter(Boolean).join(' · ') || 'sem histórico';
+      return `<div onclick="setDupKeeper('${g.key}','${ex.id}')" style="display:flex;align-items:center;gap:8px;padding:7px 8px;margin-bottom:4px;border-radius:8px;cursor:pointer;background:${isKeeper ? '#0a2e24' : BG3};border:1px solid ${isKeeper ? '#1a4a3a' : BD}">
+        <span style="flex-shrink:0;width:16px;height:16px;border-radius:99px;border:1px solid ${isKeeper ? CG : BD};background:${isKeeper ? CG : 'transparent'}"></span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.name)}</div>
+          <div style="font-size:11px;color:${DM};margin-top:2px">${use}</div>
+        </div>
+        <div style="display:flex;gap:3px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}</div>
+      </div>`;
+    }).join('');
+    return `<div style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid ${BD}">
+      <div style="font-size:13px;font-weight:700;margin-bottom:6px">${esc(g.name)} <span style="font-weight:400;color:${DM}">— ${g.entries.length} cópias</span></div>
+      ${rows}
+      ${Bs(CG,TX,`Unificar em "${esc(g.entries.find(e => e.id === keeper)?.name || '')}"`,`doMergeGroup('${g.key}')`,';width:100%;justify-content:center;padding:8px;margin-top:4px')}
+    </div>`;
+  }).join('');
+}
+
+function setDupKeeper(key, id) { _dupKeepers[key] = id; const b = document.getElementById('dup-body'); if (b) b.innerHTML = duplicatesBodyHTML(); }
+
+function doMergeGroup(key) {
+  const group = duplicateGroups().find(g => g.key === key); if (!group) return;
+  const keeperId = _dupKeepers[key];
+  const keeper = group.entries.find(e => e.id === keeperId); if (!keeper) return;
+  const dups = group.entries.filter(e => e.id !== keeperId);
+  const moved = dups.reduce((a, e) => a + exerciseUsage(e.id).sessions, 0);
+  if (!confirm(`Unificar ${dups.length + 1} cópias em "${keeper.name}"?\n\n${moved} treino${moved !== 1 ? 's' : ''} ${moved === 1 ? 'será reapontado' : 'serão reapontados'} para este exercício. As outras cópias são excluídas.`)) return;
+  mergeExercises(keeperId, dups.map(e => e.id));
+  const b = document.getElementById('dup-body');
+  if (b) b.innerHTML = duplicatesBodyHTML();
+  render();
 }
 
 function addCatalogExercise(catalogId) {
@@ -3165,8 +3301,25 @@ function openEditEx(id) {
   _newRest = { wuwu: ex.rest?.wuwu ?? '', wuw: ex.rest?.wuw ?? '', ww: ex.rest?.ww ?? '' };
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
+// Normalized name key for duplicate detection: case-, accent- and
+// whitespace-insensitive, so "Rosca direta", "rosca  direta" and "Rosca
+// Direta" all collide. Used by the creation guards and by the duplicate
+// finder (section 13).
+const nameKey = n => String(n||'')
+  .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
+  .toLowerCase().trim().replace(/\s+/g, ' ');
+
+const findByName = n => D.exercises.find(e => nameKey(e.name) === nameKey(n));
+
 function saveNewEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim(); if(!name)return;
+  // Nothing stopped this path from creating a second "Supino reto" with a
+  // fresh random id — and a split id means split history: the progression
+  // engine keys on exId, so duplicates silently fragment suggestions.
+  // Warn, but allow (it's their library, and deliberate near-duplicates
+  // with the same name are their call).
+  const clash = findByName(name);
+  if (clash && !confirm(`Já existe "${clash.name}" na biblioteca.\n\nCriar outro com o mesmo nome? Isso divide o histórico e as sugestões entre os dois.`)) return;
   const rest = readModalRest();
   D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime,
     mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
@@ -3327,6 +3480,23 @@ function addPickedEx(exId) {
 function createAndAdd() {
   const el   = document.getElementById('new-ex-name');
   const name = (el?el.value:'').trim(); if(!name)return;
+  // Mid-workout quick-create is the fastest way to fragment a library:
+  // type a name you couldn't find in the picker, get a brand-new random
+  // id, and every future session logs against a DIFFERENT exercise than
+  // the one holding your history. Reuse the existing entry instead — that
+  // is virtually always the intent, and it keeps the progression intact.
+  const existing = findByName(name);
+  if (existing) {
+    if (S) {
+      const o = { exId: existing.id, exName: existing.name, type: _newType, compound: existing.compound,
+                  regime: existing.regime || 'weighted', rest: seedRestFor(existing.id, S.planId), sets: [] };
+      o.sets = buildSetsFromMemory(o);
+      S.exercises.push(o);
+    }
+    closeModal(); render();
+    alert(`"${existing.name}" já existe na biblioteca — adicionei o exercício existente, para não dividir seu histórico.`);
+    return;
+  }
   const id   = uid();
   // mainMuscle/movementPattern default to 'undefined' here, same as the
   // hardcoded compound/regime just above — this quick-create path only
@@ -4211,6 +4381,26 @@ function openBackup() {
 // narrates the outcome inline. Errors here are usually MEANINGFUL, not
 // technical: with public sign-ups disabled server-side, an uninvited
 // address is refused right here — that's the invite-only policy speaking.
+// Turns Supabase's developer-English auth errors into something a family
+// member can act on. The invite case is the one that matters: with
+// server-side sign-ups disabled (the invite-only policy), ANY e-mail
+// without an account is rejected — as `signup_disabled` when the client
+// would create users, or `otp_disabled` when it wouldn't. Both mean the
+// same thing to a human: "you haven't been invited yet." Shipping the raw
+// "Signups not allowed for this instance" made a working policy look like
+// a broken app.
+function authErrorMessage(error) {
+  const code = (error?.code || error?.error_code || '').toString();
+  const msg  = (error?.message || '').toLowerCase();
+  if (code === 'signup_disabled' || code === 'otp_disabled' || msg.includes('signups not allowed'))
+    return 'Este e-mail ainda não tem acesso. Peça um convite a quem administra o app — depois é só pedir o código de novo.';
+  if (error?.status === 429 || code.includes('rate_limit') || msg.includes('rate limit'))
+    return 'Muitos e-mails enviados em pouco tempo. Espere alguns minutos e tente de novo.';
+  if (code === 'validation_failed' || msg.includes('invalid') && msg.includes('email'))
+    return 'E-mail inválido — confira se está escrito corretamente.';
+  return 'Não foi possível enviar: ' + (error?.message || 'erro desconhecido');
+}
+
 async function sbSendLink() {
   const el  = document.getElementById('sb-email');
   const msg = document.getElementById('sb-login-msg');
@@ -4220,7 +4410,7 @@ async function sbSendLink() {
   const { error } = await sbSignIn(email);
   msg.style.color   = error ? '#e57373' : '#6fcf97';
   msg.textContent   = error
-    ? 'Não foi possível enviar: ' + (error.message || 'erro desconhecido')
+    ? authErrorMessage(error)
     : 'Enviado! Digite o código do e-mail abaixo — ou toque no link do e-mail neste aparelho.';
   // Reveal the code entry only once there's actually a code in flight.
   if (!error) { const row = document.getElementById('sb-otp-row'); if (row) row.style.display = 'block'; }

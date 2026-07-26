@@ -100,6 +100,7 @@
     get restTimer() { return _restTimer; }, set restTimer(v) { _restTimer = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
+    nameKey, findByName,
     SCHEMA_VERSION,
   })`);
 
@@ -1101,6 +1102,92 @@
     W.closeModal();
 
     T.D.sessions = keepSess;
+  }
+
+  // ── duplicates: detection, prevention, merge ───────────────────────────────
+  g('duplicates & auth errors');
+  {
+    const keepEx = T.D.exercises.slice(), keepSess = T.D.sessions.slice(), keepPlans = T.D.plans.slice();
+
+    // name normalization: case, accents, whitespace
+    t('nameKey folds case/accents/whitespace', T.nameKey('Rosca  Direta') === T.nameKey('rosca direta')
+      && T.nameKey('Supino Inclinado') === T.nameKey('supino inclinado')
+      && T.nameKey('Tríceps') === T.nameKey('triceps'));
+    t('nameKey keeps genuinely different names apart', T.nameKey('Supino reto') !== T.nameKey('Supino inclinado'));
+    t('findByName locates an existing entry case-insensitively', T.findByName('BENCH PRESS')?.id === 'bench-press');
+
+    // detection + usage counting
+    T.D.exercises.push(
+      { id: 'dup-a', name: 'Supino teste', type: 'strength', compound: true, regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press', accessoryMuscles: [], updatedAt: 1 },
+      { id: 'dup-b', name: 'supino  TESTE', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press', accessoryMuscles: [], updatedAt: 2 },
+      { id: 'dup-c', name: 'Supino Teste', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press', accessoryMuscles: [], updatedAt: 3 },
+    );
+    let groups = W.duplicateGroups();
+    const grp = groups.find(x => x.entries.some(e => e.id === 'dup-a'));
+    t('duplicateGroups finds the 3-way name collision', !!grp && grp.entries.length === 3);
+    t('non-duplicated exercises are not grouped', !groups.some(x => x.entries.some(e => e.id === 'bench-press')));
+
+    T.D.sessions.push(
+      { id: 'ds1', date: '2026-07-01', updatedAt: 1, exercises: [{ exId: 'dup-a', exName: 'Supino teste', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 100 }] }] },
+      { id: 'ds2', date: '2026-07-02', updatedAt: 1, exercises: [{ exId: 'dup-a', exName: 'Supino teste', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 105 }] }] },
+      { id: 'ds3', date: '2026-07-03', updatedAt: 1, exercises: [{ exId: 'dup-b', exName: 'supino  TESTE', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 8, kg: 70 }] }] },
+    );
+    T.D.plans.push({ id: 'dp1', name: 'Plano dup', exercises: ['dup-b', 'bench-press'], rests: { 'dup-b': { ww: 150 } }, updatedAt: 1 });
+    t('exerciseUsage counts sessions and plans', W.exerciseUsage('dup-a').sessions === 2 && W.exerciseUsage('dup-b').sessions === 1 && W.exerciseUsage('dup-b').plans === 1);
+
+    // THE point of the feature: split ids = split progression history
+    const before = W.exerciseProgress('dup-a', 24, 'weighted').points.length;
+    t('split duplicates fragment progression history', before === 2);
+
+    // merge: references rewritten, nothing lost
+    W.mergeExercises('dup-a', ['dup-b', 'dup-c']);
+    t('duplicates removed from the library', !T.D.exercises.some(e => ['dup-b', 'dup-c'].includes(e.id)) && T.D.exercises.some(e => e.id === 'dup-a'));
+    t('sessions repointed to the keeper, sets intact', T.D.sessions.find(s => s.id === 'ds3').exercises[0].exId === 'dup-a'
+      && T.D.sessions.find(s => s.id === 'ds3').exercises[0].sets[0].kg === 70);
+    t('history snapshot name preserved (what it was called then)', T.D.sessions.find(s => s.id === 'ds3').exercises[0].exName === 'supino  TESTE');
+    t('merged history is now whole', W.exerciseProgress('dup-a', 24, 'weighted').points.length === 3);
+    const mp = T.D.plans.find(p => p.id === 'dp1');
+    t('plan reference rewritten and de-duplicated', eq(mp.exercises, ['dup-a', 'bench-press']));
+    t('plan rest override moved to the keeper', eq(mp.rests, { 'dup-a': { ww: 150 } }));
+    t('tombstones recorded so the merge survives sync', 'dup-b' in T.D.tombstones.exercises && 'dup-c' in T.D.tombstones.exercises);
+    t('touched records got updatedAt bumped', T.D.sessions.find(s => s.id === 'ds3').updatedAt > 1 && mp.updatedAt > 1);
+    t('no duplicate groups remain', !W.duplicateGroups().some(x => x.entries.some(e => e.id === 'dup-a')));
+
+    // a plan holding BOTH keeper and duplicate must not end up listing it twice
+    T.D.exercises.push({ id: 'dup-x', name: 'Remada teste', type: 'strength', compound: true, regime: 'weighted', mainMuscle: 'back', movementPattern: 'row', accessoryMuscles: [], updatedAt: 1 });
+    T.D.exercises.push({ id: 'dup-y', name: 'remada teste', type: 'strength', compound: true, regime: 'weighted', mainMuscle: 'back', movementPattern: 'row', accessoryMuscles: [], updatedAt: 1 });
+    T.D.plans.push({ id: 'dp2', name: 'Ambos', exercises: ['dup-x', 'dup-y'], rests: {}, updatedAt: 1 });
+    W.mergeExercises('dup-x', ['dup-y']);
+    t('plan with both copies collapses to one entry', eq(T.D.plans.find(p => p.id === 'dp2').exercises, ['dup-x']));
+
+    // prevention: quick-create reuses instead of forking a new id
+    W.startFree();
+    const exCountBefore = T.D.exercises.length;
+    const realAlert = W.alert; let alerted = ''; W.alert = m => { alerted = m; };
+    W.openAddEx();
+    W.document.getElementById('new-ex-name').value = 'BENCH PRESS';
+    W.createAndAdd();
+    W.alert = realAlert;
+    t('quick-create reuses the existing exercise (no new id)', T.D.exercises.length === exCountBefore && alerted.includes('já existe'));
+    t('...and still adds it to the session, pointed at the original', T.S.exercises.length === 1 && T.S.exercises[0].exId === 'bench-press');
+    W.cancelSession();
+
+    // prevention: "+ Novo" warns and respects a decline
+    const realConfirm = W.confirm; let asked = ''; W.confirm = m => { asked = m; return false; };
+    W.openNewEx();
+    W.document.getElementById('ex-name').value = 'Bench press';
+    W.saveNewEx();
+    W.confirm = realConfirm; W.closeModal();
+    t('"+ Novo" warns on a name clash and declining creates nothing', asked.includes('Já existe') && T.D.exercises.length === exCountBefore);
+
+    // auth error translation — the bug three people hit
+    t('invite-needed error is explained, not raw', W.authErrorMessage({ code: 'signup_disabled', message: 'Signups not allowed for this instance' }).includes('convite'));
+    t('...also for the otp_disabled variant', W.authErrorMessage({ code: 'otp_disabled', message: 'Signups not allowed for otp' }).includes('convite'));
+    t('rate limit gets its own message', W.authErrorMessage({ status: 429, message: 'rate limit exceeded' }).includes('Espere'));
+    t('unknown errors still surface their detail', W.authErrorMessage({ message: 'boom' }).includes('boom'));
+
+    T.D.exercises = keepEx; T.D.sessions = keepSess; T.D.plans = keepPlans;
+    ['dup-b','dup-c','dup-y'].forEach(k => delete T.D.tombstones.exercises[k]);
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────
