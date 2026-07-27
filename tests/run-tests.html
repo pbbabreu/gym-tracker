@@ -104,9 +104,12 @@
     SCHEMA_VERSION,
   })`);
 
-  // seed runs after first render; poll until the 44 starters exist
-  for (let i = 0; i < 60 && !(T.D && T.D.exercises.length === 44); i++) await new Promise(r => setTimeout(r, 250));
-  t('app booted and seeded 44 exercises', T.D && T.D.exercises.length === 44, T.D && T.D.exercises.length);
+  // The starter count is read from library.json rather than hardcoded — the
+  // curated library grows as content is promoted from the dump, and a suite
+  // that fails on every content addition trains people to ignore it.
+  const SEED_COUNT = (await (await fetch('../library.json', { cache: 'no-store' })).json()).exercises.length;
+  for (let i = 0; i < 60 && !(T.D && T.D.exercises.length === SEED_COUNT); i++) await new Promise(r => setTimeout(r, 250));
+  t(`app booted and seeded the full library (${SEED_COUNT})`, T.D && T.D.exercises.length === SEED_COUNT, T.D && T.D.exercises.length);
 
   // ── utilities ──────────────────────────────────────────────────────────────
   g('utilities');
@@ -1209,7 +1212,7 @@
     await W.factoryReset();
 
     t('all training data wiped', T.D.sessions.length === 0 && T.D.plans.length === 0 && T.D.weights.length === 0 && T.D.gyms.length === 0);
-    t('library restored to the curated seed (44)', T.D.exercises.length === 44 && T.D.exercises.every(e => e.mainMuscle));
+    t('library restored to the curated seed', T.D.exercises.length === SEED_COUNT && T.D.exercises.every(e => e.mainMuscle));
     t('custom/duplicate exercise gone', !T.D.exercises.some(e => e.id === 'custom-junk'));
     t('deletions tombstoned so they propagate', 'rs1' in T.D.tombstones.sessions && 'rp1' in T.D.tombstones.plans
       && 'rw1' in T.D.tombstones.weights && 'rg1' in T.D.tombstones.gyms && 'custom-junk' in T.D.tombstones.exercises);
@@ -1230,7 +1233,7 @@
     W.mergeRemote(staleRemote);
     t('a stale device cannot resurrect the wiped data', T.D.sessions.length === 0 && T.D.plans.length === 0
       && T.D.weights.length === 0 && T.D.gyms.length === 0 && !T.D.exercises.some(e => e.id === 'custom-junk'));
-    t('...and the clean library survives that merge', T.D.exercises.length === 44);
+    t('...and the clean library survives that merge', T.D.exercises.length === SEED_COUNT);
 
     W.confirm = () => false;
     T.D.sessions = [{ id: 'keep-me', date: '2026-07-02', updatedAt: 9, exercises: [] }];
@@ -1245,6 +1248,64 @@
     ['rg1'].forEach(k => delete T.D.tombstones.gyms[k]);
     delete T.D.tombstones.exercises['custom-junk'];
     ['0','1','2','3','4','5','6','prerestore'].forEach(s => W.localStorage.removeItem('gym:snapshot:' + s));
+  }
+
+  // ── categories & bilingual search ──────────────────────────────────────────
+  g('categories & bilingual search');
+  {
+    const keepEx = T.D.exercises.slice();
+
+    // search matches name, name_en and aliases, accent/case folded
+    const slc = T.D.exercises.find(e => e.id === 'seated-leg-curl');
+    t('search matches the PT-BR name', W.exerciseMatchesSearch(slc, 'flexora'));
+    t('search matches the English name', W.exerciseMatchesSearch(slc, 'seated leg curl'));
+    t('search matches an alias', W.exerciseMatchesSearch(slc, 'seated hamstring'));
+    t('search is accent-insensitive both ways', W.exerciseMatchesSearch({ name: 'Tríceps testa' }, 'triceps')
+      && W.exerciseMatchesSearch({ name: 'Triceps testa' }, 'tríceps'));
+    t('search still rejects non-matches', !W.exerciseMatchesSearch(slc, 'supino'));
+    t('empty query matches everything', W.exerciseMatchesSearch(slc, ''));
+
+    // applyFilters routes through it
+    t('applyFilters finds by English name', W.applyFilters(T.D.exercises, null, null, 'seated leg curl', false, false, null, null).some(e => e.id === 'seated-leg-curl'));
+    t('applyFilters finds by alias', W.applyFilters(T.D.exercises, null, null, 'flexora sentada', false, false, null, null).some(e => e.id === 'seated-leg-curl'));
+
+    // categories derive from (muscle, pattern)
+    const cats = W.exerciseCategories(T.D.exercises);
+    const pull = cats.find(c => c.muscle === 'back' && c.pattern === 'pulldown');
+    t('categories derive from muscle+pattern pairs', !!pull && pull.count === T.D.exercises.filter(e => e.mainMuscle === 'back' && e.movementPattern === 'pulldown').length);
+    t('escape-valve buckets are not categories', !cats.some(c => c.pattern === 'other' || c.muscle === 'undefined'));
+    t('categories sort by size', cats.length > 1 && cats[0].count >= cats[cats.length - 1].count);
+
+    // bilingual category matching — the key is English, the label Portuguese
+    t('category found by its English key', W.matchingCategories(T.D.exercises, 'pulldown').some(c => c.pattern === 'pulldown'));
+    t('category found by its Portuguese label', W.matchingCategories(T.D.exercises, 'puxada').some(c => c.pattern === 'pulldown'));
+    t('category found by muscle name', W.matchingCategories(T.D.exercises, 'costas').every(c => c.muscle === 'back'));
+    t('single character does not flood results', W.matchingCategories(T.D.exercises, 'p').length === 0);
+    t('nonsense matches nothing', W.matchingCategories(T.D.exercises, 'zzzz').length === 0);
+
+    // cards + navigation
+    const html = W.categoryCardsHTML(W.matchingCategories(T.D.exercises, 'pulldown'), 'openLibCategory');
+    t('card shows label, muscle and count', html.includes('Puxada') && html.includes('Costas') && html.includes('exerc.'));
+    t('card is capped at four', (W.categoryCardsHTML(W.exerciseCategories(T.D.exercises), 'openLibCategory').match(/openLibCategory\(/g) || []).length <= 4);
+
+    W.openLibCategory('back', 'pulldown');
+    t('opening a category sets its filters and clears the search', W.eval('_libFMuscle') === 'back' && W.eval('_libFPattern') === 'pulldown' && W.eval('_libSearch') === '');
+    t('count note names the category', W.libCountNote().includes('Puxada') && W.libCountNote().includes('Costas'));
+    const inCat = W.libResultsHTML();
+    const members = T.D.exercises.filter(e => e.mainMuscle === 'back' && e.movementPattern === 'pulldown');
+    t('category view lists every member and nothing else',
+      members.length > 0
+      && members.every(e => inCat.includes(T.esc(e.name)))
+      && (inCat.match(/openEditEx/g) || []).length === members.length);
+    t('no cards once inside a category (nothing left to navigate to)', !inCat.includes('Categorias'));
+
+    // search inside the category still narrows
+    W.eval("_libSearch = 'aberta'");
+    const narrowed = W.applyFilters(T.D.exercises, null, null, 'aberta', false, false, 'back', 'pulldown');
+    t('typing inside a category narrows within it', narrowed.every(e => e.mainMuscle === 'back' && e.movementPattern === 'pulldown'));
+    W.eval("_libSearch = ''; _libFMuscle = null; _libFPattern = null;");
+
+    T.D.exercises = keepEx;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

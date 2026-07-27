@@ -82,7 +82,15 @@ let _libSeedError = false;
 
 async function seedStarterLibrary() {
   try {
-    const r = await fetch('library.json');
+    // cache:'no-store' is load-bearing, not defensive. A plain fetch() here
+    // is answered by the service worker's cache (and the HTTP cache), so a
+    // device that had ever loaded an older library.json would re-seed the
+    // OLD library — including right after a factory reset, which is exactly
+    // when the point is to land on the CURRENT one. Caught in testing: a
+    // wiped install re-seeded 44 exercises from cache while the file on the
+    // server already had 48. Offline first-run still degrades correctly:
+    // the fetch simply fails and the retry banner appears.
+    const r = await fetch('library.json', { cache: 'no-store' });
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     const data = await r.json();
     D.exercises = (data.exercises || []).map(e => ({...e, updatedAt:Date.now()}));
@@ -168,6 +176,10 @@ const SEED_CLASSIFICATION = {
   'narrow-stance-sumo-deadlift':   ['back', 'hinge', ['hamstrings','glutes','quads']],
   'scapular-pull-up':              ['back', 'other', []],
   'assisted-pull-up-gravitron':    ['back', 'pulldown', ['biceps']],
+  'v-bar-lat-pulldown':            ['back', 'pulldown', ['biceps']],
+  'close-grip-lat-pulldown':       ['back', 'pulldown', ['biceps']],
+  'underhand-lat-pulldown':        ['back', 'pulldown', ['biceps']],
+  'one-arm-lat-pulldown':          ['back', 'pulldown', ['biceps']],
   'wide-grip-lat-pulldown':        ['back', 'pulldown', ['biceps']],
   'wide-grip-neutral-pulldown':    ['back', 'pulldown', ['biceps']],
   'bent-over-barbell-row':         ['back', 'row', ['biceps']],
@@ -1623,6 +1635,88 @@ const musclePill = (m, p) => {
 // ║  attribute CSP issues in sandboxed environments).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
+// ── Categories & bilingual search ─────────────────────────────────────────────
+//
+// A "category" is not a new entity: it's the (mainMuscle, movementPattern)
+// pair the classification system already stores. `pulldown`, `row` and
+// `curl` are literally already pattern keys — so a pulldown category is
+// just (back, pulldown), with no extra data to maintain or sync.
+//
+// Bilingual search falls out of that for free: the pattern KEYS are
+// English (`pulldown`) and their LABELS are Portuguese (`Puxada`), so
+// matching against both covers either language with no translation table.
+// Exercise-level search matches name + name_en + aliases, all folded
+// through nameKey() so accents and case never block a match ("triceps"
+// finds "Tríceps").
+
+function exerciseMatchesSearch(ex, q) {
+  const k = nameKey(q);
+  if (!k) return true;
+  return [ex.name, ex.name_en, ...(ex.aliases || [])]
+    .some(h => h && nameKey(h).includes(k));
+}
+
+// Every (muscle, pattern) pair actually present in a list, with counts.
+// Excludes the escape valves — an "Outro"/"Não definido" bucket is a
+// filter, not a browsable family.
+function exerciseCategories(list) {
+  const out = new Map();
+  (list || []).forEach(ex => {
+    const m = ex.mainMuscle, p = ex.movementPattern;
+    if (!m || m === 'undefined' || !p || p === 'undefined' || p === 'other') return;
+    const key = `${m}:${p}`;
+    const cur = out.get(key) || { muscle: m, pattern: p, count: 0 };
+    cur.count++;
+    out.set(key, cur);
+  });
+  return [...out.values()].sort((a, b) => b.count - a.count);
+}
+
+const categoryLabel = c => (MOVEMENT_PATTERNS[c.muscle] || {})[c.pattern] || c.pattern;
+
+// Categories whose pattern key ("pulldown"), pattern label ("Puxada") or
+// muscle label ("Costas") matches the query. Two-character minimum so a
+// single keystroke doesn't flood the results with every category.
+function matchingCategories(list, q) {
+  const k = nameKey(q);
+  if (k.length < 2) return [];
+  return exerciseCategories(list).filter(c =>
+    nameKey(c.pattern).includes(k) ||
+    nameKey(categoryLabel(c)).includes(k) ||
+    nameKey(MUSCLE_GROUPS[c.muscle] || '').includes(k));
+}
+
+// Category cards shown above search results — tapping one drops the search
+// term and switches to that category's filtered view, which is exactly the
+// existing muscle+pattern filter pair. Capped: these are a shortcut into a
+// family, not a second results list.
+function categoryCardsHTML(cats, handler) {
+  if (!cats.length) return '';
+  return `<div style="margin-bottom:10px">
+    <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">Categorias</div>
+    ${cats.slice(0, 4).map(c => `
+      <button onclick="${handler}('${c.muscle}','${c.pattern}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:#0a2e2e;border:1px solid #14484a;border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;text-align:left">
+        <span style="flex:1;font-weight:600;font-size:13px">${esc(categoryLabel(c))} <span style="font-weight:400;color:${DM}">· ${esc(MUSCLE_GROUPS[c.muscle] || '')}</span></span>
+        <span style="font-size:11px;color:#4dd0c4;flex-shrink:0">${c.count} exerc.</span>
+        <span style="color:${DM};font-size:12px;flex-shrink:0">→</span>
+      </button>`).join('')}
+  </div>`;
+}
+
+// Landing in a category = the muscle+pattern filters, search cleared so the
+// user can immediately type again to narrow WITHIN the family.
+function openLibCategory(muscle, pattern) {
+  _libFMuscle = muscle; _libFPattern = pattern; _libSearch = '';
+  _libFType = null; _libFMove = null; _libUnclassed = false;
+  render();
+}
+
+function openPickCategory(muscle, pattern) {
+  _aFMuscle = muscle; _aFPattern = pattern; _aSearch = '';
+  const inp = document.getElementById('a-search'); if (inp) inp.value = '';
+  aBindFilters(); aRefreshList();
+}
+
 function applyFilters(list, fType, fMove, search, alpha, unclassed, fMuscle, fPattern) {
   let out = list.filter(ex => {
     if (fType === 'strength'    && ex.type !== 'strength')    return false;
@@ -1639,7 +1733,9 @@ function applyFilters(list, fType, fMove, search, alpha, unclassed, fMuscle, fPa
     // it here without fMuscle set would be ambiguous (the same pattern key
     // can mean different things — or not exist at all — in another group).
     if (fMuscle && fPattern && ex.movementPattern !== fPattern) return false;
-    if (search && !ex.name.toLowerCase().includes(search.toLowerCase())) return false;
+    // Matches name, name_en and aliases, accent- and case-folded — see
+    // exerciseMatchesSearch() above.
+    if (search && !exerciseMatchesSearch(ex, search)) return false;
     return true;
   });
   if (alpha) out = [...out].sort((a,b) => a.name.localeCompare(b.name,'pt'));
@@ -2258,12 +2354,8 @@ function openVolume() {
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildLibrary() {
-  const total    = D.exercises.length;
-  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
-  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed || _libFMuscle;
-  const countNote = hasFilter
-    ? ` — ${filtered.length} ${_libUnclassed?'sem classificação':'resultado'+(filtered.length!==1?'s':'')}`
-    : '';
+  const total     = D.exercises.length;
+  const countNote = libCountNote();
 
   return `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">
@@ -2307,13 +2399,36 @@ function buildLibrary() {
       </div>
     </div>
 
-    <div id="lib-results">
-      ${!total
-        ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px;line-height:1.7">Nenhum exercício cadastrado.<br>Adicione manualmente pelo botão "+ Novo" acima.</div>`
-        : !filtered.length
-        ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px">Nenhum exercício encontrado.</div>`
-        : filtered.map(libExRow).join('')}
-    </div>`;
+    <div id="lib-results">${libResultsHTML()}</div>`;
+}
+
+// Category cards + exercise rows. Shared by the full render and the
+// in-place search update (libSearchInput), which used to duplicate this.
+function libResultsHTML() {
+  if (!D.exercises.length)
+    return `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px;line-height:1.7">Nenhum exercício cadastrado.<br>Adicione manualmente pelo botão "+ Novo" acima.</div>`;
+  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
+  // Cards only while searching, and never once you're already inside a
+  // category — there'd be nothing left to navigate to.
+  const cards = (_libSearch && !_libFPattern)
+    ? categoryCardsHTML(matchingCategories(D.exercises, _libSearch), 'openLibCategory') : '';
+  const rows = filtered.length
+    ? filtered.map(libExRow).join('')
+    : `<div style="text-align:center;color:${DM};padding:${cards ? '16px' : '32px'} 0;font-size:14px">Nenhum exercício encontrado.</div>`;
+  return cards + rows;
+}
+
+// Header line describing the active filter/category context.
+function libCountNote() {
+  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
+  if (_libFMuscle && _libFPattern) {
+    const label = (MOVEMENT_PATTERNS[_libFMuscle] || {})[_libFPattern] || _libFPattern;
+    return ` — ${label} · ${MUSCLE_GROUPS[_libFMuscle] || ''}: ${filtered.length}`;
+  }
+  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed || _libFMuscle;
+  return hasFilter
+    ? ` — ${filtered.length} ${_libUnclassed ? 'sem classificação' : 'resultado' + (filtered.length !== 1 ? 's' : '')}`
+    : '';
 }
 
 // Single exercise row in the library list. The name/pills area is the
@@ -2443,14 +2558,9 @@ function libSearchInput(v) {
   const c       = document.getElementById('lib-results');
   const countEl = document.getElementById('lib-count');
   if (!c) return;
-  const total    = D.exercises.length;
-  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
-  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed || _libFMuscle;
-  const countNote = hasFilter ? ` — ${filtered.length} ${_libUnclassed?'sem classificação':'resultado'+(filtered.length!==1?'s':'')}` : '';
-  if (countEl) countEl.textContent = `${total} exercício${total!==1?'s':''}${countNote}`;
-  c.innerHTML = !filtered.length
-    ? `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px">Nenhum exercício encontrado.</div>`
-    : filtered.map(libExRow).join('');
+  const total = D.exercises.length;
+  if (countEl) countEl.textContent = `${total} exercício${total!==1?'s':''}${libCountNote()}`;
+  c.innerHTML = libResultsHTML();
 }
 
 function libAlphaToggle() { _libAlpha = !_libAlpha; render(); }
@@ -3407,8 +3517,16 @@ function aBindFilters() {
 function aRefreshList() {
   const c = document.getElementById('a-list'); if(!c)return;
   const filtered = applyFilters(D.exercises, _aFType, _aFMove, _aSearch, _aAlpha, false, _aFMuscle, _aFPattern);
-  if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
-  c.innerHTML = filtered.map(ex => {
+  // Same category shortcut as the Library — "add a pulldown" mid-workout is
+  // where browsing by family matters most, since you're standing in front
+  // of whatever machine is free.
+  const cards = (_aSearch && !_aFPattern)
+    ? categoryCardsHTML(matchingCategories(D.exercises, _aSearch), 'openPickCategory') : '';
+  if (!filtered.length) {
+    c.innerHTML = cards + `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`;
+    c.scrollTop = 0; return;
+  }
+  c.innerHTML = cards + filtered.map(ex => {
     // This picker only opens mid-session, so S exists — when the session
     // has a gym context, exercises unavailable there get dimmed + badged
     // but stay pickable (the tags might just be stale; never block).
