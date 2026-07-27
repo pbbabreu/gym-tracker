@@ -13,9 +13,9 @@ Personal workout-tracking PWA — strength & hypertrophy, progressive-overload s
 - **Plans ↔ sessions** — plans carry per-exercise rest timings; a session started from a plan can drift freely, and saving offers to update the plan, fork a new one, or keep the plan untouched. Any saved session (or a free workout, at save time) can be turned into a plan.
 - **Sharing** — send a plan to another user by e-mail in-app (appears under *Planos recebidos*), or as a self-contained JSON file; pull curated exercises from the shared catalog (Biblioteca → ⟳ Catálogo).
 - **Histórico** — past sessions with per-set detail, volume, gym tag, and edit/delete/extract-to-plan.
-- **Biblioteca** — fully personal exercise library (seeded with 44 curated starters), classified by muscle group + movement pattern, filterable and searchable.
+- **Biblioteca** — fully personal exercise library (seeded with 44 curated starters), classified by muscle group + movement pattern, filterable and searchable. Duplicate entries are prevented at creation and, if any exist, can be reviewed and merged — duplicates split an exercise's history, which quietly degrades suggestions and progress charts.
 - **Peso** — bodyweight log; feeds real-load math for assisted (bodyweight − counterweight) and bodyweight exercises.
-- **Sync & backup** — invite-only account sync (magic link / code); manual JSON export/import; automatic daily local snapshots (last 7 days, restorable in-app); legacy GitHub Gist driver for pre-account installs.
+- **Sync & backup** — invite-only account sync (magic link / code); manual JSON export/import; automatic daily local snapshots (last 7 days, restorable in-app); a factory reset that wipes everything and rebuilds the library clean across devices; legacy GitHub Gist driver for pre-account installs.
 
 ## Using it
 
@@ -48,7 +48,8 @@ python -m http.server 8742        # from the repo root
 - Develop against `http://localhost:8742/` — `file://` breaks reloads and service workers.
 - **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (250+ checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
 - Service-worker gotcha: if an edit doesn't seem to take effect, the SW may be serving cache — unregister it and hard-reload (the test runner does this automatically).
-- `supabase/` holds the canonical database SQL (01 = per-user storage, 02 = sharing tables + catalog seed); `.github/workflows/keepalive.yml` pings the project weekly so the free tier never pauses.
+- `supabase/` holds the canonical database SQL (01 = per-user storage, 02 = sharing tables, 03 = generated catalog seed); `.github/workflows/keepalive.yml` pings the project weekly so the free tier never pauses.
+- **The exercise catalog is not authored in this repo.** `library.json`, `supabase/03-catalog-seed.sql` and `SEED_CLASSIFICATION` are build output of `python tools/build-library.py`, which reads curated exercise notes from a separate Obsidian vault. Run `python tools/build-library.py --check` before pushing — it validates the catalog and fails if the committed artifacts drift from their source.
 - Deploys are just pushes to `main` — GitHub Pages serves the repo root (~30s).
 
 ## License
