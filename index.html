@@ -2205,7 +2205,7 @@ function buildExBlock(ex, i) {
         </div>
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:15px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <span style="flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</span>
+            <button onclick="openExerciseDetail('${ex.exId}')" title="Ver dicas e detalhes" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:15px;font-family:inherit;text-align:left;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
             ${isDuplicated ? `<button onclick="alert('Este exercício aparece mais de uma vez neste treino (mesmo tipo e regime). O histórico combina os dados das duas entradas para sugestões futuras, mas cada uma é salva separadamente, na ordem em que foram adicionadas.')" style="flex-shrink:0;background:none;border:1px solid ${CA};color:${CA};border-radius:99px;width:16px;height:16px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0">i</button>` : ''}
             ${doneCheck}
           </div>
@@ -2431,11 +2431,12 @@ function libCountNote() {
     : '';
 }
 
-// Single exercise row in the library list. The name/pills area is the
-// progress-chart entry point (openProgress) — Editar/× keep their jobs.
+// Single exercise row in the library list. The name/pills area opens the
+// detail view (which itself links on to the progress chart) — Editar/×
+// keep their jobs.
 function libExRow(ex) {
   return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:7px;padding:12px 14px;display:flex;align-items:center;gap:10px">
-    <div onclick="openProgress('${ex.id}')" title="Ver progresso" style="flex:1;min-width:0;cursor:pointer">
+    <div onclick="openExerciseDetail('${ex.id}')" title="Ver detalhes" style="flex:1;min-width:0;cursor:pointer">
       <div style="font-weight:600;font-size:14px;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.name)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap">
         ${ex.type?typePill(ex.type):''}
@@ -2482,6 +2483,70 @@ function progressChartSVG(prog) {
     <text x="${padL}" y="${H-6}" fill="${DM}" font-size="10">${dd(P[0].date)}</text>
     <text x="${W-padR}" y="${H-6}" fill="${DM}" font-size="10" text-anchor="end">${dd(last.date)}</text>
   </svg>`;
+}
+
+// ── Exercise detail ───────────────────────────────────────────────────────────
+//
+// The reading view for an exercise: what it is, how to do it, what to watch
+// out for, where it's available. Until this existed the curated content
+// (cues, common errors, equipment, aliases) shipped in the data and was
+// completely invisible in the app.
+//
+// Language: Portuguese first, English as fallback per field, so a
+// half-translated entry still shows everything it has rather than a gap.
+// (A real language toggle is its own backlog item — the whole UI is still
+// hardcoded pt-BR.)
+const EQUIPMENT_LABELS = {
+  barbell: 'Barra', dumbbell: 'Halter', cable: 'Cabo', machine: 'Máquina',
+  bodyweight: 'Peso corporal', band: 'Elástico', kettlebell: 'Kettlebell', other: 'Outro',
+};
+
+function openExerciseDetail(exId) {
+  const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
+  const cues = (ex.cues_pt?.length ? ex.cues_pt : ex.cues_en) || [];
+  const errs = (ex.errors_pt?.length ? ex.errors_pt : ex.errors_en) || [];
+  const gymNames = (ex.gyms || []).map(id => D.gyms.find(g => g.id === id)?.name).filter(Boolean);
+
+  const section = (title, color, items) => items.length ? `
+    <div style="font-size:10px;font-weight:700;color:${color};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">${title}</div>
+    ${items.map(t => `<div style="display:flex;gap:8px;font-size:13px;line-height:1.5;margin-bottom:6px">
+      <span style="color:${color};flex-shrink:0">•</span><span>${esc(t)}</span></div>`).join('')}` : '';
+
+  // Rest override, resolved against this exercise's own defaults so the
+  // numbers shown are the ones the timer would actually use.
+  const restRow = ex.rest ? `
+    <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Descanso próprio</div>
+    <div style="font-size:12px;color:${DM}">
+      ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']]
+        .filter(([k]) => ex.rest[k] != null)
+        .map(([k,l]) => `${l}: <strong style="color:${TX}">${fmtRest(ex.rest[k])}</strong>`).join(' · ')}
+    </div>` : '';
+
+  showModal(`
+    <div style="font-size:18px;font-weight:700;margin-bottom:2px">${esc(ex.name)}</div>
+    ${ex.name_en && nameKey(ex.name_en) !== nameKey(ex.name)
+      ? `<div style="font-size:12px;color:${DM};margin-bottom:8px">${esc(ex.name_en)}</div>` : '<div style="height:6px"></div>'}
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
+      ${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${musclePill(ex.mainMuscle,ex.movementPattern)}
+      ${ex.equipment ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${DM}">${esc(EQUIPMENT_LABELS[ex.equipment] || ex.equipment)}</span>` : ''}
+    </div>
+    ${(ex.accessoryMuscles||[]).length ? `<div style="font-size:11px;color:${DM};margin-bottom:4px">Acessórios: ${ex.accessoryMuscles.map(m => esc(MUSCLE_GROUPS[m]||m)).join(', ')}</div>` : ''}
+    ${(ex.aliases||[]).length ? `<div style="font-size:11px;color:${DM}">Também: ${ex.aliases.map(esc).join(' · ')}</div>` : ''}
+
+    ${section('Dicas', '#6fcf97', cues)}
+    ${section('Erros comuns', '#e6c84a', errs)}
+    ${ex.stretchEmphasis ? `<div style="margin-top:12px;padding:9px 11px;background:#0a2e2e;border:1px solid #14484a;border-radius:8px;font-size:12px;color:#4dd0c4">Trabalha bem o músculo alongado — bom candidato a parciais na porção esticada.</div>` : ''}
+    ${restRow}
+    ${gymNames.length ? `
+      <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Disponível em</div>
+      <div style="font-size:12px">${gymNames.map(esc).join(' · ')}</div>` : ''}
+    ${!cues.length && !errs.length ? `<div style="margin-top:14px;font-size:12px;color:${DM};line-height:1.5">Sem dicas cadastradas para este exercício ainda.</div>` : ''}
+
+    <div style="display:flex;gap:8px;margin-top:18px">
+      ${Bs(BG3,TX,'📈 Progresso',`closeModal();openProgress('${ex.id}')`,';flex:1;justify-content:center;padding:10px')}
+      ${Bs(BG3,TX,'Editar',`closeModal();openEditEx('${ex.id}')`,';flex:1;justify-content:center;padding:10px')}
+    </div>
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:8px')}`);
 }
 
 const REGIME_LABELS = { weighted: 'Carga', assisted: 'Assistido', bodyweight: 'Corporal' };

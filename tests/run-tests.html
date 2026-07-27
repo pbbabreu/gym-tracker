@@ -1308,6 +1308,67 @@
     T.D.exercises = keepEx;
   }
 
+  // ── exercise detail view ───────────────────────────────────────────────────
+  g('exercise detail view');
+  {
+    const keepEx = T.D.exercises.slice(), keepGyms = T.D.gyms.slice();
+
+    // a fully curated entry shows everything it has
+    W.openExerciseDetail('v-bar-lat-pulldown');
+    let txt = W.document.getElementById('modal-ov').textContent;
+    t('shows PT name and English name', txt.includes('Puxada com triângulo') && txt.includes('V-bar lat pulldown'));
+    t('shows equipment in Portuguese', txt.includes('Cabo'));
+    t('shows cues', txt.includes('Dicas') && txt.includes('Pegada neutra'));
+    t('shows common errors', txt.includes('Erros comuns') && txt.includes('Encolher os ombros'));
+    t('shows aliases and accessory muscles', txt.includes('Também:') && txt.includes('Acessórios'));
+    t('links to progress and edit', W.document.getElementById('modal-ov').innerHTML.includes('openProgress') && W.document.getElementById('modal-ov').innerHTML.includes('openEditEx'));
+    W.closeModal();
+
+    // stretch-emphasis note appears only where flagged
+    W.openExerciseDetail('one-arm-lat-pulldown');
+    t('stretch-emphasis note shown when flagged', W.document.getElementById('modal-ov').textContent.includes('alongado'));
+    W.closeModal();
+    W.openExerciseDetail('v-bar-lat-pulldown');
+    t('...and hidden when not', !W.document.getElementById('modal-ov').textContent.includes('alongado'));
+    W.closeModal();
+
+    // an uncurated entry degrades gracefully instead of looking broken
+    W.openExerciseDetail('bench-press');
+    txt = W.document.getElementById('modal-ov').textContent;
+    t('uncurated exercise says so plainly', txt.includes('Sem dicas cadastradas'));
+    t('...but still shows its classification', txt.includes('Peito'));
+    W.closeModal();
+
+    // English fallback per field, so a half-translated entry still shows content
+    T.D.exercises.push({ id: 'half-tr', name: 'Meio traduzido', type: 'hypertrophy', compound: true,
+      regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press', accessoryMuscles: [],
+      cues_en: ['English only cue'], updatedAt: 1 });
+    W.openExerciseDetail('half-tr');
+    t('falls back to English cues when PT is missing', W.document.getElementById('modal-ov').textContent.includes('English only cue'));
+    W.closeModal();
+    T.D.exercises = T.D.exercises.filter(e => e.id !== 'half-tr');
+
+    // gym availability + own rest timings
+    T.D.gyms = [{ id: 'gd1', name: 'Academia Detalhe', updatedAt: 1 }];
+    const vbar = T.D.exercises.find(e => e.id === 'v-bar-lat-pulldown');
+    vbar.gyms = ['gd1']; vbar.rest = { ww: 150 };
+    W.openExerciseDetail('v-bar-lat-pulldown');
+    txt = W.document.getElementById('modal-ov').textContent;
+    t('shows gym availability by name', txt.includes('Disponível em') && txt.includes('Academia Detalhe'));
+    t('shows its own rest timing formatted', txt.includes('Descanso próprio') && txt.includes('2:30'));
+    W.closeModal();
+    delete vbar.gyms; delete vbar.rest;
+
+    // entry points
+    t('library rows open the detail view', W.libExRow(vbar).includes('openExerciseDetail'));
+    T.S = { date: '2026-01-01', planId: null, planName: null, gymId: null, exercises: [
+      { exId: 'v-bar-lat-pulldown', exName: 'Puxada com triângulo', type: 'hypertrophy', regime: 'weighted', sets: [] }] };
+    t('session block name opens the detail view', W.buildExBlock(T.S.exercises[0], 0).includes("openExerciseDetail('v-bar-lat-pulldown')"));
+    T.S = null;
+
+    T.D.exercises = keepEx; T.D.gyms = keepGyms;
+  }
+
   // ── wrap-up ────────────────────────────────────────────────────────────────
   g('wrap-up');
   // Persist the restored (clean) state: several tests persist() mid-run
