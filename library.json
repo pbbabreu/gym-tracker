@@ -395,12 +395,38 @@
     },
     {
       "id": "seated-leg-curl",
-      "name": "Seated leg curl",
+      "name": "Mesa flexora sentada",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "hamstrings",
       "movementPattern": "curl",
+      "name_en": "Seated leg curl",
+      "aliases": [
+        "flexora sentada",
+        "seated leg curl",
+        "seated hamstring curl"
+      ],
+      "equipment": "machine",
+      "cues_pt": [
+        "Encoste bem o quadril no assento e prenda o cinto — o quadril flexionado é o que alonga o posterior",
+        "Desça devagar até esticar o joelho quase por completo, sem bater o peso",
+        "Mantenha o tornozelo relaxado; puxar com o pé tira trabalho do posterior"
+      ],
+      "cues_en": [
+        "Sit hips fully back and belted in — the flexed hip is what lengthens the hamstrings",
+        "Lower slowly to near-full knee extension without letting the stack clank",
+        "Keep the ankle relaxed; pulling with the foot shifts work off the hamstrings"
+      ],
+      "errors_pt": [
+        "Deslizar para frente no assento, o que abre o quadril e encurta o posterior",
+        "Parar a subida cedo demais e nunca alongar embaixo"
+      ],
+      "errors_en": [
+        "Sliding forward in the seat, opening the hip and shortening the hamstrings",
+        "Cutting the bottom short and never reaching the stretch"
+      ],
+      "stretchEmphasis": true,
       "accessoryMuscles": []
     },
     {
