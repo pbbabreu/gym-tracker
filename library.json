@@ -2,7 +2,7 @@
   "exercises": [
     {
       "id": "cable-low-to-high-fly",
-      "name": "Cable low-to-high fly",
+      "name": "Crucifixo baixo-alto no cabo",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -11,36 +11,34 @@
       "movement": "low-to-high-fly",
       "accessoryMuscles": [
         "shoulders"
-      ]
+      ],
+      "name_en": "Cable low-to-high fly",
+      "aliases": [
+        "low to high fly",
+        "crossover baixo"
+      ],
+      "equipment": "cable"
     },
     {
       "id": "pec-deck-fly",
-      "name": "Pec deck fly",
+      "name": "Voador (peck deck)",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
       "mainMuscle": "chest",
       "movementPattern": "fly",
       "movement": "fly",
+      "name_en": "Pec deck fly",
+      "aliases": [
+        "pec deck",
+        "crucifixo máquina"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     },
     {
-      "id": "bench-press",
-      "name": "Bench press",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "chest",
-      "movementPattern": "press",
-      "movement": "bench-press",
-      "accessoryMuscles": [
-        "triceps",
-        "shoulders"
-      ]
-    },
-    {
       "id": "dip-gravitron",
-      "name": "Dip (Gravitron, leaning)",
+      "name": "Mergulho no gravitron (peito)",
       "type": "strength",
       "compound": true,
       "regime": "assisted",
@@ -50,11 +48,18 @@
       "accessoryMuscles": [
         "triceps",
         "shoulders"
-      ]
+      ],
+      "name_en": "Dip (Gravitron, leaning)",
+      "aliases": [
+        "dip",
+        "paralelas",
+        "chest dip"
+      ],
+      "equipment": "machine"
     },
     {
       "id": "incline-press-machine",
-      "name": "Incline press machine",
+      "name": "Supino inclinado máquina",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -64,11 +69,36 @@
       "accessoryMuscles": [
         "shoulders",
         "triceps"
-      ]
+      ],
+      "name_en": "Incline press machine",
+      "aliases": [
+        "incline press"
+      ],
+      "equipment": "machine"
+    },
+    {
+      "id": "bench-press",
+      "name": "Supino reto",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "bench-press",
+      "accessoryMuscles": [
+        "triceps",
+        "shoulders"
+      ],
+      "name_en": "Bench press",
+      "aliases": [
+        "bench press",
+        "supino"
+      ],
+      "equipment": "barbell"
     },
     {
       "id": "single-leg-45-back-extension",
-      "name": "Single leg 45° back extension",
+      "name": "Extensão lombar 45° unilateral",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
@@ -78,11 +108,18 @@
       "accessoryMuscles": [
         "hamstrings",
         "glutes"
-      ]
+      ],
+      "name_en": "Single leg 45° back extension",
+      "aliases": [
+        "back extension",
+        "hiperextensão",
+        "banco romano"
+      ],
+      "equipment": "bodyweight"
     },
     {
       "id": "narrow-stance-sumo-deadlift",
-      "name": "Narrow stance sumo deadlift",
+      "name": "Terra sumô fechado",
       "type": "strength",
       "compound": true,
       "regime": "weighted",
@@ -93,22 +130,34 @@
         "hamstrings",
         "glutes",
         "quads"
-      ]
+      ],
+      "name_en": "Narrow stance sumo deadlift",
+      "aliases": [
+        "sumo deadlift",
+        "levantamento terra"
+      ],
+      "equipment": "barbell"
     },
     {
       "id": "scapular-pull-up",
-      "name": "Scapular pull-up",
+      "name": "Retração escapular na barra",
       "type": "hypertrophy",
       "compound": true,
       "regime": "bodyweight",
       "mainMuscle": "back",
       "movementPattern": "other",
       "movement": "scapular-pull-up",
+      "name_en": "Scapular pull-up",
+      "aliases": [
+        "scapular pull up",
+        "escapular"
+      ],
+      "equipment": "bodyweight",
       "accessoryMuscles": []
     },
     {
       "id": "assisted-pull-up-gravitron",
-      "name": "Assisted pull-up (Gravitron)",
+      "name": "Barra fixa no gravitron",
       "type": "strength",
       "compound": true,
       "regime": "assisted",
@@ -117,7 +166,51 @@
       "movement": "pull-up",
       "accessoryMuscles": [
         "biceps"
-      ]
+      ],
+      "name_en": "Assisted pull-up (Gravitron)",
+      "aliases": [
+        "assisted pull up",
+        "barra assistida"
+      ],
+      "equipment": "machine"
+    },
+    {
+      "id": "wide-grip-lat-pulldown",
+      "name": "Puxada aberta",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Wide grip lat pulldown",
+      "aliases": [
+        "wide grip pulldown",
+        "puxada pegada aberta"
+      ],
+      "equipment": "cable"
+    },
+    {
+      "id": "wide-grip-neutral-pulldown",
+      "name": "Puxada aberta neutra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Wide grip neutral pulldown",
+      "aliases": [
+        "wide neutral pulldown",
+        "pegada neutra aberta"
+      ],
+      "equipment": "cable"
     },
     {
       "id": "v-bar-lat-pulldown",
@@ -276,47 +369,8 @@
       "stretchEmphasis": true
     },
     {
-      "id": "wide-grip-lat-pulldown",
-      "name": "Wide grip lat pulldown",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "pulldown",
-      "movement": "lat-pulldown",
-      "accessoryMuscles": [
-        "biceps"
-      ]
-    },
-    {
-      "id": "wide-grip-neutral-pulldown",
-      "name": "Wide grip neutral pulldown",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "pulldown",
-      "movement": "lat-pulldown",
-      "accessoryMuscles": [
-        "biceps"
-      ]
-    },
-    {
-      "id": "bent-over-barbell-row",
-      "name": "Bent-over barbell row",
-      "type": "strength",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "back",
-      "movementPattern": "row",
-      "movement": "bent-over-row",
-      "accessoryMuscles": [
-        "biceps"
-      ]
-    },
-    {
       "id": "chest-supported-high-row",
-      "name": "Chest supported high row",
+      "name": "Remada alta apoiada",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -325,11 +379,16 @@
       "movement": "chest-supported-high-row",
       "accessoryMuscles": [
         "biceps"
-      ]
+      ],
+      "name_en": "Chest supported high row",
+      "aliases": [
+        "chest supported row"
+      ],
+      "equipment": "machine"
     },
     {
       "id": "machine-low-row",
-      "name": "Machine low row",
+      "name": "Remada baixa máquina",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -338,11 +397,16 @@
       "movement": "low-row",
       "accessoryMuscles": [
         "biceps"
-      ]
+      ],
+      "name_en": "Machine low row",
+      "aliases": [
+        "low row"
+      ],
+      "equipment": "machine"
     },
     {
       "id": "seated-cable-row",
-      "name": "Seated cable row",
+      "name": "Remada baixa no cabo",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -351,22 +415,52 @@
       "movement": "low-row",
       "accessoryMuscles": [
         "biceps"
-      ]
+      ],
+      "name_en": "Seated cable row",
+      "aliases": [
+        "seated cable row",
+        "remada sentada"
+      ],
+      "equipment": "cable"
+    },
+    {
+      "id": "bent-over-barbell-row",
+      "name": "Remada curvada com barra",
+      "type": "strength",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "bent-over-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Bent-over barbell row",
+      "aliases": [
+        "bent over row"
+      ],
+      "equipment": "barbell"
     },
     {
       "id": "strict-halos",
-      "name": "Strict halos",
+      "name": "Halo estrito",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "other",
       "movement": "halo",
+      "name_en": "Strict halos",
+      "aliases": [
+        "strict halo",
+        "halos"
+      ],
+      "equipment": "kettlebell",
       "accessoryMuscles": []
     },
     {
       "id": "seated-machine-shoulder-press",
-      "name": "Seated machine shoulder press",
+      "name": "Desenvolvimento máquina",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
@@ -375,22 +469,50 @@
       "movement": "shoulder-press",
       "accessoryMuscles": [
         "triceps"
-      ]
+      ],
+      "name_en": "Seated machine shoulder press",
+      "aliases": [
+        "shoulder press",
+        "desenvolvimento sentado",
+        "militar"
+      ],
+      "equipment": "machine"
     },
     {
       "id": "crucifix-swing",
-      "name": "Crucifix swing",
+      "name": "Crucifixo balanço",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "raise",
       "movement": "crucifix-swing",
+      "name_en": "Crucifix swing",
+      "aliases": [
+        "crucifix swing"
+      ],
+      "equipment": "kettlebell",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "lateral-raise",
+      "name": "Elevação lateral",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "movement": "lateral-raise",
+      "name_en": "Lateral raise",
+      "aliases": [
+        "lateral raise"
+      ],
+      "equipment": "dumbbell",
       "accessoryMuscles": []
     },
     {
       "id": "hammer-curl-lateral-raise",
-      "name": "Hammer curl lateral raise",
+      "name": "Rosca martelo + elevação lateral",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
@@ -399,18 +521,12 @@
       "movement": "hammer-curl-lateral-raise",
       "accessoryMuscles": [
         "biceps"
-      ]
-    },
-    {
-      "id": "lateral-raise",
-      "name": "Lateral raise",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "shoulders",
-      "movementPattern": "raise",
-      "movement": "lateral-raise",
-      "accessoryMuscles": []
+      ],
+      "name_en": "Hammer curl lateral raise",
+      "aliases": [
+        "hammer curl lateral raise"
+      ],
+      "equipment": "dumbbell"
     },
     {
       "id": "face-pull",
@@ -423,35 +539,50 @@
       "movement": "face-pull",
       "accessoryMuscles": [
         "back"
-      ]
+      ],
+      "name_en": "Face pull",
+      "aliases": [
+        "puxada para o rosto"
+      ],
+      "equipment": "cable"
     },
     {
-      "id": "hammer-curl",
-      "name": "Hammer curl",
+      "id": "single-arm-preacher-curl",
+      "name": "Rosca Scott unilateral",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
-      "movement": "hammer-curl",
-      "accessoryMuscles": [
-        "forearms"
-      ]
+      "movement": "preacher-curl",
+      "name_en": "Single arm preacher curl",
+      "aliases": [
+        "preacher curl",
+        "rosca scott"
+      ],
+      "equipment": "dumbbell",
+      "accessoryMuscles": []
     },
     {
       "id": "incline-deficit-curl",
-      "name": "Incline deficit curl",
+      "name": "Rosca inclinada com déficit",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
       "movement": "incline-curl",
+      "name_en": "Incline deficit curl",
+      "aliases": [
+        "incline deficit curl",
+        "rosca 45"
+      ],
+      "equipment": "dumbbell",
       "accessoryMuscles": []
     },
     {
       "id": "reverse-grip-ez-bar-curl",
-      "name": "Reverse grip EZ bar curl",
+      "name": "Rosca invertida na barra W",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
@@ -460,22 +591,36 @@
       "movement": "reverse-curl",
       "accessoryMuscles": [
         "forearms"
-      ]
+      ],
+      "name_en": "Reverse grip EZ bar curl",
+      "aliases": [
+        "reverse curl",
+        "barra ez"
+      ],
+      "equipment": "barbell"
     },
     {
-      "id": "single-arm-preacher-curl",
-      "name": "Single arm preacher curl",
+      "id": "hammer-curl",
+      "name": "Rosca martelo",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
-      "movement": "preacher-curl",
-      "accessoryMuscles": []
+      "movement": "hammer-curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Hammer curl",
+      "aliases": [
+        "hammer curl",
+        "martelo"
+      ],
+      "equipment": "dumbbell"
     },
     {
       "id": "dip-gravitron-upright",
-      "name": "Dip (Gravitron, upright)",
+      "name": "Mergulho no gravitron (tríceps)",
       "type": "strength",
       "compound": true,
       "regime": "assisted",
@@ -485,66 +630,102 @@
       "accessoryMuscles": [
         "chest",
         "shoulders"
-      ]
+      ],
+      "name_en": "Dip (Gravitron, upright)",
+      "aliases": [
+        "dip",
+        "paralelas",
+        "triceps dip"
+      ],
+      "equipment": "machine"
     },
     {
       "id": "cable-triceps-kickback",
-      "name": "Cable triceps kickback",
+      "name": "Coice de tríceps no cabo",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "extension",
       "movement": "triceps-kickback",
-      "accessoryMuscles": []
-    },
-    {
-      "id": "machine-triceps",
-      "name": "Machine triceps",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "triceps",
-      "movementPattern": "extension",
-      "movement": "triceps-extension",
+      "name_en": "Cable triceps kickback",
+      "aliases": [
+        "kickback",
+        "triceps kickback"
+      ],
+      "equipment": "cable",
       "accessoryMuscles": []
     },
     {
       "id": "overhead-cable-triceps",
-      "name": "Overhead cable triceps",
+      "name": "Tríceps francês no cabo",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "extension",
       "movement": "overhead-triceps-extension",
+      "name_en": "Overhead cable triceps",
+      "aliases": [
+        "overhead triceps",
+        "francês"
+      ],
+      "equipment": "cable",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "machine-triceps",
+      "name": "Tríceps máquina",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "extension",
+      "movement": "triceps-extension",
+      "name_en": "Machine triceps",
+      "aliases": [
+        "machine triceps"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     },
     {
       "id": "rope-cable-triceps-extension",
-      "name": "Rope cable triceps extension",
+      "name": "Tríceps corda",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "pushdown",
       "movement": "triceps-pushdown",
+      "name_en": "Rope cable triceps extension",
+      "aliases": [
+        "rope pushdown",
+        "pulley corda"
+      ],
+      "equipment": "cable",
       "accessoryMuscles": []
     },
     {
       "id": "leg-extension",
-      "name": "Leg extension",
+      "name": "Cadeira extensora",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "quads",
       "movementPattern": "extension",
       "movement": "leg-extension",
+      "name_en": "Leg extension",
+      "aliases": [
+        "leg extension",
+        "extensora"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     },
     {
       "id": "bulgarian-split-squat",
-      "name": "Bulgarian split squat",
+      "name": "Agachamento búlgaro",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -554,24 +735,17 @@
       "accessoryMuscles": [
         "glutes",
         "hamstrings"
-      ]
-    },
-    {
-      "id": "v-squat-front-facing",
-      "name": "V-squat (front-facing)",
-      "type": "hypertrophy",
-      "compound": true,
-      "regime": "weighted",
-      "mainMuscle": "quads",
-      "movementPattern": "squat",
-      "movement": "v-squat",
-      "accessoryMuscles": [
-        "glutes"
-      ]
+      ],
+      "name_en": "Bulgarian split squat",
+      "aliases": [
+        "bulgarian split squat",
+        "búlgaro"
+      ],
+      "equipment": "dumbbell"
     },
     {
       "id": "zercher-squat",
-      "name": "Zercher squat",
+      "name": "Agachamento Zercher",
       "type": "strength",
       "compound": true,
       "regime": "weighted",
@@ -581,7 +755,46 @@
       "accessoryMuscles": [
         "glutes",
         "back"
-      ]
+      ],
+      "name_en": "Zercher squat",
+      "aliases": [
+        "zercher squat"
+      ],
+      "equipment": "barbell"
+    },
+    {
+      "id": "v-squat-front-facing",
+      "name": "V-squat (de frente)",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "v-squat",
+      "accessoryMuscles": [
+        "glutes"
+      ],
+      "name_en": "V-squat (front-facing)",
+      "aliases": [
+        "v squat"
+      ],
+      "equipment": "machine"
+    },
+    {
+      "id": "standing-leg-curl",
+      "name": "Flexora em pé",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "hamstrings",
+      "movementPattern": "curl",
+      "movement": "standing-leg-curl",
+      "name_en": "Standing leg curl",
+      "aliases": [
+        "standing leg curl"
+      ],
+      "equipment": "machine",
+      "accessoryMuscles": []
     },
     {
       "id": "seated-leg-curl",
@@ -621,19 +834,8 @@
       "accessoryMuscles": []
     },
     {
-      "id": "standing-leg-curl",
-      "name": "Standing leg curl",
-      "type": "hypertrophy",
-      "compound": false,
-      "regime": "weighted",
-      "mainMuscle": "hamstrings",
-      "movementPattern": "curl",
-      "movement": "standing-leg-curl",
-      "accessoryMuscles": []
-    },
-    {
       "id": "stiff-leg-deadlift",
-      "name": "Stiff-leg deadlift",
+      "name": "Levantamento terra stiff",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -643,22 +845,34 @@
       "accessoryMuscles": [
         "glutes",
         "back"
-      ]
+      ],
+      "name_en": "Stiff-leg deadlift",
+      "aliases": [
+        "stiff",
+        "stiff leg deadlift"
+      ],
+      "equipment": "barbell"
     },
     {
       "id": "hip-abduction-machine",
-      "name": "Hip abduction machine",
+      "name": "Cadeira abdutora",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "glutes",
       "movementPattern": "abduction",
       "movement": "hip-abduction",
+      "name_en": "Hip abduction machine",
+      "aliases": [
+        "hip abduction",
+        "abdução"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     },
     {
       "id": "kettlebell-swing",
-      "name": "Kettlebell swing",
+      "name": "Swing com kettlebell",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -668,11 +882,16 @@
       "accessoryMuscles": [
         "hamstrings",
         "back"
-      ]
+      ],
+      "name_en": "Kettlebell swing",
+      "aliases": [
+        "kettlebell swing"
+      ],
+      "equipment": "kettlebell"
     },
     {
       "id": "wide-stance-sumo-deadlift",
-      "name": "Wide stance sumo deadlift",
+      "name": "Terra sumô aberto",
       "type": "strength",
       "compound": true,
       "regime": "weighted",
@@ -682,11 +901,17 @@
       "accessoryMuscles": [
         "hamstrings",
         "quads"
-      ]
+      ],
+      "name_en": "Wide stance sumo deadlift",
+      "aliases": [
+        "sumo deadlift",
+        "levantamento terra"
+      ],
+      "equipment": "barbell"
     },
     {
       "id": "hip-thrust",
-      "name": "Hip thrust",
+      "name": "Elevação de quadril",
       "type": "hypertrophy",
       "compound": true,
       "regime": "weighted",
@@ -695,39 +920,64 @@
       "movement": "hip-thrust",
       "accessoryMuscles": [
         "hamstrings"
-      ]
+      ],
+      "name_en": "Hip thrust",
+      "aliases": [
+        "hip thrust",
+        "elevação pélvica",
+        "ponte"
+      ],
+      "equipment": "barbell"
     },
     {
       "id": "hip-adduction-machine",
-      "name": "Hip adduction machine",
+      "name": "Cadeira adutora",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "adductors",
       "movementPattern": "adduction",
       "movement": "hip-adduction",
+      "name_en": "Hip adduction machine",
+      "aliases": [
+        "hip adduction",
+        "adução"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     },
     {
       "id": "calf-raise",
-      "name": "Calf raise",
+      "name": "Panturrilha em pé",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "calves",
       "movementPattern": "raise",
       "movement": "standing-calf-raise",
+      "name_en": "Calf raise",
+      "aliases": [
+        "calf raise",
+        "gêmeos"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     },
     {
       "id": "seated-calf-raise",
-      "name": "Seated calf raise",
+      "name": "Panturrilha sentada",
       "type": "hypertrophy",
       "compound": false,
       "regime": "weighted",
       "mainMuscle": "calves",
       "movementPattern": "raise",
       "movement": "seated-calf-raise",
+      "name_en": "Seated calf raise",
+      "aliases": [
+        "seated calf raise",
+        "sóleo"
+      ],
+      "equipment": "machine",
       "accessoryMuscles": []
     }
   ]
