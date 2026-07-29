@@ -253,17 +253,22 @@
   // ── filter engine ──────────────────────────────────────────────────────────
   g('filter engine');
   {
+    // No fType argument anymore: the Força/Hipertrofia filter axis was
+    // removed on 2026-07-29 (owner: type is a training mode applied to an
+    // exercise, not a property you select exercises by). The bar must not
+    // offer it and the engine must not accept it.
     const all = T.D.exercises;
-    const biceps = W.applyFilters(all, null, null, '', false, false, 'biceps', null);
+    const biceps = W.applyFilters(all, null, '', false, false, 'biceps', null);
     t('muscle filter returns only that muscle', biceps.length > 0 && biceps.every(e => e.mainMuscle === 'biceps'));
     t('muscle filter count matches manual count', biceps.length === all.filter(e => e.mainMuscle === 'biceps').length);
-    const dipTri = W.applyFilters(all, null, null, 'dip', false, false, 'triceps', null);
+    const dipTri = W.applyFilters(all, null, 'dip', false, false, 'triceps', null);
     t('muscle+search isolates the upright dip variant', dipTri.length === 1 && dipTri[0].id === 'dip-gravitron-upright');
-    const dipChest = W.applyFilters(all, null, null, 'dip', false, false, 'chest', null);
+    const dipChest = W.applyFilters(all, null, 'dip', false, false, 'chest', null);
     t('muscle+search isolates the leaning dip variant', dipChest.length === 1 && dipChest[0].id === 'dip-gravitron');
-    t('pattern without muscle is ignored', W.applyFilters(all, null, null, '', false, false, null, 'curl').length === all.length);
-    t('strength type filter', W.applyFilters(all, 'strength', null, '', false, false, null, null).every(e => e.type === 'strength'));
-    t('unclassed filter empty on fully-classified seed', W.applyFilters(all, null, null, '', false, true, null, null).length === 0);
+    t('pattern without muscle is ignored', W.applyFilters(all, null, '', false, false, null, 'curl').length === all.length);
+    t('unclassed filter empty on fully-classified seed', W.applyFilters(all, null, '', false, true, null, null).length === 0);
+    t('no type filter anywhere in the shared bar', !W.filterBarHTML(null, false, true, null, null).includes('ft:')
+      && !W.filterBarHTML(null, false, false, null, null).includes('Força'));
   }
 
   // ── plan import hardening ──────────────────────────────────────────────────
@@ -1274,8 +1279,8 @@
     t('empty query matches everything', W.exerciseMatchesSearch(slc, ''));
 
     // applyFilters routes through it
-    t('applyFilters finds by English name', W.applyFilters(T.D.exercises, null, null, 'seated leg curl', false, false, null, null).some(e => e.id === 'seated-leg-curl'));
-    t('applyFilters finds by alias', W.applyFilters(T.D.exercises, null, null, 'flexora sentada', false, false, null, null).some(e => e.id === 'seated-leg-curl'));
+    t('applyFilters finds by English name', W.applyFilters(T.D.exercises, null, 'seated leg curl', false, false, null, null).some(e => e.id === 'seated-leg-curl'));
+    t('applyFilters finds by alias', W.applyFilters(T.D.exercises, null, 'flexora sentada', false, false, null, null).some(e => e.id === 'seated-leg-curl'));
 
     // categories derive from (muscle, pattern)
     const cats = W.exerciseCategories(T.D.exercises);
@@ -1309,7 +1314,7 @@
 
     // search inside the category still narrows
     W.eval("_libSearch = 'aberta'");
-    const narrowed = W.applyFilters(T.D.exercises, null, null, 'aberta', false, false, 'back', 'pulldown');
+    const narrowed = W.applyFilters(T.D.exercises, null, 'aberta', false, false, 'back', 'pulldown');
     t('typing inside a category narrows within it', narrowed.every(e => e.mainMuscle === 'back' && e.movementPattern === 'pulldown'));
     W.eval("_libSearch = ''; _libFMuscle = null; _libFPattern = null;");
 

@@ -382,16 +382,22 @@ let EXP = null; // expanded session id in history
 // Sync status indicator
 let _syncStatus = null; // { state: 'ok'|'error'|'syncing', time: number }
 
-// Filter state — library tab
-let _libFType = null, _libFMove = null, _libSearch = '', _libAlpha = false, _libUnclassed = false;
+// Filter state — library tab. There is deliberately NO strength/hypertrophy
+// filter axis anywhere exercises are picked or browsed (owner decision
+// 2026-07-29): Força/Hipertrofia is a training MODE applied to an exercise —
+// it changes tracking, rest scheme and set/rep targets, and any exercise can
+// be trained either way — not a property that narrows which exercise you're
+// looking for. ex.type remains as each exercise's default mode when added to
+// a session; it just isn't a selection filter.
+let _libFMove = null, _libSearch = '', _libAlpha = false, _libUnclassed = false;
 let _libFMuscle = null, _libFPattern = null;
 
 // Filter state — add-exercise modal
-let _aFType = null, _aFMove = null, _aSearch = '', _aAlpha = false;
+let _aFMove = null, _aSearch = '', _aAlpha = false;
 let _aFMuscle = null, _aFPattern = null;
 
 // Filter state — plan editor modal
-let _peFType = null, _peFMove = null, _peSearch = '', _peAlpha = false;
+let _peFMove = null, _peSearch = '', _peAlpha = false;
 let _peFMuscle = null, _peFPattern = null;
 
 // Plan editor working state. _planRests maps exId → rest override for THIS
@@ -1840,7 +1846,7 @@ function categoryCardsHTML(cats, handler) {
 // user can immediately type again to narrow WITHIN the family.
 function openLibCategory(muscle, pattern) {
   _libFMuscle = muscle; _libFPattern = pattern; _libSearch = '';
-  _libFType = null; _libFMove = null; _libUnclassed = false;
+  _libFMove = null; _libUnclassed = false;
   render();
 }
 
@@ -1850,10 +1856,8 @@ function openPickCategory(muscle, pattern) {
   aBindFilters(); aRefreshList();
 }
 
-function applyFilters(list, fType, fMove, search, alpha, unclassed, fMuscle, fPattern) {
+function applyFilters(list, fMove, search, alpha, unclassed, fMuscle, fPattern) {
   let out = list.filter(ex => {
-    if (fType === 'strength'    && ex.type !== 'strength')    return false;
-    if (fType === 'hypertrophy' && ex.type !== 'hypertrophy') return false;
     if (unclassed) { if (ex.compound != null) return false; }
     else {
       if (fMove === 'compound'  && ex.compound !== true)  return false;
@@ -1877,7 +1881,9 @@ function applyFilters(list, fType, fMove, search, alpha, unclassed, fMuscle, fPa
 
 // Builds a filter pill bar HTML string.
 // Each pill carries a data-key attribute so listeners can be attached externally.
-function filterBarHTML(fType, fMove, unclassed, showUnclassed, fMuscle, fPattern) {
+// No Força/Hipertrofia pills here — see the filter-state comment in
+// section 3: type is a training mode, not a selection axis.
+function filterBarHTML(fMove, unclassed, showUnclassed, fMuscle, fPattern) {
   const p = (lbl, active, key, acBg) =>
     `<button data-fk="${key}" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;background:${active?(acBg||CG):BG3};color:${active?TX:DM}">${lbl}</button>`;
   const muscleRow = Object.entries(MUSCLE_GROUPS)
@@ -1890,9 +1896,6 @@ function filterBarHTML(fType, fMove, unclassed, showUnclassed, fMuscle, fPattern
     ? Object.entries(MOVEMENT_PATTERNS[fMuscle]||{}).map(([k,label]) => p(label, fPattern===k, `mp:${k}`, '#0a2e2e')).join('')
     : '';
   return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
-    ${p('Força',        fType==='strength',              'ft:strength')}
-    ${p('Hipert.',      fType==='hypertrophy',            'ft:hypertrophy')}
-    <div style="width:1px;background:${BD};margin:0 2px"></div>
     ${p('Composto',     !unclassed&&fMove==='compound',  'fm:compound',  '#1a1035')}
     ${p('Isolado',      !unclassed&&fMove==='isolation', 'fm:isolation', '#1e1810')}
     ${showUnclassed ? p('Não classif.', unclassed, 'fm:unclassed', '#2a2a1a') : ''}
@@ -1902,15 +1905,14 @@ function filterBarHTML(fType, fMove, unclassed, showUnclassed, fMuscle, fPattern
 }
 
 // Attaches click listeners to a rendered filter bar.
-// onType/onMove/onMuscle/onPattern(val) are callbacks that handle state changes.
-function bindFilterBar(containerId, onType, onMove, onMuscle, onPattern) {
+// onMove/onMuscle/onPattern(val) are callbacks that handle state changes.
+function bindFilterBar(containerId, onMove, onMuscle, onPattern) {
   const bar = document.getElementById(containerId);
   if (!bar) return;
   bar.querySelectorAll('[data-fk]').forEach(btn => {
     btn.addEventListener('click', function() {
       const [ns, val] = this.dataset.fk.split(':');
-      if      (ns === 'ft') onType(val);
-      else if (ns === 'fm') onMove(val);
+      if      (ns === 'fm') onMove(val);
       else if (ns === 'mg') onMuscle(val);
       else if (ns === 'mp') onPattern(val);
     });
@@ -2527,7 +2529,7 @@ function buildLibrary() {
 
     <div style="margin-top:14px">
       <div id="lib-filter-bar">
-        ${filterBarHTML(_libFType, _libFMove, _libUnclassed, true, _libFMuscle, _libFPattern)}
+        ${filterBarHTML(_libFMove, _libUnclassed, true, _libFMuscle, _libFPattern)}
       </div>
       <div style="display:flex;gap:8px;margin-bottom:10px">
         <input type="text" placeholder="Buscar por nome..." value="${esc(_libSearch)}"
@@ -2545,7 +2547,7 @@ function buildLibrary() {
 function libResultsHTML() {
   if (!D.exercises.length)
     return `<div style="text-align:center;color:${DM};padding:32px 0;font-size:14px;line-height:1.7">Nenhum exercício cadastrado.<br>Adicione manualmente pelo botão "+ Novo" acima.</div>`;
-  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
+  const filtered = applyFilters(D.exercises, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
   // Cards only while searching, and never once you're already inside a
   // category — there'd be nothing left to navigate to.
   const cards = (_libSearch && !_libFPattern)
@@ -2558,12 +2560,12 @@ function libResultsHTML() {
 
 // Header line describing the active filter/category context.
 function libCountNote() {
-  const filtered = applyFilters(D.exercises, _libFType, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
+  const filtered = applyFilters(D.exercises, _libFMove, _libSearch, _libAlpha, _libUnclassed, _libFMuscle, _libFPattern);
   if (_libFMuscle && _libFPattern) {
     const label = (MOVEMENT_PATTERNS[_libFMuscle] || {})[_libFPattern] || _libFPattern;
     return ` — ${label} · ${MUSCLE_GROUPS[_libFMuscle] || ''}: ${filtered.length}`;
   }
-  const hasFilter = _libFType || _libFMove || _libSearch || _libUnclassed || _libFMuscle;
+  const hasFilter = _libFMove || _libSearch || _libUnclassed || _libFMuscle;
   return hasFilter
     ? ` — ${filtered.length} ${_libUnclassed ? 'sem classificação' : 'resultado' + (filtered.length !== 1 ? 's' : '')}`
     : '';
@@ -2745,7 +2747,6 @@ function progSwitch(exId, regime) {
 // Attached after render — handles library filter pill clicks
 function bindLibraryFilters() {
   bindFilterBar('lib-filter-bar',
-    val => { _libFType = _libFType===val?null:val; render(); },
     val => {
       if (val === 'unclassed') { _libUnclassed=!_libUnclassed; if(_libUnclassed)_libFMove=null; }
       else { _libUnclassed=false; _libFMove=_libFMove===val?null:val; }
@@ -3026,8 +3027,8 @@ function buildPlans() {
         }).join('')}`;
 }
 
-function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planRestEdit=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(''); }
-function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=[...(p.exercises||[])]; _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planRestEdit=null; _peFType=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(p.name); }
+function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planRestEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(''); }
+function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=[...(p.exercises||[])]; _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planRestEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(p.name); }
 
 function showPlanEditor(name) {
   showModal(`
@@ -3039,7 +3040,7 @@ function showPlanEditor(name) {
     <div id="plan-ex-list"></div>
     <div style="height:1px;background:${BD};margin:10px 0 12px"></div>
     <label style="font-size:12px;color:${DM};margin-bottom:8px;display:block">Adicionar ao plano</label>
-    <div id="pe-filter-bar">${filterBarHTML(_peFType,_peFMove,false,false,_peFMuscle,_peFPattern)}</div>
+    <div id="pe-filter-bar">${filterBarHTML(_peFMove,false,false,_peFMuscle,_peFPattern)}</div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <input id="pe-search" type="text" placeholder="Buscar exercício..."
         style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;box-sizing:border-box">
@@ -3060,7 +3061,6 @@ function showPlanEditor(name) {
 
   // Attach plan editor filter bar
   bindFilterBar('pe-filter-bar',
-    val => { _peFType=_peFType===val?null:val; peBuildFilterBar(); peRefreshList(); },
     val => { _peFMove=_peFMove===val?null:val; peBuildFilterBar(); peRefreshList(); },
     val => { _peFMuscle=_peFMuscle===val?null:val; _peFPattern=null; peBuildFilterBar(); peRefreshList(); },
     val => { _peFPattern=_peFPattern===val?null:val; peBuildFilterBar(); peRefreshList(); }
@@ -3072,9 +3072,8 @@ function showPlanEditor(name) {
 function peBuildFilterBar() {
   const c = document.getElementById('pe-filter-bar');
   if (!c) return;
-  c.innerHTML = filterBarHTML(_peFType, _peFMove, false, false, _peFMuscle, _peFPattern);
+  c.innerHTML = filterBarHTML(_peFMove, false, false, _peFMuscle, _peFPattern);
   bindFilterBar('pe-filter-bar',
-    val => { _peFType=_peFType===val?null:val; peBuildFilterBar(); peRefreshList(); },
     val => { _peFMove=_peFMove===val?null:val; peBuildFilterBar(); peRefreshList(); },
     val => { _peFMuscle=_peFMuscle===val?null:val; _peFPattern=null; peBuildFilterBar(); peRefreshList(); },
     val => { _peFPattern=_peFPattern===val?null:val; peBuildFilterBar(); peRefreshList(); }
@@ -3084,7 +3083,7 @@ function peBuildFilterBar() {
 function peRefreshList() {
   const c = document.getElementById('pe-ex-list');
   if (!c) return;
-  const filtered = applyFilters(D.exercises, _peFType, _peFMove, _peSearch, _peAlpha, false, _peFMuscle, _peFPattern);
+  const filtered = applyFilters(D.exercises, _peFMove, _peSearch, _peAlpha, false, _peFMuscle, _peFPattern);
   if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
   c.innerHTML = filtered.map(ex => `
     <button onclick="addExToPlan('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
@@ -3756,11 +3755,11 @@ function delEx(id) { D.tombstones.exercises[id]=Date.now(); D.exercises=D.exerci
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function openAddEx() {
-  _aFType=null; _aFMove=null; _aSearch=''; _aAlpha=false; _newType='strength';
+  _aFMove=null; _aSearch=''; _aAlpha=false; _newType='strength';
   _aFMuscle=null; _aFPattern=null;
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:12px">Adicionar exercício</div>
-    <div id="a-filters">${filterBarHTML(_aFType,_aFMove,false,false,_aFMuscle,_aFPattern)}</div>
+    <div id="a-filters">${filterBarHTML(_aFMove,false,false,_aFMuscle,_aFPattern)}</div>
     <div style="display:flex;gap:8px;margin-bottom:10px">
       <input id="a-search" type="text" placeholder="Buscar por nome..."
         style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;box-sizing:border-box">
@@ -3787,9 +3786,8 @@ function openAddEx() {
 
 function aBindFilters() {
   const c = document.getElementById('a-filters'); if(!c)return;
-  c.innerHTML = filterBarHTML(_aFType, _aFMove, false, false, _aFMuscle, _aFPattern);
+  c.innerHTML = filterBarHTML(_aFMove, false, false, _aFMuscle, _aFPattern);
   bindFilterBar('a-filters',
-    val => { _aFType=_aFType===val?null:val; aBindFilters(); aRefreshList(); },
     val => { _aFMove=_aFMove===val?null:val; aBindFilters(); aRefreshList(); },
     val => { _aFMuscle=_aFMuscle===val?null:val; _aFPattern=null; aBindFilters(); aRefreshList(); },
     val => { _aFPattern=_aFPattern===val?null:val; aBindFilters(); aRefreshList(); }
@@ -3798,7 +3796,7 @@ function aBindFilters() {
 
 function aRefreshList() {
   const c = document.getElementById('a-list'); if(!c)return;
-  const filtered = applyFilters(D.exercises, _aFType, _aFMove, _aSearch, _aAlpha, false, _aFMuscle, _aFPattern);
+  const filtered = applyFilters(D.exercises, _aFMove, _aSearch, _aAlpha, false, _aFMuscle, _aFPattern);
   // Same category shortcut as the Library — "add a pulldown" mid-workout is
   // where browsing by family matters most, since you're standing in front
   // of whatever machine is free.
