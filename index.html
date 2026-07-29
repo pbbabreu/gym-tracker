@@ -392,9 +392,13 @@ let _syncStatus = null; // { state: 'ok'|'error'|'syncing', time: number }
 let _libFMove = null, _libSearch = '', _libAlpha = false, _libUnclassed = false;
 let _libFMuscle = null, _libFPattern = null;
 
-// Filter state — add-exercise modal
-let _aFMove = null, _aSearch = '', _aAlpha = false;
-let _aFMuscle = null, _aFPattern = null;
+// Picker state — add-exercise modal (movement-first since 2026-07-29: the
+// browse unit is the MOVEMENT, not a flat exercise list; _aMovement holds
+// the movement whose variants are open, null = browsing/searching. The
+// compound/isolation and pattern filter axes deliberately don't exist here
+// — movements subsume pattern-level navigation, and mid-set nobody narrows
+// by "isolado").
+let _aSearch = '', _aFMuscle = null, _aMovement = null;
 
 // Filter state — plan editor modal
 let _peFMove = null, _peSearch = '', _peAlpha = false;
@@ -1848,12 +1852,6 @@ function openLibCategory(muscle, pattern) {
   _libFMuscle = muscle; _libFPattern = pattern; _libSearch = '';
   _libFMove = null; _libUnclassed = false;
   render();
-}
-
-function openPickCategory(muscle, pattern) {
-  _aFMuscle = muscle; _aFPattern = pattern; _aSearch = '';
-  const inp = document.getElementById('a-search'); if (inp) inp.value = '';
-  aBindFilters(); aRefreshList();
 }
 
 function applyFilters(list, fMove, search, alpha, unclassed, fMuscle, fPattern) {
@@ -3313,8 +3311,11 @@ function applyImportedPlan(data) {
       // separately-imported id-less entries would collide on the same
       // `id: undefined` and become indistinguishable to every other
       // `D.exercises.find(e => e.id === ...)` lookup in the app.
-      let local = (imp.id && D.exercises.find(e => e.id === imp.id))
-        || D.exercises.find(e => String(e.name||'').toLowerCase() === imp.name.toLowerCase());
+      // The name fallback goes through findByName(), which matches name AND
+      // name_en — a plan exported before the library went PT-BR-primary says
+      // "Bench press", and it must resolve to the local "Supino reto"
+      // instead of importing a duplicate with a split history.
+      let local = (imp.id && D.exercises.find(e => e.id === imp.id)) || findByName(imp.name);
       if (!local) {
         local = normalizeExerciseDef(imp);
         D.exercises.push(local);
@@ -3700,7 +3701,14 @@ const nameKey = n => String(n||'')
   .normalize('NFD').replace(/[\u0300-\u036f]/g, '')   // strip accents
   .toLowerCase().trim().replace(/\s+/g, ' ');
 
-const findByName = n => D.exercises.find(e => nameKey(e.name) === nameKey(n));
+// Matches name AND name_en — since the library went PT-BR-primary
+// (2026-07-29), someone quick-creating by the English name they remember
+// ("bench press") must still land on the existing "Supino reto" instead of
+// forking its history. Deliberately NOT aliases: those are loose search
+// terms ("supino" is an alias of Supino reto), and treating them as
+// identity would swallow genuinely new names into the wrong exercise.
+const findByName = n => D.exercises.find(e =>
+  nameKey(e.name) === nameKey(n) || (e.name_en && nameKey(e.name_en) === nameKey(n)));
 
 function saveNewEx() {
   const name = (document.getElementById('ex-name')?.value||'').trim(); if(!name)return;
@@ -3743,89 +3751,228 @@ function delEx(id) { D.tombstones.exercises[id]=Date.now(); D.exercises=D.exerci
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
-// ║  18. ADD EXERCISE MODAL (Session: pick exercise to add)
+// ║  18. ADD EXERCISE MODAL (Session: movement-first picker)
 // ║
-// ║  Opened during an active session to add an exercise.
-// ║  Two flows:
-// ║    · Pick from library → type/regime picker → addPickedEx()
-// ║    · Create new on the fly → goes to library AND session
-// ║
-// ║  Filter bar and search use addEventListener (not onclick attrs) for
+// ║  Opened during an active session to add an exercise. Movement-first
+// ║  (owner redesign 2026-07-29 — see the vault's "Design - Movement-first
+// ║  Library & Equipment"): the browse unit is the MOVEMENT ("Puxada",
+// ║  "Supino inclinado"), variants live one level down grouped by equipment
+// ║  class. Three ways in:
+// ║    · Browse: movements grouped by muscle (muscle chips narrow) →
+// ║      tap a movement → its variants by equipment → pickEx()
+// ║    · Search: matches movements (pt/en/aliases) AND exercises directly —
+// ║      typing an exact variant name still adds in two taps
+// ║    · Create: inside a movement, "+ nova variação" inherits the
+// ║      movement's classification (no more fully-Undefined quick-creates);
+// ║      the old free-form create survives as a collapsed escape hatch
+// ║  Search/toggles use addEventListener (not onclick attrs) for
 // ║  reliability in sandboxed environments.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function openAddEx() {
-  _aFMove=null; _aSearch=''; _aAlpha=false; _newType='strength';
-  _aFMuscle=null; _aFPattern=null;
+  _aSearch=''; _aFMuscle=null; _aMovement=null; _newType='strength';
+  showAddEx();
+}
+
+// Renders the modal from CURRENT picker state — split from openAddEx() so
+// pickEx()'s "Voltar" returns to the exact view the user left (movement
+// open, muscle chip kept) instead of resetting to the top.
+function showAddEx() {
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:12px">Adicionar exercício</div>
-    <div id="a-filters">${filterBarHTML(_aFMove,false,false,_aFMuscle,_aFPattern)}</div>
-    <div style="display:flex;gap:8px;margin-bottom:10px">
-      <input id="a-search" type="text" placeholder="Buscar por nome..."
-        style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;box-sizing:border-box">
-      <button id="a-az" style="padding:9px 13px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${BG3};color:${DM}">A–Z</button>
+    <input id="a-search" type="text" placeholder="Buscar movimento ou exercício..." value="${esc(_aSearch)}"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    <div id="a-mrow" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+    <div id="a-list" style="height:290px;overflow-y:auto;margin-bottom:12px"></div>
+    <button id="a-avulso-toggle" style="background:none;border:none;color:${DM};font-size:12px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:10px">+ Criar exercício avulso (sem movimento)</button>
+    <div id="a-avulso" style="display:none">
+      <input id="new-ex-name" type="text" placeholder="Nome do exercício"
+        style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:15px;padding:11px 12px;width:100%;outline:none;margin-bottom:10px;box-sizing:border-box">
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button id="m-str" onclick="setNewType('strength')"    style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:#A32D2D;color:${TX}">Força</button>
+        <button id="m-hyt" onclick="setNewType('hypertrophy')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${BG3};color:${DM}">Hipert.</button>
+      </div>
+      <div style="font-size:11px;color:${DM};margin-bottom:10px;line-height:1.5">Sem classificação de músculo/movimento — prefira criar dentro de um movimento acima; dá pra corrigir depois na Biblioteca.</div>
+      ${B(CG,TX,'Criar e adicionar','createAndAdd()')}
     </div>
-    <div id="a-list" style="height:240px;overflow-y:auto;margin-bottom:14px"></div>
-    <div style="height:1px;background:${BD};margin-bottom:14px"></div>
-    <div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px">Criar novo</div>
-    <input id="new-ex-name" type="text" placeholder="Nome do exercício"
-      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:15px;padding:11px 12px;width:100%;outline:none;margin-bottom:10px;box-sizing:border-box">
-    <div style="display:flex;gap:6px;margin-bottom:12px">
-      <button id="m-str" onclick="setNewType('strength')"    style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:#A32D2D;color:${TX}">Força</button>
-      <button id="m-hyt" onclick="setNewType('hypertrophy')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${BG3};color:${DM}">Hipert.</button>
-    </div>
-    ${B(CG,TX,'Criar e adicionar','createAndAdd()')}
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
 
-  // Attach listeners programmatically
   document.getElementById('a-search').addEventListener('input', function() { _aSearch=this.value; aRefreshList(); });
-  document.getElementById('a-az').addEventListener('click', function() { _aAlpha=!_aAlpha; this.style.background=_aAlpha?CG:BG3; this.style.color=_aAlpha?TX:DM; aRefreshList(); });
-  aBindFilters();
+  document.getElementById('a-avulso-toggle').addEventListener('click', function() {
+    const d = document.getElementById('a-avulso');
+    const open = d.style.display !== 'none';
+    d.style.display = open ? 'none' : 'block';
+    this.textContent = (open ? '+ ' : '− ') + 'Criar exercício avulso (sem movimento)';
+  });
+  aBindMuscleRow();
   aRefreshList();
 }
 
-function aBindFilters() {
-  const c = document.getElementById('a-filters'); if(!c)return;
-  c.innerHTML = filterBarHTML(_aFMove, false, false, _aFMuscle, _aFPattern);
-  bindFilterBar('a-filters',
-    val => { _aFMove=_aFMove===val?null:val; aBindFilters(); aRefreshList(); },
-    val => { _aFMuscle=_aFMuscle===val?null:val; _aFPattern=null; aBindFilters(); aRefreshList(); },
-    val => { _aFPattern=_aFPattern===val?null:val; aBindFilters(); aRefreshList(); }
-  );
+// Muscle chips — the one filter axis the picker keeps. They narrow the
+// MOVEMENT list (and the direct-exercise search results); selecting one
+// also backs out of an open movement, since the chip row is a navigation
+// reset, not a within-movement filter.
+function aBindMuscleRow() {
+  const c = document.getElementById('a-mrow'); if(!c)return;
+  c.innerHTML = Object.entries(MUSCLE_GROUPS).filter(([k]) => k !== 'undefined')
+    .map(([k,label]) => `<button data-mk="${k}" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;background:${_aFMuscle===k?'#0a2e2e':BG3};color:${_aFMuscle===k?TX:DM}">${label}</button>`).join('');
+  c.querySelectorAll('[data-mk]').forEach(btn => btn.addEventListener('click', function() {
+    _aFMuscle = _aFMuscle === this.dataset.mk ? null : this.dataset.mk;
+    _aMovement = null;
+    aBindMuscleRow(); aRefreshList();
+  }));
 }
 
-function aRefreshList() {
-  const c = document.getElementById('a-list'); if(!c)return;
-  const filtered = applyFilters(D.exercises, _aFMove, _aSearch, _aAlpha, false, _aFMuscle, _aFPattern);
-  // Same category shortcut as the Library — "add a pulldown" mid-workout is
-  // where browsing by family matters most, since you're standing in front
-  // of whatever machine is free.
-  const cards = (_aSearch && !_aFPattern)
-    ? categoryCardsHTML(matchingCategories(D.exercises, _aSearch), 'openPickCategory') : '';
-  if (!filtered.length) {
-    c.innerHTML = cards + `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`;
-    c.scrollTop = 0; return;
-  }
-  c.innerHTML = cards + filtered.map(ex => {
-    // This picker only opens mid-session, so S exists — when the session
-    // has a gym context, exercises unavailable there get dimmed + badged
-    // but stay pickable (the tags might just be stale; never block).
-    const unavail = S?.gymId && !availableAtGym(ex, S.gymId);
-    return `
+// The movement vocabulary joined with how many library variants each one
+// actually has — zero-variant movements are hidden from browse (nothing to
+// add yet; they come back the moment a catalog add or promotion fills them).
+function movementsWithCounts() {
+  const counts = {};
+  D.exercises.forEach(e => { if (e.movement) counts[e.movement] = (counts[e.movement]||0)+1; });
+  return Object.entries(MOVEMENTS).map(([slug, m]) => ({ slug, ...m, count: counts[slug]||0 }));
+}
+
+// Same accent/case-folded matching rule as exercises, over the movement's
+// own bilingual labels — "puxada" and "pulldown" both hit.
+function movementMatchesSearch(m, q) {
+  const k = nameKey(q);
+  if (!k) return true;
+  return [m.pt, m.en, ...(m.aliases||[])].some(h => h && nameKey(h).includes(k));
+}
+
+// One exercise row — used by the variant view and the direct search results.
+// This picker only opens mid-session, so S exists: with a gym context,
+// exercises unavailable there get dimmed + badged but stay pickable (the
+// tags might just be stale; never block).
+function aExRow(ex) {
+  const unavail = S?.gymId && !availableAtGym(ex, S.gymId);
+  return `
     <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px${unavail?';opacity:.55':''}">
       <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
       <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">→</span>
     </button>`;
-  }).join('');
+}
+
+function aMovementRow(m) {
+  return `
+    <button onclick="openPickMovement('${m.slug}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
+      <span style="flex:1;min-width:0;text-align:left">
+        <span style="font-weight:600;font-size:14px;display:block">${esc(m.pt)}</span>
+        ${nameKey(m.en) !== nameKey(m.pt) ? `<span style="font-size:11px;color:${DM}">${esc(m.en)}</span>` : ''}
+      </span>
+      <span style="flex-shrink:0;font-size:11px;color:${DM}">${m.count} ${m.count===1?'variação':'variações'}</span>
+      <span style="color:${DM};font-size:12px">→</span>
+    </button>`;
+}
+
+const aSectionHeader = t => `<div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:10px 0 6px">${t}</div>`;
+
+function aRefreshList() {
+  const c = document.getElementById('a-list'); if(!c)return;
+  if (_aMovement && MOVEMENTS[_aMovement]) { c.innerHTML = aVariantViewHTML(_aMovement); c.scrollTop = 0; return; }
+
+  const q = _aSearch.trim();
+  const movements = movementsWithCounts()
+    .filter(m => m.count > 0 && (!_aFMuscle || m.muscle === _aFMuscle) && (!q || movementMatchesSearch(m, q)));
+  // Movements group by muscle in MUSCLE_GROUPS' own declaration order —
+  // the same order every other muscle-grouped list in the app uses.
+  const order = Object.keys(MUSCLE_GROUPS);
+  movements.sort((a,b) => (order.indexOf(a.muscle)-order.indexOf(b.muscle)) || a.pt.localeCompare(b.pt,'pt'));
+
+  if (!q) {
+    // Browse: movement rows under muscle headers. Direct exercise rows are
+    // deliberately absent here — that flat wall of 48+ entries is exactly
+    // what the redesign removes; search still reaches any exercise directly.
+    let html = '', lastMuscle = null;
+    movements.forEach(m => {
+      if (m.muscle !== lastMuscle) { html += aSectionHeader(MUSCLE_GROUPS[m.muscle]||m.muscle); lastMuscle = m.muscle; }
+      html += aMovementRow(m);
+    });
+    c.innerHTML = html || `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum movimento aqui ainda.</div>`;
+  } else {
+    // Search: movements first (the intended navigation), then direct
+    // exercise hits (the fast path when you know the exact variant name).
+    const exs = applyFilters(D.exercises, null, q, false, false, _aFMuscle, null);
+    c.innerHTML =
+      (movements.length ? aSectionHeader('Movimentos') + movements.map(aMovementRow).join('') : '') +
+      (exs.length ? aSectionHeader('Exercícios') + exs.map(aExRow).join('') : '') +
+      (!movements.length && !exs.length ? `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nada encontrado — crie uma variação dentro de um movimento, ou um exercício avulso abaixo.</div>` : '');
+  }
   c.scrollTop = 0;
+}
+
+function openPickMovement(slug) {
+  _aMovement = slug; _aSearch = '';
+  const inp = document.getElementById('a-search'); if (inp) inp.value = '';
+  aRefreshList();
+}
+function closePickMovement() { _aMovement = null; aRefreshList(); }
+
+// A movement's variants, grouped by equipment class (EQUIPMENT_LABELS'
+// declaration order; entries without the field land in a trailing group) —
+// plus the inline "+ nova variação" form, which is the quick-create done
+// right: classification, movement and sensible compound/regime defaults are
+// INHERITED, so nothing created here needs a follow-up Library fix to stop
+// being Undefined.
+function aVariantViewHTML(slug) {
+  const m = MOVEMENTS[slug];
+  const vars = D.exercises.filter(e => e.movement === slug);
+  const byEquip = {};
+  vars.forEach(e => { const k = e.equipment && EQUIPMENT_LABELS[e.equipment] ? e.equipment : '_none'; (byEquip[k] = byEquip[k]||[]).push(e); });
+  const groups = [...Object.keys(EQUIPMENT_LABELS).filter(k => byEquip[k]), ...(byEquip._none ? ['_none'] : [])];
+  return `
+    <button onclick="closePickMovement()" style="background:none;border:none;color:${DM};font-size:13px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">← Movimentos</button>
+    <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
+      <span style="font-size:16px;font-weight:700">${esc(m.pt)}</span>
+      <span style="font-size:11px;color:${DM}">${esc(MUSCLE_GROUPS[m.muscle]||'')}</span>
+    </div>
+    ${groups.map(g => aSectionHeader(g === '_none' ? 'Equipamento não definido' : EQUIPMENT_LABELS[g])
+      + byEquip[g].map(aExRow).join('')).join('')}
+    ${aSectionHeader('Nova variação')}
+    <input id="av-name" type="text" value="${esc(m.pt)} " placeholder="Nome da variação"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button id="v-str" onclick="setNewType('strength')"    style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_newType==='strength'?'#A32D2D':BG3};color:${_newType==='strength'?TX:DM}">Força</button>
+      <button id="v-hyt" onclick="setNewType('hypertrophy')" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_newType==='hypertrophy'?CB:BG3};color:${_newType==='hypertrophy'?TX:DM}">Hipert.</button>
+    </div>
+    ${B(CG,TX,'Criar variação e adicionar',`createVariant('${slug}')`,';margin-bottom:0')}`;
+}
+
+// Create a variant INSIDE a movement. Same duplicate discipline as the old
+// quick-create: an existing same-named exercise is REUSED, never forked
+// (split ids = split histories). Classification comes from the movement's
+// category anchor; compound/regime/accessories are copied from an existing
+// sibling when there is one — same gesture, best available guess, all
+// editable later in the Library.
+function createVariant(slug) {
+  const m = MOVEMENTS[slug]; if (!m) return;
+  const name = (document.getElementById('av-name')?.value||'').trim(); if (!name) return;
+  const clash = findByName(name);
+  if (clash) { pickEx(clash.id); return; }
+  const sib = D.exercises.find(e => e.movement === slug);
+  const ex = {
+    id: uid(), name, type: _newType,
+    compound: sib ? sib.compound : null,
+    regime: sib ? (sib.regime||'weighted') : 'weighted',
+    mainMuscle: m.muscle, movementPattern: m.pattern, movement: slug,
+    accessoryMuscles: sib ? [...(sib.accessoryMuscles||[])] : [],
+    updatedAt: Date.now(),
+  };
+  D.exercises.push(ex);
+  persist();
+  pickEx(ex.id); // straight into the type/regime confirm → Adicionar
 }
 
 function setNewType(t) {
   _newType=t;
-  const s=document.getElementById('m-str'),h=document.getElementById('m-hyt');
-  if(s){s.style.background=t==='strength'?'#A32D2D':BG3;s.style.color=t==='strength'?TX:DM;}
-  if(h){h.style.background=t==='hypertrophy'?CB:BG3;h.style.color=t==='hypertrophy'?TX:DM;}
+  // Two create forms share this toggle state — the avulso block (m-*) and
+  // the in-movement variant form (v-*); color whichever pair is rendered.
+  [['m-str','m-hyt'],['v-str','v-hyt']].forEach(([sid,hid]) => {
+    const s=document.getElementById(sid),h=document.getElementById(hid);
+    if(s){s.style.background=t==='strength'?'#A32D2D':BG3;s.style.color=t==='strength'?TX:DM;}
+    if(h){h.style.background=t==='hypertrophy'?CB:BG3;h.style.color=t==='hypertrophy'?TX:DM;}
+  });
 }
 
 // Type + regime picker before adding to session
@@ -3848,7 +3995,7 @@ function pickEx(id) {
       <button id="pr-bw" onclick="setPickRegime('bodyweight')" style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
     </div>
     ${B(CG,TX,'Adicionar',`addPickedEx('${id}')`)}
-    ${B(BG3,TX,'Voltar','openAddEx()',';margin-bottom:0')}`);
+    ${B(BG3,TX,'Voltar','showAddEx()',';margin-bottom:0')}`);
 }
 
 function setPickType(t) {
@@ -4649,7 +4796,10 @@ function swapCandidates(sessionEx, search) {
   D.exercises.forEach(e => {
     if (e.id === sessionEx.exId) return;                       // can't swap to itself
     if (S?.gymId && !availableAtGym(e, S.gymId)) return;       // unavailable here = not a suggestion
-    if (q && !e.name.toLowerCase().includes(q)) return;
+    // Bilingual search, same rule as everywhere else (name/name_en/aliases,
+    // accent-folded) — typing the English name you remember must keep
+    // finding the now-PT-named exercise.
+    if (q && !exerciseMatchesSearch(e, q)) return;
     if (canRank && e.mainMuscle === muscle && e.movementPattern === pattern && pattern !== 'other') tiers.samePattern.push(e);
     else if (canRank && e.mainMuscle === muscle) tiers.sameMuscle.push(e);
     else tiers.others.push(e);
