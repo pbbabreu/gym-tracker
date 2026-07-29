@@ -8,6 +8,7 @@
       "regime": "weighted",
       "mainMuscle": "chest",
       "movementPattern": "fly",
+      "movement": "low-to-high-fly",
       "accessoryMuscles": [
         "shoulders"
       ]
@@ -20,6 +21,7 @@
       "regime": "weighted",
       "mainMuscle": "chest",
       "movementPattern": "fly",
+      "movement": "fly",
       "accessoryMuscles": []
     },
     {
@@ -30,6 +32,7 @@
       "regime": "weighted",
       "mainMuscle": "chest",
       "movementPattern": "press",
+      "movement": "bench-press",
       "accessoryMuscles": [
         "triceps",
         "shoulders"
@@ -43,6 +46,7 @@
       "regime": "assisted",
       "mainMuscle": "chest",
       "movementPattern": "press",
+      "movement": "chest-dip",
       "accessoryMuscles": [
         "triceps",
         "shoulders"
@@ -56,6 +60,7 @@
       "regime": "weighted",
       "mainMuscle": "chest",
       "movementPattern": "press",
+      "movement": "incline-press",
       "accessoryMuscles": [
         "shoulders",
         "triceps"
@@ -69,6 +74,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "extension",
+      "movement": "back-extension",
       "accessoryMuscles": [
         "hamstrings",
         "glutes"
@@ -82,6 +88,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "hinge",
+      "movement": "narrow-sumo-deadlift",
       "accessoryMuscles": [
         "hamstrings",
         "glutes",
@@ -96,6 +103,7 @@
       "regime": "bodyweight",
       "mainMuscle": "back",
       "movementPattern": "other",
+      "movement": "scapular-pull-up",
       "accessoryMuscles": []
     },
     {
@@ -106,6 +114,7 @@
       "regime": "assisted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "pull-up",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -118,6 +127,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
       "accessoryMuscles": [
         "biceps"
       ],
@@ -156,6 +166,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
       "accessoryMuscles": [
         "biceps"
       ],
@@ -193,6 +204,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
       "accessoryMuscles": [
         "biceps"
       ],
@@ -231,6 +243,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
       "accessoryMuscles": [
         "biceps"
       ],
@@ -270,6 +283,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -282,6 +296,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "pulldown",
+      "movement": "lat-pulldown",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -294,6 +309,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "row",
+      "movement": "bent-over-row",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -306,6 +322,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "row",
+      "movement": "chest-supported-high-row",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -318,6 +335,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "row",
+      "movement": "low-row",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -330,6 +348,7 @@
       "regime": "weighted",
       "mainMuscle": "back",
       "movementPattern": "row",
+      "movement": "low-row",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -342,6 +361,7 @@
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "other",
+      "movement": "halo",
       "accessoryMuscles": []
     },
     {
@@ -352,6 +372,7 @@
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "press",
+      "movement": "shoulder-press",
       "accessoryMuscles": [
         "triceps"
       ]
@@ -364,6 +385,7 @@
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "raise",
+      "movement": "crucifix-swing",
       "accessoryMuscles": []
     },
     {
@@ -374,6 +396,7 @@
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "raise",
+      "movement": "hammer-curl-lateral-raise",
       "accessoryMuscles": [
         "biceps"
       ]
@@ -386,6 +409,7 @@
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "raise",
+      "movement": "lateral-raise",
       "accessoryMuscles": []
     },
     {
@@ -396,6 +420,7 @@
       "regime": "weighted",
       "mainMuscle": "shoulders",
       "movementPattern": "rear_delt",
+      "movement": "face-pull",
       "accessoryMuscles": [
         "back"
       ]
@@ -408,6 +433,7 @@
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
+      "movement": "hammer-curl",
       "accessoryMuscles": [
         "forearms"
       ]
@@ -420,6 +446,7 @@
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
+      "movement": "incline-curl",
       "accessoryMuscles": []
     },
     {
@@ -430,6 +457,7 @@
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
+      "movement": "reverse-curl",
       "accessoryMuscles": [
         "forearms"
       ]
@@ -442,6 +470,7 @@
       "regime": "weighted",
       "mainMuscle": "biceps",
       "movementPattern": "curl",
+      "movement": "preacher-curl",
       "accessoryMuscles": []
     },
     {
@@ -452,6 +481,7 @@
       "regime": "assisted",
       "mainMuscle": "triceps",
       "movementPattern": "dip",
+      "movement": "triceps-dip",
       "accessoryMuscles": [
         "chest",
         "shoulders"
@@ -465,6 +495,7 @@
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "extension",
+      "movement": "triceps-kickback",
       "accessoryMuscles": []
     },
     {
@@ -475,6 +506,7 @@
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "extension",
+      "movement": "triceps-extension",
       "accessoryMuscles": []
     },
     {
@@ -485,6 +517,7 @@
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "extension",
+      "movement": "overhead-triceps-extension",
       "accessoryMuscles": []
     },
     {
@@ -495,6 +528,7 @@
       "regime": "weighted",
       "mainMuscle": "triceps",
       "movementPattern": "pushdown",
+      "movement": "triceps-pushdown",
       "accessoryMuscles": []
     },
     {
@@ -505,6 +539,7 @@
       "regime": "weighted",
       "mainMuscle": "quads",
       "movementPattern": "extension",
+      "movement": "leg-extension",
       "accessoryMuscles": []
     },
     {
@@ -515,6 +550,7 @@
       "regime": "weighted",
       "mainMuscle": "quads",
       "movementPattern": "lunge",
+      "movement": "bulgarian-split-squat",
       "accessoryMuscles": [
         "glutes",
         "hamstrings"
@@ -528,6 +564,7 @@
       "regime": "weighted",
       "mainMuscle": "quads",
       "movementPattern": "squat",
+      "movement": "v-squat",
       "accessoryMuscles": [
         "glutes"
       ]
@@ -540,6 +577,7 @@
       "regime": "weighted",
       "mainMuscle": "quads",
       "movementPattern": "squat",
+      "movement": "zercher-squat",
       "accessoryMuscles": [
         "glutes",
         "back"
@@ -553,6 +591,7 @@
       "regime": "weighted",
       "mainMuscle": "hamstrings",
       "movementPattern": "curl",
+      "movement": "seated-leg-curl",
       "name_en": "Seated leg curl",
       "aliases": [
         "flexora sentada",
@@ -589,6 +628,7 @@
       "regime": "weighted",
       "mainMuscle": "hamstrings",
       "movementPattern": "curl",
+      "movement": "standing-leg-curl",
       "accessoryMuscles": []
     },
     {
@@ -599,6 +639,7 @@
       "regime": "weighted",
       "mainMuscle": "hamstrings",
       "movementPattern": "hinge",
+      "movement": "stiff-leg-deadlift",
       "accessoryMuscles": [
         "glutes",
         "back"
@@ -612,6 +653,7 @@
       "regime": "weighted",
       "mainMuscle": "glutes",
       "movementPattern": "abduction",
+      "movement": "hip-abduction",
       "accessoryMuscles": []
     },
     {
@@ -622,6 +664,7 @@
       "regime": "weighted",
       "mainMuscle": "glutes",
       "movementPattern": "hinge",
+      "movement": "kettlebell-swing",
       "accessoryMuscles": [
         "hamstrings",
         "back"
@@ -635,6 +678,7 @@
       "regime": "weighted",
       "mainMuscle": "glutes",
       "movementPattern": "hinge",
+      "movement": "wide-sumo-deadlift",
       "accessoryMuscles": [
         "hamstrings",
         "quads"
@@ -648,6 +692,7 @@
       "regime": "weighted",
       "mainMuscle": "glutes",
       "movementPattern": "hip_thrust",
+      "movement": "hip-thrust",
       "accessoryMuscles": [
         "hamstrings"
       ]
@@ -660,6 +705,7 @@
       "regime": "weighted",
       "mainMuscle": "adductors",
       "movementPattern": "adduction",
+      "movement": "hip-adduction",
       "accessoryMuscles": []
     },
     {
@@ -670,6 +716,7 @@
       "regime": "weighted",
       "mainMuscle": "calves",
       "movementPattern": "raise",
+      "movement": "standing-calf-raise",
       "accessoryMuscles": []
     },
     {
@@ -680,6 +727,7 @@
       "regime": "weighted",
       "mainMuscle": "calves",
       "movementPattern": "raise",
+      "movement": "seated-calf-raise",
       "accessoryMuscles": []
     }
   ]

@@ -103,7 +103,7 @@
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
     nameKey, findByName,
-    SCHEMA_VERSION,
+    SCHEMA_VERSION, MOVEMENTS, MOVEMENT_PATTERNS, SEED_CLASSIFICATION,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -1375,6 +1375,62 @@
     T.S = null;
 
     T.D.exercises = keepEx; T.D.gyms = keepGyms;
+  }
+
+  // ── movement layer (E1 plumbing, 2026-07-29) ───────────────────────────────
+  g('movement layer');
+  {
+    // Vocabulary integrity — counts are NOT hardcoded (movements grow with
+    // curation, same de-hardcoding rule as the seed count): every entry must
+    // be bilingual and anchored to a real (muscle, pattern) category.
+    const mv = T.MOVEMENTS;
+    const slugs = Object.keys(mv);
+    t('MOVEMENTS map is generated and non-empty', slugs.length > 0);
+    t('every movement is bilingual and category-anchored', slugs.every(s =>
+      mv[s].pt && mv[s].en && T.MOVEMENT_PATTERNS[mv[s].muscle] && T.MOVEMENT_PATTERNS[mv[s].muscle][mv[s].pattern]));
+
+    // Every shipped exercise carries a movement the map knows (read from
+    // library.json so content growth can't break the check).
+    const lib = (await (await fetch('../library.json', { cache: 'no-store' })).json()).exercises;
+    t('every library.json exercise has a known movement', lib.every(e => e.movement && mv[e.movement]));
+    t('movement anchors match each exercise\'s own category', lib.every(e =>
+      mv[e.movement].muscle === e.mainMuscle && mv[e.movement].pattern === e.movementPattern));
+    t('the seeded install carries movements end-to-end', T.D.exercises.every(e => e.movement && mv[e.movement]));
+
+    // Backfill: an exercise that predates the movement layer (classified but
+    // movement-less) gets it from SEED_CLASSIFICATION's 4th tuple element —
+    // and the classification half still respects its early-return.
+    const bench = T.D.exercises.find(e => e.id === 'bench-press');
+    const keepMove = bench.movement;
+    delete bench.movement;
+    W.backfillExerciseClassification();
+    t('backfill restores movement from the seed tuple', bench.movement === keepMove && Array.isArray(T.SEED_CLASSIFICATION['bench-press']) && T.SEED_CLASSIFICATION['bench-press'][3] === keepMove);
+    t('backfill still leaves existing classification untouched', bench.mainMuscle === 'chest' && bench.movementPattern === 'press');
+
+    // normalizeExerciseDef: the bilingual/content layer now survives import,
+    // each field validated as untrusted input (this closes the long-tracked
+    // "shared plans drop name_en/aliases/equipment/cues" gap).
+    const rich = W.normalizeExerciseDef({ id: 'imp-x', name: 'Imp', type: 'hypertrophy', regime: 'weighted',
+      compound: true, mainMuscle: 'chest', movementPattern: 'press', movement: 'incline-press',
+      name_en: '  Incline thing  ', aliases: ['a', '', 3, 'b'], equipment: 'machine',
+      cues_pt: ['c1', 42], cues_en: ['e1'], errors_pt: ['x'], errors_en: [], stretchEmphasis: true });
+    t('import keeps a valid movement + bilingual layer', rich.movement === 'incline-press'
+      && rich.name_en === 'Incline thing' && eq(rich.aliases, ['a', 'b']) && rich.equipment === 'machine'
+      && eq(rich.cues_pt, ['c1']) && eq(rich.cues_en, ['e1']) && eq(rich.errors_pt, ['x'])
+      && !('errors_en' in rich) && rich.stretchEmphasis === true);
+    const mismatched = W.normalizeExerciseDef({ id: 'imp-y', name: 'Y', type: 'hypertrophy', regime: 'weighted',
+      mainMuscle: 'back', movementPattern: 'row', movement: 'incline-press' });
+    t('a movement whose anchor mismatches the classification is dropped', !('movement' in mismatched));
+    const junk = W.normalizeExerciseDef({ id: 'imp-z', name: 'Z', type: 'hypertrophy', regime: 'weighted',
+      mainMuscle: 'chest', movementPattern: 'press', movement: 'no-such-move', equipment: 'hoverboard',
+      aliases: Array.from({ length: 40 }, (_, i) => 'a' + i), stretchEmphasis: 'yes' });
+    t('unknown movement/equipment and oversized lists are sanitized', !('movement' in junk)
+      && !('equipment' in junk) && junk.aliases.length === 12 && !('stretchEmphasis' in junk));
+
+    // Detail view surfaces the movement label (PT-first).
+    W.openExerciseDetail('incline-press-machine');
+    t('detail view shows the movement pill', W.document.getElementById('modal-ov').innerHTML.includes('Supino inclinado'));
+    W.closeModal();
   }
 
   // ── live-session survival & tap-to-edit (2026-07-29 gym-floor feedback) ────

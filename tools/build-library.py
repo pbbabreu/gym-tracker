@@ -30,7 +30,10 @@ DEFAULT_VAULT = REPO.parent.parent / "Projects Vault" / "Gym Tracker"
 
 # Fields emitted into library.json, in this order. Optional ones are omitted
 # when empty, so adding a schema field never perturbs notes that don't use it.
-REQUIRED = ["id", "name", "type", "compound", "regime", "mainMuscle", "movementPattern"]
+# `movement` became REQUIRED with the movement layer (2026-07-29): every
+# promotion must assign one, which is exactly the "touch each note once"
+# discipline the owner chose -- see the vault's movement-first design note.
+REQUIRED = ["id", "name", "type", "compound", "regime", "mainMuscle", "movementPattern", "movement"]
 OPTIONAL = ["accessoryMuscles", "name_en", "aliases", "equipment",
             "cues_pt", "cues_en", "errors_pt", "errors_en", "stretchEmphasis", "rest"]
 # Vault-only bookkeeping -- deliberately never shipped to the app.
@@ -120,8 +123,53 @@ def load_vocabulary(html):
     return muscles, patterns
 
 
+# ── movement vocabulary, read from Exercise Library/Movements/ ──────────────
+# One tiny note per movement (same frontmatter discipline as exercises, same
+# ready-only shipping rule). A movement is anchored to exactly one
+# (mainMuscle, movementPattern) category; exercises referencing it must sit
+# in that same category -- the containment rule that keeps the resolution
+# ladder honest (a family spanning categories, like the dips, is two
+# movements sharing aliases instead).
+def load_movements(mov_dir, muscles, patterns):
+    movements, errors, seen = {}, [], {}
+    if not mov_dir.is_dir():
+        return movements, [f"movements folder not found: {mov_dir}"]
+    for path in sorted(mov_dir.glob("*.md")):
+        rel = "Movements/" + path.name
+        try:
+            fm = parse_frontmatter(path.read_text(encoding="utf-8"), rel)
+        except ValueError as e:
+            errors.append(str(e))
+            continue
+        status = fm.get("status")
+        if status not in VALID_STATUS:
+            errors.append(f"{rel}: status {status!r} not one of {sorted(VALID_STATUS)}")
+            continue
+        if status != "ready":
+            continue  # template / drafts never ship
+        slug = fm.get("id")
+        for f in ("id", "name", "name_en", "mainMuscle", "movementPattern"):
+            if not fm.get(f):
+                errors.append(f"{rel}: missing required field '{f}'")
+        if not slug or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", str(slug)):
+            errors.append(f"{rel}: id '{slug}' must be a lowercase slug")
+            continue
+        if slug in seen:
+            errors.append(f"{rel}: duplicate movement id '{slug}' (also in {seen[slug]})")
+            continue
+        seen[slug] = rel
+        muscle, pattern = fm.get("mainMuscle"), fm.get("movementPattern")
+        if muscle not in muscles or muscle == "undefined":
+            errors.append(f"{rel}: mainMuscle '{muscle}' not a real group")
+        elif pattern not in patterns.get(muscle, set()):
+            errors.append(f"{rel}: pattern '{pattern}' does not belong to '{muscle}' "
+                          f"(valid: {sorted(patterns.get(muscle, []))})")
+        movements[slug] = fm
+    return movements, errors
+
+
 # ── load + validate ─────────────────────────────────────────────────────────
-def load_notes(lib_dir, muscles, patterns):
+def load_notes(lib_dir, muscles, patterns, movements):
     notes, errors, seen = [], [], {}
     for path in sorted(lib_dir.glob("*.md")):
         rel = path.name
@@ -171,6 +219,19 @@ def load_notes(lib_dir, muscles, patterns):
             if acc not in muscles or acc == "undefined":
                 errors.append(f"{rel}: accessory '{acc}' not a real muscle group")
 
+        # The movement containment rule: the referenced movement must exist in
+        # the vocabulary and be anchored to this exercise's exact category.
+        # (Presence itself is enforced by the REQUIRED loop above.)
+        mv = fm.get("movement")
+        if mv:
+            if mv not in movements:
+                errors.append(f"{rel}: movement '{mv}' not in Movements/ vocabulary")
+            else:
+                anchor = (movements[mv].get("mainMuscle"), movements[mv].get("movementPattern"))
+                if anchor != (muscle, pattern):
+                    errors.append(f"{rel}: movement '{mv}' is anchored to {anchor} "
+                                  f"but this exercise is ({muscle}, {pattern})")
+
         notes.append(fm)
     return notes, errors
 
@@ -190,14 +251,42 @@ def build_library_json(notes):
 
 
 def build_seed_classification(notes):
-    """The SEED_CLASSIFICATION literal for index.html (backfill lookup table)."""
+    """The SEED_CLASSIFICATION literal for index.html (backfill lookup table).
+
+    Tuple shape: [mainMuscle, movementPattern, [accessories], movement] --
+    the 4th element (added with the movement layer) lets an already-live
+    install backfill `movement` onto its own seeded exercises offline, the
+    same way the first three fields were backfilled when classification
+    shipped.
+    """
     width = max(len(n["id"]) for n in notes) + 4
     lines = []
     for fm in notes:
         acc = ",".join(f"'{a}'" for a in fm.get("accessoryMuscles") or [])
         key = f"'{fm['id']}':".ljust(width)
-        lines.append(f"  {key}['{fm['mainMuscle']}', '{fm['movementPattern']}', [{acc}]],")
+        lines.append(f"  {key}['{fm['mainMuscle']}', '{fm['movementPattern']}', [{acc}], '{fm['movement']}'],")
     return "const SEED_CLASSIFICATION = {\n" + "\n".join(lines) + "\n};\n"
+
+
+def build_movements_js(movements, muscles):
+    """The MOVEMENTS literal for index.html (bilingual vocabulary map).
+
+    Same muscle -> pattern -> name ordering as the exercise artifacts, so
+    diffs stay stable and the file reads grouped. JS-escapes apostrophes;
+    everything else in these fields is plain text by schema.
+    """
+    j = lambda s: str(s).replace("\\", "\\\\").replace("'", "\\'")
+    order = {m: i for i, m in enumerate(muscles)}
+    ordered = sorted(movements.values(),
+                     key=lambda m: (order.get(m["mainMuscle"], 99), m["movementPattern"], m["name"]))
+    width = max(len(m["id"]) for m in ordered) + 4
+    lines = []
+    for fm in ordered:
+        aliases = ",".join(f"'{j(a)}'" for a in (fm.get("aliases") or []))
+        key = f"'{fm['id']}':".ljust(width)
+        lines.append(f"  {key}{{ pt:'{j(fm['name'])}', en:'{j(fm['name_en'])}', "
+                     f"muscle:'{fm['mainMuscle']}', pattern:'{fm['movementPattern']}', aliases:[{aliases}] }},")
+    return "const MOVEMENTS = {\n" + "\n".join(lines) + "\n};\n"
 
 
 def build_catalog_sql(notes):
@@ -229,7 +318,9 @@ def main():
 
     html = (REPO / "index.html").read_text(encoding="utf-8")
     muscles, patterns = load_vocabulary(html)
-    notes, errors = load_notes(lib_dir, muscles, patterns)
+    movements, mov_errors = load_movements(lib_dir / "Movements", muscles, patterns)
+    notes, errors = load_notes(lib_dir, muscles, patterns, movements)
+    errors = mov_errors + errors
 
     if errors:
         print(f"VALIDATION FAILED ({len(errors)} problem(s)):", file=sys.stderr)
@@ -264,21 +355,26 @@ def main():
                 path.write_text(content, encoding="utf-8")
         print(f"  {path.relative_to(REPO)}: {status}")
 
-    # SEED_CLASSIFICATION lives inside index.html; compare, and rewrite in place
-    # when regenerating (the block is delimited well enough to swap safely).
-    seed_block = build_seed_classification(notes)
-    m = re.search(r"const SEED_CLASSIFICATION = \{.*?\n\};\n", html, re.S)
-    if not m:
-        sys.exit("could not locate SEED_CLASSIFICATION in index.html")
-    if m.group(0) == seed_block:
-        print("  index.html SEED_CLASSIFICATION: unchanged")
-    else:
-        drift = True
-        if args.check:
-            print("  index.html SEED_CLASSIFICATION: WOULD CHANGE")
+    # Two generated blocks live INSIDE index.html (SEED_CLASSIFICATION and
+    # MOVEMENTS); both replacements are applied to one in-memory copy and
+    # written in a single pass, so a run that changes both can never write a
+    # half-updated file.
+    html_new = html
+    for label, pattern, block in (
+        ("SEED_CLASSIFICATION", r"const SEED_CLASSIFICATION = \{.*?\n\};\n", build_seed_classification(notes)),
+        ("MOVEMENTS",           r"const MOVEMENTS = \{.*?\n\};\n",           build_movements_js(movements, muscles)),
+    ):
+        m = re.search(pattern, html_new, re.S)
+        if not m:
+            sys.exit(f"could not locate {label} in index.html")
+        if m.group(0) == block:
+            print(f"  index.html {label}: unchanged")
         else:
-            (REPO / "index.html").write_text(html.replace(m.group(0), seed_block), encoding="utf-8")
-            print("  index.html SEED_CLASSIFICATION: written")
+            drift = True
+            print(f"  index.html {label}: " + ("WOULD CHANGE" if args.check else "written"))
+            html_new = html_new.replace(m.group(0), block)
+    if not args.check and html_new != html:
+        (REPO / "index.html").write_text(html_new, encoding="utf-8")
 
     if args.check and drift:
         sys.exit("\ngenerated output differs from what is committed -- run without --check")
