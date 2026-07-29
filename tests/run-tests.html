@@ -98,6 +98,8 @@
     get shares() { return _receivedShares; }, set shares(v) { _receivedShares = v; },
     get catalogRows() { return _catalogRows; }, set catalogRows(v) { _catalogRows = v; },
     get restTimer() { return _restTimer; }, set restTimer(v) { _restTimer = v; },
+    get liveRestoreDone() { return _liveRestoreDone; }, set liveRestoreDone(v) { _liveRestoreDone = v; },
+    get historyGuard() { return _historyGuard; }, set historyGuard(v) { _historyGuard = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
     nameKey, findByName,
@@ -762,9 +764,15 @@
     T.restTimer = null;
     t('no timer → no banner', W.restTimerHTML() === '');
 
-    // session lifecycle always clears a dangling countdown
+    // session lifecycle always clears a dangling countdown. cancelSession
+    // now confirm()s when the session holds typed data (2026-07-29 — the
+    // stash made cancel the last unrecoverable wipe) — stub it to "yes",
+    // since an unstubbed confirm in the harness auto-declines and the
+    // cancel would legitimately do nothing.
     T.restTimer = { endsAt: Date.now() + 9e5, total: 900, label: 'x', done: false };
+    const _cfrm = W.confirm; W.confirm = () => true;
     W.cancelSession();
+    W.confirm = _cfrm;
     t('cancelSession clears the timer', T.restTimer === null);
     T.restTimer = { endsAt: Date.now() + 9e5, total: 900, label: 'x', done: false };
     W.startFree();
@@ -1367,6 +1375,140 @@
     T.S = null;
 
     T.D.exercises = keepEx; T.D.gyms = keepGyms;
+  }
+
+  // ── live-session survival & tap-to-edit (2026-07-29 gym-floor feedback) ────
+  g('live-session survival & tap-to-edit');
+  {
+    // The stash mirrors S on every render…
+    W.startFree();
+    T.S.exercises = [{ exId: 'bench-press', exName: 'Bench', type: 'strength', regime: 'weighted',
+      sets: [{ intent: 'work', reps: 5, kg: 100 }] }];
+    W.render();
+    let stash = JSON.parse(W.localStorage.getItem('gym:live-session') || 'null');
+    t('render mirrors the live session into localStorage', !!stash && stash.S.exercises[0].sets[0].kg === 100);
+
+    // …and setVal covers the keystrokes render() deliberately skips.
+    W.setVal(0, 0, 'reps', '7');
+    stash = JSON.parse(W.localStorage.getItem('gym:live-session') || 'null');
+    t('keystrokes reach the stash without a render', stash.S.exercises[0].sets[0].reps === 7);
+
+    // Restore round-trip: killing the page loses S but not the stash.
+    const savedStash = W.localStorage.getItem('gym:live-session');
+    T.S = null; T.restTimer = null;                    // simulate the death directly (no render — a real death doesn't render either)
+    W.localStorage.setItem('gym:live-session', savedStash);
+    W.restoreLiveSession();
+    t('restore brings the session back onto the Treino tab', !!T.S && T.S.exercises[0].sets[0].reps === 7 && T.TAB === 'log');
+
+    // A still-running rest timer rides along; an expired one is dropped as stale noise.
+    const withTimer = JSON.parse(savedStash);
+    withTimer.restTimer = { endsAt: Date.now() + 60000, total: 180, label: 'x', done: false };
+    W.localStorage.setItem('gym:live-session', JSON.stringify(withTimer));
+    W.restoreLiveSession();
+    t('a running countdown survives the restore', T.restTimer && T.restTimer.total === 180);
+    W.skipRestTimer();
+    withTimer.restTimer = { endsAt: Date.now() - 5000, total: 180, label: 'x', done: false };
+    W.localStorage.setItem('gym:live-session', JSON.stringify(withTimer));
+    W.restoreLiveSession();
+    t('an expired countdown is dropped, not resurrected', T.restTimer === null);
+
+    // The boot-order latch: an early render() (e.g. the auth listener firing
+    // mid-loadData, S still null) must NOT clear the stash before the boot
+    // restore has read it — that was the one ordering that could still lose
+    // a workout on exactly the reopen path the stash exists for.
+    T.S = null; T.liveRestoreDone = false;
+    W.localStorage.setItem('gym:live-session', savedStash);
+    W.render();
+    t('latched: a pre-restore render cannot clear the stash', !!W.localStorage.getItem('gym:live-session'));
+    T.liveRestoreDone = true;
+    W.render();
+    t('unlatched: a post-restore render with no session clears it', !W.localStorage.getItem('gym:live-session'));
+
+    // Cancelar now guards a session holding real input — and clears the stash on accept.
+    W.localStorage.setItem('gym:live-session', savedStash);
+    W.restoreLiveSession();
+    const origConfirm = W.confirm;
+    W.confirm = () => false;
+    W.cancelSession();
+    t('cancel declined keeps the session and its stash', !!T.S && !!W.localStorage.getItem('gym:live-session'));
+    W.confirm = () => true;
+    W.cancelSession();
+    t('cancel accepted wipes S and the stash', T.S === null && !W.localStorage.getItem('gym:live-session'));
+    let confirmAsked = false;
+    W.confirm = () => { confirmAsked = true; return true; };
+    W.startFree();
+    W.cancelSession();
+    t('an untouched session cancels without any confirm', T.S === null && !confirmAsked);
+    W.confirm = origConfirm;
+
+    // Saving ends the session → the stash goes too (free save via 'keep').
+    W.startFree();
+    T.S.exercises = [{ exId: 'bench-press', exName: 'Bench', type: 'strength', regime: 'weighted',
+      sets: [{ intent: 'work', reps: 5, kg: 100 }] }];
+    W.render();
+    W.saveSession(); W.doSaveSession('keep');
+    t('saving the session clears the stash', T.S === null && !W.localStorage.getItem('gym:live-session'));
+    T.D.sessions = T.D.sessions.filter(s => !(s.planId === null && s.exercises.length === 1 && s.exercises[0].exId === 'bench-press'));
+
+    // Tap-to-edit: focusVal/blurVal are exercised directly — focus EVENTS
+    // don't fire in an unfocused window (this iframe), so el.focus() would
+    // test the harness, not the app. The wiring is asserted on the markup.
+    // TAB must be forced back to 'log': doSaveSession above landed on
+    // Histórico, and startFree() deliberately doesn't switch tabs (it's only
+    // reachable FROM Treino in real use) — without this the set inputs
+    // never render and the probe reads null.
+    W.startFree();
+    T.TAB = 'log';
+    T.S.exercises = [{ exId: 'bench-press', exName: 'Bench', type: 'strength', regime: 'weighted',
+      sets: [{ intent: 'work', reps: 8, kg: 40 }] }];
+    W.render();
+    const inp = W.document.getElementById('s-reps-0-0');
+    t('set inputs are wired to focusVal/blurVal', (inp.getAttribute('onfocus') || '').includes('focusVal')
+      && (inp.getAttribute('onblur') || '').includes('blurVal')
+      && W.buildExBlock(T.S.exercises[0], 0).includes('onfocus="focusVal(this)"'));
+    W.focusVal(inp);
+    t('tapping a filled field clears the display only', inp.value === '' && inp.dataset.prev === '8'
+      && T.S.exercises[0].sets[0].reps === 8);
+    W.blurVal(inp);
+    t('leaving without typing restores it untouched', inp.value === '8' && !inp.dataset.cleared
+      && T.S.exercises[0].sets[0].reps === 8);
+    W.focusVal(inp); inp.value = '12'; W.setVal(0, 0, 'reps', '12'); W.blurVal(inp);
+    t('typing replaces: fresh value sticks in display and state', inp.value === '12' && T.S.exercises[0].sets[0].reps === 12);
+    W.focusVal(inp); inp.value = ''; W.setVal(0, 0, 'reps', '');
+    W.blurVal(inp);
+    t('type-then-erase is a deliberate clear — no restore', inp.value === '' && T.S.exercises[0].sets[0].reps === '');
+    W.focusVal(inp);
+    t('focusing an empty field is a no-op', inp.value === '' && inp.dataset.cleared === undefined);
+    T.S = null; W.render();
+
+    // Back-button integration. Real history.back() NAVIGATION is deliberately
+    // not exercised here: this iframe shares the tab's joint session history,
+    // and popping entries from inside it can back-navigate the RUNNER page
+    // itself (observed mid-run before _historyGuard existed). The app
+    // disables the whole integration when embedded (window !== window.top) —
+    // that default is asserted first, then the guard is force-enabled to test
+    // the arming + popstate handler with non-navigating calls only
+    // (pushState/replaceState/synthetic events). The real back()-consumption
+    // and the close-then-reopen re-arm race were verified live, top-level,
+    // in the Browser pane (2026-07-29).
+    t('embedded app leaves the host history alone by default', T.historyGuard === false);
+    W.showModal('<div id="bt-probe0">x</div>');
+    t('…so an embedded showModal pushes no guard entry', !(W.history.state && W.history.state.modal));
+    W.removeModal();
+
+    T.historyGuard = true;
+    W.showModal('<div id="bt-probe">x</div>');
+    t('top-level: opening a modal arms the history guard', !!W.document.getElementById('bt-probe')
+      && !!(W.history.state && W.history.state.modal));
+    W.dispatchEvent(new W.PopStateEvent('popstate', { state: null })); // the hardware Back press, minus the navigation
+    t('a Back popstate closes the modal and stays in the app', !W.document.getElementById('bt-probe')
+      && W.location.pathname.endsWith('index.html'));
+    W.history.replaceState(null, '');                  // neutralize the armed entry without navigating
+    W.showModal('<div id="bt-probe2">x</div>');
+    W.history.replaceState(null, '');                  // entry "already consumed" → closeModal takes the pure-DOM path
+    W.closeModal();
+    t('UI close removes the modal synchronously', !W.document.getElementById('bt-probe2'));
+    T.historyGuard = false;                            // back to the embedded default for any later modal tests
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

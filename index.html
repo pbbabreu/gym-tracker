@@ -1021,6 +1021,14 @@ async function remotePull() {
 const RESUME_PULL_MIN_MS = 5 * 60 * 1000;
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState !== 'visible') return;
+  // Rest-timer catch-up, before any sync early-return below: browsers
+  // throttle (or fully suspend) intervals in hidden tabs, so a rest that
+  // expired while the screen was off/app was backgrounded may not have
+  // ticked yet — run one immediate tick so the banner flips and the expiry
+  // signal fires the moment the user comes back, not up to a throttle
+  // period later. (The signal itself stays best-effort: vibration is
+  // Blink-only and some browsers ignore it for pages that were hidden.)
+  if (_restTimer && !_restTimer.done) restTimerTick();
   if (!syncConfigured()) return;           // no driver ready (no Gist config / not logged in)
   if (_remoteSchemaAhead) return;          // frozen until a fresh reload anyway
   if (Date.now() - _lastPullOk < RESUME_PULL_MIN_MS) return;
@@ -1126,6 +1134,60 @@ async function persist() {
   remoteSave(); // fire-and-forget
 }
 
+// ── Live-session persistence ──────────────────────────────────────────────────
+//
+// The in-progress session (S) used to exist only in memory — real-device
+// feedback (2026-07-29): the browser's Back button, an accidental tab close,
+// or the OS reclaiming the tab silently discarded a whole workout. Now S is
+// mirrored into localStorage on every state change (render() is the
+// universal post-mutation hook; setVal() additionally covers keystrokes,
+// which deliberately don't render) and restored on the next app open. The
+// rest timer rides along so a still-running countdown survives the reload.
+//
+// The _liveRestoreDone latch exists for a boot-ordering hazard: the Supabase
+// auth listener (and anything else async) can call render() while loadData()
+// is still mid-startup — with S still null, an unlatched stash write would
+// CLEAR the stash before restoreLiveSession() ever read it, losing the
+// workout on exactly the reopen path this feature exists for. Nothing may
+// touch the stash until the boot restore has run.
+let _liveRestoreDone = false;
+
+function stashLiveSession() {
+  if (!_liveRestoreDone) return;
+  // Clearing uses the same LS.set(k,'') idiom as gym:currentGym — the reader
+  // treats a falsy value as "no stash".
+  if (S) LS.set('gym:live-session', JSON.stringify({ v: 1, S, restTimer: _restTimer, savedAt: Date.now() }));
+  else LS.set('gym:live-session', '');
+}
+
+// Called once from loadData(), before the first render. Restoring drops the
+// user straight back into the session screen (TAB='log') — for the "phone
+// killed the tab mid-workout" case that's exactly where they were. A stale
+// stash from days ago restores too, on purpose: it's unsaved data and only
+// the user can decide whether it's a workout worth keeping (Salvar) or
+// discarding (Cancelar, which now confirms) — silent expiry would be the
+// same data loss this feature exists to prevent.
+function restoreLiveSession() {
+  try {
+    const raw = LS.get('gym:live-session');
+    if (raw) {
+      const p = JSON.parse(raw);
+      if (p && p.S && Array.isArray(p.S.exercises)) {
+        S = p.S;
+        // Resume a countdown that's still genuinely running. An expired or
+        // already-"Bora!" timer is dropped: buzzing about a rest that ended
+        // while the app was closed is noise, not information.
+        if (p.restTimer && !p.restTimer.done && p.restTimer.endsAt > Date.now()) {
+          _restTimer = p.restTimer;
+          if (!_restTimerInterval) _restTimerInterval = setInterval(restTimerTick, 500);
+        }
+        TAB = 'log';
+      }
+    }
+  } catch (e) {} // corrupt stash: leave it in place for inspection, boot normally
+  _liveRestoreDone = true; // latch opens even when there was nothing to restore
+}
+
 // ── Load sequence ─────────────────────────────────────────────────────────────
 // 1. Load config
 // 2. Load local cache → render immediately (app is usable offline)
@@ -1163,6 +1225,10 @@ async function loadData() {
     // into today's weekday snapshot slot. See writeDailySnapshot().
     writeDailySnapshot();
   }
+  // Bring back any workout that was in progress when the page last went away
+  // (Back button, tab killed, app closed) — must run before the first render,
+  // which is also what opens the stash latch. See restoreLiveSession().
+  restoreLiveSession();
   render();
 
   // Step 2b — a genuinely fresh install (no personal exercises at all yet)
@@ -1794,6 +1860,11 @@ function bindFilterBar(containerId, onType, onMove, onMuscle, onPattern) {
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function render() {
+  // Mirror the live session BEFORE rebuilding the DOM — render() runs after
+  // every state mutation, which makes it the one choke point where the
+  // workout-in-progress can be persisted (see stashLiveSession, section 5).
+  // First so a rendering crash can never cost the stashed workout too.
+  stashLiveSession();
   document.getElementById('root').innerHTML = buildPage();
   // Re-attach listeners that can't use onclick attributes
   bindLibraryFilters();
@@ -2153,12 +2224,12 @@ function buildExBlock(ex, i) {
           background:${isWork?CG:'#555'};color:#fff;font-weight:700;font-size:11px;cursor:pointer;
           font-family:inherit;text-align:center;width:100%">${isWork?'W':'WU'}</button>
         <input id="s-reps-${i}-${j}" type="number" inputmode="decimal" placeholder="${s.phReps||'Reps'}" value="${rv}"
-          oninput="setVal(${i},${j},'reps',this.value)"
+          oninput="setVal(${i},${j},'reps',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
           style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
         ${isBW
           ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
           : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${isAs?'Assist.':'Kg'}" step="0.5" value="${kv}"
-               oninput="setVal(${i},${j},'kg',this.value)"
+               oninput="setVal(${i},${j},'kg',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
                style="background:${BG3};border:1px solid ${isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
         <button onclick="rmSet(${i},${j})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;text-align:center;width:100%">×</button>
       </div>
@@ -3298,8 +3369,34 @@ function delWeight(id) { D.tombstones.weights[id]=Date.now(); D.weights=D.weight
 // ║  Tapping outside the modal closes it.
 // ╚══════════════════════════════════════════════════════════════════════════════
 
+// The hardware/browser Back button closes an open modal instead of leaving
+// the page — real-device feedback (2026-07-29): the instinctive Back on an
+// open exercise modal navigated away and (pre-stash) took the live session
+// with it. Scheme: ONE history guard entry represents "a modal layer is
+// open" (modal→modal replacement swaps DOM under the same entry — Back
+// always means "close what's on top of the page", it doesn't retrace the
+// modal-to-modal path). removeModal() is the raw DOM removal; closeModal()
+// is user-intent close and ALSO consumes the guard entry via history.back()
+// so the stack can't accumulate stale entries.
+//
+// _modalPop marks a history.back() WE issued: when its popstate lands, the
+// modal is already gone from the DOM (removed synchronously — callers and
+// the test suite rely on closeModal() being immediate). If a NEW modal
+// opened in the gap (close-then-open flows do this synchronously), the
+// consumed guard entry is re-pushed for it, or its Back press would exit
+// the app instead of closing it.
+let _modalPop = false;
+
+// The whole integration only runs when the app IS the page. Embedded in an
+// iframe (the regression suite; a Claude-artifact sandbox), pushState/back
+// operate on the HOST tab's joint session history — the suite found this
+// the hard way when in-iframe back() calls navigated the runner page itself
+// away mid-run. An embedded app has no business steering its embedder's
+// Back button, and the modals degrade cleanly to plain DOM open/close.
+let _historyGuard = (window === window.top);
+
 function showModal(html) {
-  closeModal();
+  removeModal(); // replacement path: swap the DOM, keep the existing guard entry
   const ov  = document.createElement('div');
   ov.id     = 'modal-ov';
   ov.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:200;display:flex;align-items:flex-end`;
@@ -3309,8 +3406,32 @@ function showModal(html) {
   box.innerHTML = html;
   ov.appendChild(box);
   document.body.appendChild(ov);
+  if (_historyGuard && !(history.state && history.state.modal)) { try { history.pushState({ modal: true }, ''); } catch (e) {} }
 }
-function closeModal() { document.getElementById('modal-ov')?.remove(); }
+function removeModal() { document.getElementById('modal-ov')?.remove(); }
+function closeModal() {
+  removeModal();
+  if (_historyGuard && history.state && history.state.modal && !_modalPop) {
+    _modalPop = true;
+    try { history.back(); } catch (e) { _modalPop = false; }
+  }
+}
+window.addEventListener('popstate', () => {
+  if (_modalPop) {
+    // Our own back() landing. The DOM work already happened; just re-arm the
+    // guard if a newer modal opened while the pop was in flight.
+    _modalPop = false;
+    if (document.getElementById('modal-ov') && !(history.state && history.state.modal)) {
+      try { history.pushState({ modal: true }, ''); } catch (e) {}
+    }
+    return;
+  }
+  removeModal(); // genuine Back press with a modal open — close it, stay in the app
+});
+// A reload that happened while a modal was open leaves {modal:true} as the
+// live history entry with no modal in the DOM — the first Back press would
+// then eat itself popping it. Normalize at boot.
+if (_historyGuard && history.state && history.state.modal) { try { history.replaceState(null, ''); } catch (e) {} }
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -3740,7 +3861,16 @@ function startPlan(id) {
 }
 
 function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; render(); }
-function cancelSession() { S=null; _restTimer=null; render(); }
+function cancelSession() {
+  // Guard the wipe when the session holds real input — Cancelar discards S
+  // AND its live-session stash (render() clears the mirror once S is null),
+  // so a mis-tap here would be the one remaining way to lose a workout
+  // outright. An untouched session (no typing, no checks) still cancels
+  // with zero friction.
+  const hasData = S && S.exercises.some(ex => (ex.sets||[]).some(s => s.completed === true || s.repsEdited || s.kgEdited));
+  if (hasData && !confirm('Descartar este treino?\n\nAs séries preenchidas serão perdidas.')) return;
+  S=null; _restTimer=null; render();
+}
 
 // ── Saving a session vs. its plan ─────────────────────────────────────────────
 //
@@ -3998,7 +4128,42 @@ function setVal(i,j,f,v) {
   s[f] = Number.isNaN(n) ? '' : n;
   s[f==='reps' ? 'repsEdited' : 'kgEdited'] = true;
   const el = document.getElementById(`s-${f}-${i}-${j}`);
-  if (el) el.style.color = TX;
+  // A keystroke lifts the "cleared, nothing typed yet" marker — from here on
+  // blurVal() must NOT restore the pre-focus value, even if the user deletes
+  // everything again: typing-then-erasing is a deliberate clear (state
+  // already holds '' from this very function), not an abandoned tap.
+  if (el) { el.style.color = TX; delete el.dataset.cleared; }
+  // Keystrokes deliberately skip render() (see the comment above), so the
+  // universal render()-time mirror misses them — stash here too, or a
+  // tab death mid-set would lose exactly the numbers being typed.
+  stashLiveSession();
+}
+
+// Tap-to-edit on a prefilled set field. The row starts holding a machine-
+// written value (last time's numbers, a chip fill, or the first-log
+// estimate), and typing into it used to MIX with those digits — real-device
+// feedback (2026-07-29): every correction meant deleting the old value digit
+// by digit first. Now focusing a non-empty field clears it so typing starts
+// fresh, and leaving without typing puts back exactly what was there.
+//
+// The clear is display-only and provenance-blind, one uniform rule for
+// machine-filled and hand-typed values alike ("tap = start fresh, leave
+// without typing = nothing happened") — predictable mid-set beats a rule
+// that behaves differently per field history. State (s.reps/s.kg) and the
+// dim/confirmed color are untouched unless a keystroke actually fires
+// setVal(): a mere tap still never confirms a dim value as today's claim.
+// The pre-focus value is remembered on the element (dataset), not in state,
+// because it's pure display scaffolding — a full render rebuilds the input
+// from state anyway.
+function focusVal(el) {
+  if (el.value === '') return; // placeholder-only field: nothing to clear
+  el.dataset.prev = el.value;
+  el.dataset.cleared = '1';    // "no keystroke yet" — setVal() lifts it
+  el.value = '';
+}
+function blurVal(el) {
+  if (el.dataset.cleared === '1' && el.value === '') el.value = el.dataset.prev;
+  delete el.dataset.cleared; delete el.dataset.prev;
 }
 
 // Quick-fill from a chip tap — "last" repeats last session's actual values,
@@ -4116,11 +4281,17 @@ function restTimerTick() {
 
 const fmtRest = secs => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
 
-// Expiry signal — best-effort on every front, silent where unsupported:
-// vibration is Android-browser territory (iOS has no navigator.vibrate),
-// and the beep needs an AudioContext, which browsers only allow after a
-// user gesture — the ✓ tap that started the timer was one, so creating the
-// context lazily HERE (post-gesture in the same page session) works.
+// Expiry signal — best-effort on every front, silent where unsupported.
+// Vibration reality check (verified 2026-07-29): only Blink engines ship it
+// — Chrome/Edge/Samsung Internet on Android. Firefox REMOVED the Vibration
+// API outright in v129 (Aug 2024, all platforms — abuse by scam pages), so
+// on Firefox/Android `navigator.vibrate` is undefined and the ?. call is a
+// deliberate no-op; iOS never had it. For Firefox users the BEEP is the
+// only expiry channel (and it needs media volume up). The beep's
+// AudioContext is created lazily HERE because browsers only allow audio
+// after a user gesture — the ✓ tap that started the timer was one. A
+// pocket-proof alert (system notification via the SW) is a real future
+// feature, not a bug fix — see Backlog.
 let _audioCtx = null;
 function signalRestDone() {
   try { navigator.vibrate?.([200, 100, 200, 100, 400]); } catch(e) {}
