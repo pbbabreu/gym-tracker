@@ -352,13 +352,25 @@ let D = {
                       // Which gym is CURRENTLY selected is per-device UI state
                       // (_currentGymId + localStorage), deliberately NOT in D:
                       // "where am I training today" shouldn't sync across devices.
+  machines:     [],  // equipment instances (E2, owner requirement 2026-07-29 —
+                      // "I feel much stronger in different machines"):
+                      // { id, name, exId, gymIds:[], maker?, model?, location?,
+                      //   note?, updatedAt }. The SPECIFIC apparatus an exercise
+                      // is done on — "Remada baixa máquina" is the exercise,
+                      // "Technogym #3 (banco 7)" is the machine. Bound to one
+                      // exercise (exId); gymIds is a LIST so equipment named at
+                      // gym A is one tap to reuse at gym B. Session entries
+                      // record { instanceId, instanceName } (name = snapshot,
+                      // same pattern as gymName) and suggestions prefer
+                      // same-machine history — see getRecentWorkHistory().
+                      // Sixth synced collection, same merge/tombstone machinery.
   // One deletedAt-timestamp map per collection, keyed by id. Exists so a
   // deletion can survive being merged against a device that hasn't synced
   // it yet — see mergeCollection() in section 5 for how these are used and
   // why a plain union (no tombstones) let deletions get silently
   // resurrected. Small enough (id+timestamp per entry) that these are never
   // garbage-collected.
-  tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{} },
+  tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} },
   lastModified: 0,   // unix timestamp of the last local mutation — used to
                       // decide whether a fresh Gist push is needed, NOT for
                       // per-item conflict resolution (each item's own
@@ -871,6 +883,7 @@ function buildRemotePayload() {
     plans:    { schema:SCHEMA_VERSION, plans:D.plans,         tombstones:D.tombstones.plans,     lastModified:ts },
     weights:  { schema:SCHEMA_VERSION, weights:D.weights,     tombstones:D.tombstones.weights,   lastModified:ts },
     gyms:     { schema:SCHEMA_VERSION, gyms:D.gyms,           tombstones:D.tombstones.gyms,      lastModified:ts },
+    machines: { schema:SCHEMA_VERSION, machines:D.machines,   tombstones:D.tombstones.machines,  lastModified:ts },
   };
 }
 
@@ -880,6 +893,7 @@ const GIST_FILENAMES = {
   plans:    'gym-tracker-plans.json',
   weights:  'gym-tracker-weights.json',
   gyms:     'gym-tracker-gyms.json',
+  machines: 'gym-tracker-machines.json',
 };
 
 function payloadToGistFiles(payload) {
@@ -898,7 +912,7 @@ function payloadToGistFiles(payload) {
 // collection) are ignored rather than crashed on — the same tolerance the
 // Gist side gets for free by only parsing known filenames.
 function sbRowsToRemote(rows) {
-  const remote = { sessions:null, library:null, plans:null, weights:null, gyms:null };
+  const remote = { sessions:null, library:null, plans:null, weights:null, gyms:null, machines:null };
   (rows||[]).forEach(r => { if (r && r.collection in remote) remote[r.collection] = r.content; });
   return remote;
 }
@@ -918,10 +932,23 @@ async function sbWriteAll(payload) {
     // user_id must be set explicitly — the RLS insert/update policies
     // require user_id = auth.uid(), they don't fill it in.
     const uid = sbSession.user.id;
-    const rows = Object.entries(payload).map(([collection, content]) => ({ user_id: uid, collection, content }));
+    const rows = Object.entries(payload)
+      .filter(([collection]) => collection !== 'machines')
+      .map(([collection, content]) => ({ user_id: uid, collection, content }));
     // upsert resolves conflicts on the table's composite primary key
-    // (user_id, collection) — five rows overwritten in place per push.
+    // (user_id, collection) — the original five rows overwritten in place.
     const { error } = await sb.from('user_blobs').upsert(rows);
+    // The machines row goes in its OWN upsert, failure-tolerated: the table's
+    // CHECK constraint only admits the original five collection names until
+    // supabase/04-machines.sql is applied, and a rejected sixth row inside
+    // the combined upsert would fail the WHOLE push — turning an un-run
+    // migration into a sync outage for everything. Machines stay local-only
+    // (and re-attempt on every push) until the migration lands; the five
+    // core collections must never be hostage to that.
+    if (payload.machines) {
+      try { await sb.from('user_blobs').upsert([{ user_id: uid, collection: 'machines', content: payload.machines }]); }
+      catch(e) {}
+    }
     return !error;
   } catch(e) { return false; }
 }
@@ -1160,7 +1187,7 @@ function mergeCollection(local, remote, localTombstones, remoteTombstones) {
 // merge is scarier than skipping a sync, and the next fresh load gets the
 // current app anyway.
 function mergeRemote(remote) {
-  const remoteSchema = Math.max(...[remote.sessions, remote.library, remote.plans, remote.weights, remote.gyms].map(f => f?.schema || 1));
+  const remoteSchema = Math.max(...[remote.sessions, remote.library, remote.plans, remote.weights, remote.gyms, remote.machines].map(f => f?.schema || 1));
   if (remoteSchema > SCHEMA_VERSION) { _remoteSchemaAhead = true; return false; }
 
   if (remote.sessions?.sessions) {
@@ -1199,6 +1226,11 @@ function mergeRemote(remote) {
     const { items, tombstones } = mergeCollection(D.gyms, remote.gyms.gyms, D.tombstones.gyms, remote.gyms.tombstones);
     D.gyms = items;
     D.tombstones.gyms = tombstones;
+  }
+  if (remote.machines?.machines) {
+    const { items, tombstones } = mergeCollection(D.machines, remote.machines.machines, D.tombstones.machines, remote.machines.tombstones);
+    D.machines = items;
+    D.tombstones.machines = tombstones;
   }
   return true;
 }
@@ -1286,10 +1318,13 @@ async function loadData() {
     D.sessions     = local.sessions     || [];
     D.weights      = local.weights      || [];
     D.gyms         = local.gyms         || [];
-    D.tombstones   = local.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{} };
-    // A cache written before gyms existed has a tombstones object with no
-    // gyms key — normalize so delGym()/mergeCollection() never hit undefined.
+    D.machines     = local.machines     || [];
+    D.tombstones   = local.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} };
+    // A cache written before gyms/machines existed has a tombstones object
+    // missing those keys — normalize so the delete paths and
+    // mergeCollection() never hit undefined.
     if (!D.tombstones.gyms) D.tombstones.gyms = {};
+    if (!D.tombstones.machines) D.tombstones.machines = {};
     D.lastModified = local.lastModified || 0;
     // Backfills any exercise saved before muscle-group classification
     // existed — see backfillExerciseClassification() (section 2). A no-op
@@ -1420,24 +1455,93 @@ function profileFor(type, regime) {
 // Sessions where this exercise had no counted work sets are skipped
 // entirely rather than counted as a zero — there's simply no data from that
 // attempt to reason about.
-function getRecentWorkHistory(exId, type, regime, n=3) {
+// The most recent (type, regime) this exercise was actually trained with —
+// strength/hypertrophy is a per-session tracking mode, not an exercise
+// category (owner doctrine, 2026-07-29), so the default for the NEXT
+// session is whatever the user chose LAST time, not a stored label.
+// ex.type/ex.regime remain only as the seed default for the first-ever log.
+function lastModesFor(exId) {
+  const sorted = sessionsNewestFirst();
+  for (const sess of sorted) {
+    const e = (sess.exercises||[]).find(x => x.exId === exId);
+    if (e) return { type: e.type || 'hypertrophy', regime: e.regime || 'weighted' };
+  }
+  return null;
+}
+
+// Sessions in true newest-first order. session.date is a DAY — two sessions
+// logged the same day tie on it, and a stable sort would then keep whatever
+// relative order the array happens to hold (insertion order locally, MERGE
+// ORDER after a sync — not chronology either way), silently making the
+// OLDER same-day session read as "most recent". updatedAt (stamped at save,
+// bumped on edit) breaks the tie with actual save-time chronology. Every
+// "what happened last time" reader must go through this.
+const sessionsNewestFirst = () =>
+  [...D.sessions].sort((a,b) => b.date.localeCompare(a.date) || (b.updatedAt||0) - (a.updatedAt||0));
+
+// ── Machine (equipment instance) helpers ─────────────────────────────────────
+
+// Machines known for an exercise, current gym's first — the picker's order.
+function machinesFor(exId, gymId) {
+  const list = D.machines.filter(m => m.exId === exId);
+  if (!gymId) return list;
+  return [...list.filter(m => (m.gymIds||[]).includes(gymId)),
+          ...list.filter(m => !(m.gymIds||[]).includes(gymId))];
+}
+
+// The machine this exercise was last done on — the zero-tap default (owner
+// decision 2026-07-29: keeping the pre-filled machine costs nothing, so
+// granular data accumulates by default). Prefers the most recent session AT
+// the same gym; falls back to the most recent anywhere (a machine used at
+// another gym is still a better guess than none). Only returns machines
+// that still exist — a tombstoned one must not resurrect through defaults.
+function lastInstanceFor(exId, gymId) {
+  let anywhere = null;
+  const sorted = sessionsNewestFirst();
+  for (const sess of sorted) {
+    const e = (sess.exercises||[]).find(x => x.exId === exId && x.instanceId);
+    if (!e) continue;
+    const m = D.machines.find(mm => mm.id === e.instanceId);
+    if (!m) continue;
+    if (gymId && sess.gymId === gymId) return m;
+    if (!anywhere) anywhere = m;
+    if (!gymId) return anywhere;
+  }
+  return anywhere;
+}
+
+function getRecentWorkHistory(exId, type, regime, n=3, instanceId=null) {
   const key = memKey(exId, type, regime);
-  const out = [];
-  [...D.sessions]
-    .sort((a,b) => b.date.localeCompare(a.date))
-    .some(sess => {
-      // A session can log the same exercise+type+regime combo more than
-      // once (e.g. squat→curl→squat→curl as a superset) — combine every
-      // matching entry's counted work sets for this session, not just the
-      // first one found, so a repeated exercise's full contribution counts
-      // toward suggestions/graduation instead of silently losing everything
-      // past the first occurrence.
-      const matches = (sess.exercises||[]).filter(e => memKey(e.exId, e.type, e.regime||'weighted') === key);
-      const ws = matches.flatMap(ex => (ex.sets||[]).filter(s => isCountedWork(s) && (hasReps(s)||hasKg(s))));
-      if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
-      return out.length >= n; // stop early once we have enough
-    });
-  return out;
+  // The bottom rung of the resolution ladder (owner requirement 2026-07-29:
+  // "I feel much stronger in different machines, even if the movement is in
+  // theory the same"): when the current session block names a MACHINE,
+  // prefer history logged on that same machine — its calibration is the
+  // only one those numbers are true for. Falls back to all-machine history
+  // when the machine has none yet (first time on it → exercise-level
+  // numbers are still the best available estimate, same as today).
+  const collect = (wantInstance) => {
+    const out = [];
+    sessionsNewestFirst()
+      .some(sess => {
+        // A session can log the same exercise+type+regime combo more than
+        // once (e.g. squat→curl→squat→curl as a superset) — combine every
+        // matching entry's counted work sets for this session, not just the
+        // first one found, so a repeated exercise's full contribution counts
+        // toward suggestions/graduation instead of silently losing everything
+        // past the first occurrence.
+        const matches = (sess.exercises||[]).filter(e => memKey(e.exId, e.type, e.regime||'weighted') === key
+          && (!wantInstance || e.instanceId === wantInstance));
+        const ws = matches.flatMap(ex => (ex.sets||[]).filter(s => isCountedWork(s) && (hasReps(s)||hasKg(s))));
+        if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
+        return out.length >= n; // stop early once we have enough
+      });
+    return out;
+  };
+  if (instanceId) {
+    const same = collect(instanceId);
+    if (same.length) return same;
+  }
+  return collect(null);
 }
 
 // Default weight increment on graduation. Flipped for assisted regimes:
@@ -1451,8 +1555,8 @@ function bumpWeight(kg, isAssisted) {
 
 // The progression algorithm. See the section banner above for why
 // "graduated" requires the full target work-set count, not just one set.
-function computeSuggestion(exId, type, regime, profile) {
-  const history = getRecentWorkHistory(exId, type, regime, 3);
+function computeSuggestion(exId, type, regime, profile, instanceId=null) {
+  const history = getRecentWorkHistory(exId, type, regime, 3, instanceId);
   if (!history.length) return null;
 
   const isAsst = regime === 'assisted';
@@ -1542,7 +1646,7 @@ function buildSetsFromMemory(ex) {
   const regime  = ex.regime || 'weighted';
   const isComp  = ex.compound !== false;
   const profile = profileFor(ex.type, regime);
-  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile);
+  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile, ex.instanceId || null);
   ex._sug       = sug; // cached for buildExBlock()'s stall banner — see its comment
   const sets    = [];
 
@@ -2123,6 +2227,15 @@ function delGym(id) {
       ex.updatedAt = Date.now();
     }
   });
+  // Same dead-tag strip for machines (their gymIds lists are the same kind
+  // of reference). A machine left with no gyms stays valid — it just lists
+  // under "others" in the picker until it's used somewhere again.
+  D.machines.forEach(m => {
+    if ((m.gymIds||[]).includes(id)) {
+      m.gymIds = m.gymIds.filter(g => g !== id);
+      m.updatedAt = Date.now();
+    }
+  });
   if (_currentGymId === id) { _currentGymId = null; LS.set('gym:currentGym', ''); }
   persist();
   openGymManager();
@@ -2354,6 +2467,15 @@ function buildExBlock(ex, i) {
             <button onclick="setExRegime(${i},'assisted')"   style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isAs?CA:BG3};color:${isAs?TX:DM}">Assist.</button>
             <button onclick="setExRegime(${i},'bodyweight')" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
           </div>
+          <!-- Machine chip — which SPECIFIC apparatus this is being done on.
+               Numbers are machine-calibrated (owner: "much stronger in
+               different machines"), so the chip is always visible: filled =
+               teal with the machine's name (+ its settings note beside it,
+               readable mid-set), empty = a quiet invitation to identify. -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
+            <button onclick="openMachinePicker(${i})" title="Máquina/equipamento específico" style="padding:4px 9px;border-radius:99px;border:1px solid ${ex.instanceId?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${ex.instanceId?'#0a2e2e':BG3};color:${ex.instanceId?'#4dd0c4':DM};max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${ex.instanceName?esc(ex.instanceName):'máquina'}</button>
+            ${(() => { const mn = ex.instanceId && D.machines.find(m=>m.id===ex.instanceId)?.note; return mn ? `<span style="font-size:11px;color:${DM}">${esc(mn)}</span>` : ''; })()}
+          </div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
           <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px 6px;line-height:1;margin-top:-2px">×</button>
@@ -2421,7 +2543,7 @@ function buildHistory() {
         }).join('');
         return `<div style="margin-bottom:14px">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
-            <span style="font-weight:600">${esc(ex.exName)}</span>${typePill(ex.type)}${ex.regime?regimePill(ex.regime):''}
+            <span style="font-weight:600">${esc(ex.exName)}</span>${typePill(ex.type)}${ex.regime?regimePill(ex.regime):''}${ex.instanceName?`<span style="font-size:11px;color:${DM}">🔧 ${esc(ex.instanceName)}</span>`:''}
           </div>${lines}
         </div>`;
       }).join('');
@@ -2577,7 +2699,6 @@ function libExRow(ex) {
     <div onclick="openExerciseDetail('${ex.id}')" title="Ver detalhes" style="flex:1;min-width:0;cursor:pointer">
       <div style="font-weight:600;font-size:14px;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.name)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap">
-        ${ex.type?typePill(ex.type):''}
         ${ex.regime?regimePill(ex.regime):''}
         ${compPill(ex.compound!=null?ex.compound:null)}
         ${musclePill(ex.mainMuscle, ex.movementPattern)}
@@ -2665,7 +2786,7 @@ function openExerciseDetail(exId) {
     ${ex.name_en && nameKey(ex.name_en) !== nameKey(ex.name)
       ? `<div style="font-size:12px;color:${DM};margin-bottom:8px">${esc(ex.name_en)}</div>` : '<div style="height:6px"></div>'}
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
-      ${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${musclePill(ex.mainMuscle,ex.movementPattern)}
+      ${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${musclePill(ex.mainMuscle,ex.movementPattern)}
       ${ex.movement ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${TX}">${esc(MOVEMENTS[ex.movement]?.pt || ex.movement)}</span>` : ''}
       ${ex.equipment ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${DM}">${esc(EQUIPMENT_LABELS[ex.equipment] || ex.equipment)}</span>` : ''}
     </div>
@@ -2679,6 +2800,9 @@ function openExerciseDetail(exId) {
     ${gymNames.length ? `
       <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Disponível em</div>
       <div style="font-size:12px">${gymNames.map(esc).join(' · ')}</div>` : ''}
+    ${(() => { const ms = D.machines.filter(m => m.exId === ex.id); return ms.length ? `
+      <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Máquinas conhecidas</div>
+      ${ms.map(m => `<div style="font-size:12px;margin-bottom:4px">🔧 ${esc(m.name)}${m.note ? ` <span style="color:#4dd0c4">— ${esc(m.note)}</span>` : ''}${[m.maker,m.model,m.location].filter(Boolean).length ? ` <span style="color:${DM}">(${[m.maker,m.model,m.location].filter(Boolean).map(esc).join(' · ')})</span>` : ''}</div>`).join('')}` : ''; })()}
     ${!cues.length && !errs.length ? `<div style="margin-top:14px;font-size:12px;color:${DM};line-height:1.5">Sem dicas cadastradas para este exercício ainda.</div>` : ''}
 
     <div style="display:flex;gap:8px;margin-top:18px">
@@ -2732,7 +2856,7 @@ function openProgress(exId) {
     </select>` : '';
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">Progresso — ${esc(ex.name)}</div>
-    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap;align-items:center">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}${regimeSelect}</div>
+    <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap;align-items:center">${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}${regimeSelect}</div>
     <div id="prog-body">${progressBodyHTML(exId, prog.regime)}</div>
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
 }
@@ -2798,7 +2922,7 @@ function renderCatalogList() {
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:.5px solid ${BD}">
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;font-size:14px;color:${TX};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(d.name)}</div>
-        <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${d.type?typePill(d.type):''}${d.regime?regimePill(d.regime):''}${musclePill(d.mainMuscle,d.movementPattern)}</div>
+        <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${d.regime?regimePill(d.regime):''}${musclePill(d.mainMuscle,d.movementPattern)}</div>
       </div>
       ${Bs(CG,TX,'+ Adicionar',`addCatalogExercise('${esc(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
     </div>`).join('');
@@ -3007,7 +3131,7 @@ function buildPlans() {
             return `<div style="padding:6px 0;border-bottom:.5px solid ${BD};font-size:14px;display:flex;align-items:center;gap:6px">
               <span style="color:${DM};min-width:20px">${idx+1}.</span>
               <span style="flex:1">${esc(ex?ex.name:'(removido)')}</span>
-              ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
+              ${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
             </div>`;
           }).join('');
           return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:10px;overflow:hidden">
@@ -3086,7 +3210,7 @@ function peRefreshList() {
   c.innerHTML = filtered.map(ex => `
     <button onclick="addExToPlan('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
       <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(ex.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">+</span>
     </button>`).join('');
   c.scrollTop = 0;
@@ -3121,7 +3245,7 @@ function refreshPlanExList() {
         </div>
         <span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>
         <span style="flex:1;font-size:14px">${esc(ex?ex.name:'(removido)')}</span>
-        ${ex&&ex.type?typePill(ex.type):''}${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
+        ${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}
         <button onclick="togglePlanRestEdit('${exId}')" title="Descanso neste plano" style="background:none;border:none;color:${hasRest||_planRestEdit===exId?'#6fcf97':DM};font-size:14px;cursor:pointer;padding:4px">⏱</button>
         <button onclick="rmPlanEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px">×</button>
       </div>
@@ -3549,7 +3673,8 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
     <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome</label>
     <input id="ex-name" type="text" value="${esc(nameVal)}" placeholder="Ex: Agachamento"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:15px;padding:11px 12px;width:100%;outline:none;margin-bottom:14px;box-sizing:border-box">
-    <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Tipo</label>
+    <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Modo padrão</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Só o ponto de partida do primeiro treino — cada sessão escolhe o próprio modo, e o app passa a sugerir o do último treino.</div>
     <div style="display:flex;gap:6px;margin-bottom:14px">
       <button id="ex-s" onclick="exF('type','strength')"    style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newType==='strength'?'#A32D2D':BG3};color:${_newType==='strength'?TX:DM}">Força</button>
       <button id="ex-h" onclick="exF('type','hypertrophy')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newType==='hypertrophy'?CB:BG3};color:${_newType==='hypertrophy'?TX:DM}">Hipert.</button>
@@ -3849,7 +3974,7 @@ function aExRow(ex) {
   return `
     <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px${unavail?';opacity:.55':''}">
       <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.type?typePill(ex.type):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">→</span>
     </button>`;
 }
@@ -3978,7 +4103,10 @@ function setNewType(t) {
 // Type + regime picker before adding to session
 function pickEx(id) {
   const ex = D.exercises.find(e=>e.id===id); if(!ex)return;
-  _pickType=ex.type||'hypertrophy'; _pickRegime=ex.regime||'weighted';
+  // Default to how this exercise was trained LAST time (mode = per-session
+  // choice, not a category); the library values only seed the first-ever log.
+  const lm = lastModesFor(id);
+  _pickType=(lm?lm.type:ex.type)||'hypertrophy'; _pickRegime=(lm?lm.regime:ex.regime)||'weighted';
   const isS=_pickType==='strength', isW=_pickRegime==='weighted', isAs=_pickRegime==='assisted', isBW=_pickRegime==='bodyweight';
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(ex.name)}</div>
@@ -4018,6 +4146,11 @@ function addPickedEx(exId) {
   // added mid-session — if the plan prescribes timings for it, they apply
   // regardless of when it joined the session.
   const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, rest: seedRestFor(exId, S.planId), sets:[] };
+  // Auto-attach the machine used last time (at this gym, when known) BEFORE
+  // building the set rows — the suggestion math prefers same-machine
+  // history, so the attachment has to exist when it runs.
+  const lim = lastInstanceFor(exId, S.gymId);
+  if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
   o.sets = buildSetsFromMemory(o);
   S.exercises.push(o); closeModal(); render();
 }
@@ -4035,6 +4168,8 @@ function createAndAdd() {
     if (S) {
       const o = { exId: existing.id, exName: existing.name, type: _newType, compound: existing.compound,
                   regime: existing.regime || 'weighted', rest: seedRestFor(existing.id, S.planId), sets: [] };
+      const lim = lastInstanceFor(existing.id, S.gymId);
+      if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
       o.sets = buildSetsFromMemory(o);
       S.exercises.push(o);
     }
@@ -4084,16 +4219,24 @@ function createAndAdd() {
 function startPlan(id) {
   const p = D.plans.find(x=>x.id===id); if(!p)return;
   const gm = currentGym(); // gymName is a snapshot, same pattern as planName — history survives a gym deletion
-  _restTimer = null;
+  _restTimer = null; _machineNudgeDone = false;
   S = {
     planId: p.id, planName: p.name, date: today(),
     gymId: gm?.id || null, gymName: gm?.name || null,
     exercises: (p.exercises||[]).map(exId => {
       const ex = D.exercises.find(e=>e.id===exId);
+      // Mode defaults come from the exercise's LAST session, not its library
+      // label — type/regime are per-session tracking choices (owner doctrine
+      // 2026-07-29); the library values only cover the first-ever log.
+      const lm = lastModesFor(exId);
       // '(removido)' — same label the Plans tab itself shows for a plan
       // entry whose exercise was deleted from the library, not a bare '?'.
-      const o  = { exId, exName:ex?ex.name:'(removido)', type:ex?.type||'hypertrophy', compound:ex?.compound, regime:ex?.regime||'weighted',
+      const o  = { exId, exName:ex?ex.name:'(removido)', type:(lm?lm.type:ex?.type)||'hypertrophy', compound:ex?.compound, regime:(lm?lm.regime:ex?.regime)||'weighted',
                    rest: seedRestFor(exId, p.id), sets:[] };
+      // Same last-used-machine default the picker path applies — before
+      // buildSetsFromMemory so same-machine suggestions see it.
+      const lim = lastInstanceFor(exId, gm?.id || null);
+      if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
       o.sets   = buildSetsFromMemory(o);
       return o;
     })
@@ -4101,7 +4244,7 @@ function startPlan(id) {
   render();
 }
 
-function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; render(); }
+function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; _machineNudgeDone=false; render(); }
 function cancelSession() {
   // Guard the wipe when the session holds real input — Cancelar discards S
   // AND its live-session stash (render() clears the mirror once S is null),
@@ -4110,7 +4253,7 @@ function cancelSession() {
   // with zero friction.
   const hasData = S && S.exercises.some(ex => (ex.sets||[]).some(s => s.completed === true || s.repsEdited || s.kgEdited));
   if (hasData && !confirm('Descartar este treino?\n\nAs séries preenchidas serão perdidas.')) return;
-  S=null; _restTimer=null; render();
+  S=null; _restTimer=null; _machineNudgeDone=false; render();
 }
 
 // ── Saving a session vs. its plan ─────────────────────────────────────────────
@@ -4161,6 +4304,148 @@ function collectRestsFrom(exList) {
 }
 const collectSessionRests = () => collectRestsFrom(S.exercises);
 
+// ── Machine picker & save-time nudge (E2) ────────────────────────────────────
+//
+// The 🔧 chip on every session block opens this picker: pick a known machine
+// for the exercise (current gym's listed first), create a new one, or clear
+// the association. Selecting a machine while training AT a gym auto-tags it
+// as existing there — the owner's "equipment added at gym A usable at gym B
+// should be simple", done with zero extra ceremony.
+function openMachinePicker(i) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  const list = machinesFor(ex.exId, S.gymId);
+  const gymLabel = m => (m.gymIds||[]).map(id => D.gyms.find(g=>g.id===id)?.name).filter(Boolean).join(' · ');
+  const detail = m => [m.maker, m.model, m.location].filter(Boolean).join(' · ');
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:2px">Máquina</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">${esc(ex.exName)} — os números de uma máquina não valem para outra; identificar deixa as sugestões precisas.</div>
+    ${list.length ? list.map(m => `
+      <button onclick="selectMachine(${i},'${m.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${ex.instanceId===m.id?'#0a2e2e':BG3};border:1px solid ${ex.instanceId===m.id?'#14484a':BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;text-align:left">
+        <span style="flex:1;min-width:0">
+          <span style="font-weight:600;font-size:13px;display:block">${esc(m.name)}</span>
+          ${detail(m) ? `<span style="font-size:11px;color:${DM};display:block">${esc(detail(m))}</span>` : ''}
+          ${m.note ? `<span style="font-size:11px;color:#4dd0c4;display:block">${esc(m.note)}</span>` : ''}
+          ${gymLabel(m) ? `<span style="font-size:10px;color:${DM};display:block">${esc(gymLabel(m))}</span>` : ''}
+        </span>
+        ${ex.instanceId===m.id ? `<span style="color:#4dd0c4;font-weight:700">✓</span>` : ''}
+      </button>`).join('')
+    : `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma máquina cadastrada para este exercício ainda.</div>`}
+    ${ex.instanceId ? B(BG3,DM,'Sem máquina neste treino',`clearMachine(${i})`) : ''}
+    <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:12px 0 6px">Nova máquina</div>
+    <input id="mc-name" type="text" placeholder="Nome (ex.: Remada Technogym #3)"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    <input id="mc-note" type="text" placeholder="Ajustes (ex.: banco 7, pegada aberta) — opcional"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    <button id="mc-more-toggle" style="background:none;border:none;color:${DM};font-size:12px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">+ marca, modelo, localização</button>
+    <div id="mc-more" style="display:none">
+      ${[['mc-maker','Marca (ex.: Technogym)'],['mc-model','Modelo'],['mc-location','Localização (ex.: 2º andar, fundo)']].map(([id,ph]) => `
+      <input id="${id}" type="text" placeholder="${ph}"
+        style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">`).join('')}
+    </div>
+    ${B(CG,TX,'Criar e usar neste treino',`createMachine(${i})`)}
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0')}`);
+  document.getElementById('mc-more-toggle')?.addEventListener('click', function() {
+    const d = document.getElementById('mc-more');
+    const open = d.style.display !== 'none';
+    d.style.display = open ? 'none' : 'block';
+    this.textContent = (open ? '+' : '−') + ' marca, modelo, localização';
+  });
+}
+
+// Recompute this block's suggestion context after its machine changed.
+// UNTOUCHED blocks get rebuilt set rows (fresh same-machine chips/dims);
+// a block already holding typed or checked data keeps its rows — mid-set
+// numbers are sacred — and only the cached _sug (stall banner, estimate)
+// follows the new machine.
+function remachineEx(i) {
+  const ex = S.exercises[i];
+  const touched = (ex.sets||[]).some(s => s.completed === true || s.repsEdited || s.kgEdited);
+  if (!touched) { ex.sets = []; ex.sets = buildSetsFromMemory(ex); }
+  else {
+    const profile = profileFor(ex.type, ex.regime||'weighted');
+    ex._sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, ex.instanceId || null);
+  }
+}
+
+function selectMachine(i, mid) {
+  const ex = S?.exercises[i]; const m = D.machines.find(x => x.id === mid);
+  if (!ex || !m) return;
+  if (S.gymId && !(m.gymIds||[]).includes(S.gymId)) {
+    m.gymIds = [...(m.gymIds||[]), S.gymId]; m.updatedAt = Date.now(); persist();
+  }
+  ex.instanceId = m.id; ex.instanceName = m.name;
+  remachineEx(i);
+  closeModal(); render();
+}
+
+function clearMachine(i) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  delete ex.instanceId; delete ex.instanceName;
+  remachineEx(i);
+  closeModal(); render();
+}
+
+function createMachine(i) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  const name = (document.getElementById('mc-name')?.value||'').trim(); if (!name) return;
+  const val = id => (document.getElementById(id)?.value||'').trim();
+  const note = val('mc-note'), maker = val('mc-maker'), model = val('mc-model'), location = val('mc-location');
+  const m = { id: uid(), name, exId: ex.exId, gymIds: S.gymId ? [S.gymId] : [],
+    ...(note ? { note } : {}), ...(maker ? { maker } : {}), ...(model ? { model } : {}), ...(location ? { location } : {}),
+    updatedAt: Date.now() };
+  D.machines.push(m); persist();
+  ex.instanceId = m.id; ex.instanceName = m.name;
+  remachineEx(i);
+  closeModal(); render();
+}
+
+// Save-time nudge (owner spec 2026-07-29: "prompt the user to identify the
+// machine when he goes to finish logging — but don't block"). Fires at most
+// once per save attempt, only for a session's FIRST save (re-edits of
+// history stay silent, per the same convention every other save prompt
+// follows), and only for exercises with real counted work and no machine.
+// Leaving a field blank IS the skip — one tap continues to the normal save.
+let _machineNudgeDone = false;
+
+function machineNudgeTargets() {
+  if (!S) return [];
+  return S.exercises
+    .map((ex, i) => ({ ex, i }))
+    .filter(({ ex }) => !ex.instanceId
+      && D.exercises.some(e => e.id === ex.exId)
+      && (ex.sets||[]).some(s => isCountedWork(s) && (hasReps(s)||hasKg(s))));
+}
+
+function openMachineNudge() {
+  const targets = machineNudgeTargets();
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Em qual máquina?</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:14px">Identificar a máquina deixa as sugestões futuras precisas — os números de uma não valem para outra. Deixe em branco para pular.</div>
+    ${targets.map(({ ex, i }) => `
+      <label style="font-size:12px;color:${DM};margin-bottom:4px;display:block">${esc(ex.exName)}</label>
+      <input id="mn-${i}" list="mnl-${i}" type="text" placeholder="nome da máquina (opcional)"
+        style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:10px;box-sizing:border-box">
+      <datalist id="mnl-${i}">${machinesFor(ex.exId, S.gymId).map(m => `<option value="${esc(m.name)}">`).join('')}</datalist>`).join('')}
+    ${B(CG,TX,'Continuar e salvar','applyMachineNudge()')}
+    ${B(BG3,DM,'Voltar ao treino','closeModal()',';margin-bottom:0')}`);
+}
+
+function applyMachineNudge() {
+  let created = false;
+  machineNudgeTargets().forEach(({ ex, i }) => {
+    const v = (document.getElementById(`mn-${i}`)?.value||'').trim(); if (!v) return;
+    // Same reuse-not-fork rule as exercises: a typed name matching one of
+    // this exercise's existing machines selects it instead of duplicating.
+    let m = D.machines.find(x => x.exId === ex.exId && nameKey(x.name) === nameKey(v));
+    if (!m) { m = { id: uid(), name: v, exId: ex.exId, gymIds: S.gymId ? [S.gymId] : [], updatedAt: Date.now() }; D.machines.push(m); created = true; }
+    else if (S.gymId && !(m.gymIds||[]).includes(S.gymId)) { m.gymIds = [...m.gymIds, S.gymId]; m.updatedAt = Date.now(); created = true; }
+    ex.instanceId = m.id; ex.instanceName = m.name;
+  });
+  if (created) persist();
+  _machineNudgeDone = true;
+  saveSession(); // re-enter the normal save routing, nudge satisfied
+}
+
 function openSaveOptions(diff) {
   const what = [diff.listChanged ? 'exercícios/ordem' : null, diff.restsChanged ? 'descansos' : null].filter(Boolean).join(' e ');
   showModal(`
@@ -4196,6 +4481,10 @@ function openFreeSaveOptions() {
 
 function saveSession() {
   if (!S||!S.exercises.length) return;
+  // Machine nudge first, once, never for re-edits (those save silently by
+  // convention — nagging about machines on every history touch-up would
+  // train people to ignore the prompt).
+  if (!_machineNudgeDone && !S._editId && machineNudgeTargets().length) { openMachineNudge(); return; }
   const diff = sessionPlanDiff();
   if (diff) { openSaveOptions(diff); return; }
   if (!S.planId && !S._editId) { openFreeSaveOptions(); return; }
@@ -4253,7 +4542,7 @@ function doSaveSession(mode) {
   const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises, updatedAt:Date.now() };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
-  persist(); S=null; _restTimer=null; TAB='history'; render();
+  persist(); S=null; _restTimer=null; _machineNudgeDone=false; TAB='history'; render();
 }
 
 function editSess(id) {
@@ -4272,11 +4561,11 @@ function editSess(id) {
     const profile = profileFor(ex.type, ex.regime||'weighted');
     return {
       ...ex,
-      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile),
+      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, ex.instanceId || null),
       sets: ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true})),
     };
   }), _editId:s.id };
-  TAB='log'; EXP=null; _restTimer=null; render();
+  TAB='log'; EXP=null; _restTimer=null; _machineNudgeDone=false; render();
 }
 
 function delSess(id)     { D.tombstones.sessions[id]=Date.now(); D.sessions=D.sessions.filter(s=>s.id!==id); EXP=null; persist(); render(); }
@@ -4828,7 +5117,7 @@ function swRefreshList(i, search) {
   const row = e => `
     <button onclick="doSwapEx(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
       <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(e.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${e.type?typePill(e.type):''}${e.regime?regimePill(e.regime):''}${musclePill(e.mainMuscle,e.movementPattern)}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${e.regime?regimePill(e.regime):''}${musclePill(e.mainMuscle,e.movementPattern)}</div>
     </button>`;
   const section = (lbl, list) => list.length
     ? `<div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:8px 0 6px">${lbl}</div>${list.map(row).join('')}`
@@ -5105,13 +5394,15 @@ function applyData(p) {
   D.sessions     = p.sessions     || [];
   D.weights      = p.weights      || [];
   D.gyms         = p.gyms         || []; // absent in pre-gyms backups — valid, just empty
+  D.machines     = p.machines     || []; // absent in pre-machines backups — same
   // Older backups (pre-tombstones) won't have this field — default to
   // empty rather than leaving D.tombstones as whatever it was before the
   // import, so a restore is a genuine clean replacement.
-  D.tombstones   = p.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{} };
+  D.tombstones   = p.tombstones   || { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} };
   // Same normalization loadData() does — a backup from the tombstones era
-  // but before gyms has the object without a gyms key.
+  // but before gyms/machines has the object without those keys.
   if (!D.tombstones.gyms) D.tombstones.gyms = {};
+  if (!D.tombstones.machines) D.tombstones.machines = {};
   D.lastModified = p.lastModified || 0;
   // An older backup predates muscle-group classification entirely — same
   // backfill loadData() runs on its own local-cache load.
@@ -5148,7 +5439,7 @@ async function factoryReset() {
   stashPreRestore();
 
   const now = Date.now();
-  ['sessions', 'plans', 'weights', 'gyms'].forEach(coll => {
+  ['sessions', 'plans', 'weights', 'gyms', 'machines'].forEach(coll => {
     (D[coll] || []).forEach(item => { if (item?.id) D.tombstones[coll][item.id] = now; });
     D[coll] = [];
   });

@@ -102,7 +102,8 @@
     get historyGuard() { return _historyGuard; }, set historyGuard(v) { _historyGuard = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
-    nameKey, findByName,
+    nameKey, findByName, sessionsNewestFirst,
+    get nudgeDone() { return _machineNudgeDone; }, set nudgeDone(v) { _machineNudgeDone = v; },
     SCHEMA_VERSION, MOVEMENTS, MOVEMENT_PATTERNS, SEED_CLASSIFICATION,
   })`);
 
@@ -496,10 +497,10 @@
 
     // shared payload builder — the single source of the remote shape
     const payload = W.buildRemotePayload();
-    t('payload has exactly the five collections', eq(Object.keys(payload).sort(), ['gyms','library','plans','sessions','weights']));
+    t('payload has exactly the six collections', eq(Object.keys(payload).sort(), ['gyms','library','machines','plans','sessions','weights']));
     t('every payload slice stamped with the current schema (4) + own tombstones', Object.values(payload).every(p => p.schema === 4 && typeof p.tombstones === 'object'));
     const files = W.payloadToGistFiles(payload);
-    t('gist mapping produces the five known filenames', eq(Object.keys(files).sort(), ['gym-tracker-gyms.json','gym-tracker-library.json','gym-tracker-plans.json','gym-tracker-sessions.json','gym-tracker-weights.json']));
+    t('gist mapping produces the six known filenames', eq(Object.keys(files).sort(), ['gym-tracker-gyms.json','gym-tracker-library.json','gym-tracker-machines.json','gym-tracker-plans.json','gym-tracker-sessions.json','gym-tracker-weights.json']));
     t('gist file content round-trips the payload', eq(JSON.parse(files['gym-tracker-library.json'].content), payload.library));
 
     // row mapping (supabase → mergeRemote shape)
@@ -522,13 +523,15 @@
     T.CFG = { token: 'tok', gistId: 'gid', driver: 'supabase' };
     t('explicit driver choice beats the default', W.syncDriver() === 'supabase');
 
-    // fake supabase client — capture-and-reply harness
+    // fake supabase client — capture-and-reply harness. Upserts ACCUMULATE:
+    // since the machines split (E2), one push makes TWO upsert calls — the
+    // five core rows, then the failure-tolerated machines row.
     const fakeSession = { user: { id: 'user-uuid-1', email: 'teste@exemplo.com' } };
-    let upserted = null, selectReply = { data: [], error: null };
+    let upsertCalls = [], selectReply = { data: [], error: null };
     const fakeSb = {
       from: (table) => ({
         select: async () => (table === 'user_blobs' ? selectReply : { data: null, error: { message: 'wrong table' } }),
-        upsert: async (rows) => { upserted = { table, rows }; return { error: null }; },
+        upsert: async (rows) => { upsertCalls.push({ table, rows }); return { error: null }; },
       }),
       auth: { getSession: async () => ({ data: { session: fakeSession } }) },
     };
@@ -541,11 +544,19 @@
     const pulled = await W.remotePull();
     t('supabase pull fetches, merges, returns true', pulled === true && T.D.sessions.some(s => s.id === 'sb-sess-1'));
 
-    // push path: remoteSave upserts five rows with user_id + jsonb content
+    // push path: remoteSave = one five-row upsert + the machines row in its
+    // own failure-tolerated call (the DB CHECK constraint may not admit
+    // 'machines' until 04-machines.sql runs — the core five must never be
+    // hostage to that).
+    upsertCalls = [];
     await W.remoteSave();
-    t('supabase push upserts into user_blobs', upserted?.table === 'user_blobs' && upserted.rows.length === 5);
-    t('rows carry user_id (RLS requires it) + collection + content', upserted.rows.every(r => r.user_id === 'user-uuid-1' && r.collection && typeof r.content === 'object'));
-    t('pushed sessions row contains the merged session', upserted.rows.find(r => r.collection === 'sessions').content.sessions.some(s => s.id === 'sb-sess-1'));
+    const allRows = upsertCalls.flatMap(c => c.rows);
+    t('supabase push: five core rows + a separate machines upsert', upsertCalls.length === 2
+      && upsertCalls[0].rows.length === 5 && upsertCalls[1].rows.length === 1
+      && upsertCalls[1].rows[0].collection === 'machines'
+      && upsertCalls.every(c => c.table === 'user_blobs'));
+    t('rows carry user_id (RLS requires it) + collection + content', allRows.every(r => r.user_id === 'user-uuid-1' && r.collection && typeof r.content === 'object'));
+    t('pushed sessions row contains the merged session', allRows.find(r => r.collection === 'sessions').content.sessions.some(s => s.id === 'sb-sess-1'));
 
     // error and no-session degradation
     selectReply = { data: null, error: { message: 'boom' } };
@@ -568,7 +579,7 @@
     t('gist pull still merges through the same interface', gPulled === true && T.D.plans.some(p => p.id === 'gist-plan-1'));
     await W.remoteSave();
     const patch = calls.find(c => c.method === 'PATCH');
-    t('gist push PATCHes all five files', !!patch && Object.keys(JSON.parse(patch.body).files).length === 5);
+    t('gist push PATCHes all six files', !!patch && Object.keys(JSON.parse(patch.body).files).length === 6);
     W.fetch = realFetch;
     T.D.plans = T.D.plans.filter(p => p.id !== 'gist-plan-1');
     T.D.sessions = keepSess;
@@ -918,12 +929,17 @@
   // ── plan-from-session & focus mode ─────────────────────────────────────────
   g('plan-from-session & focus mode');
   {
-    // free-workout save now offers plan creation
+    // free-workout save now offers plan creation. nudgeDone pre-set: the
+    // machine nudge (which would otherwise fire first — counted work, no
+    // machines) has its own dedicated group; these tests exercise the plan
+    // flows behind it. doSaveSession re-arms the flag, so each save below
+    // sets it again.
     W.startFree();
     T.S.exercises = [
       { exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', rest: { ww: 111 }, sets: [{ intent: 'work', reps: 5, kg: 100 }] },
       { exId: 'zercher-squat', exName: 'Zercher', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 60 }] },
     ];
+    T.nudgeDone = true;
     W.saveSession();
     let modal = W.document.getElementById('modal-ov');
     t('free save opens the plan offer', !!modal && modal.textContent.includes('Salvar treino livre'));
@@ -936,6 +952,7 @@
     T.S.exercises = [
       { exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', rest: { ww: 111 }, sets: [{ intent: 'work', reps: 5, kg: 100 }] },
     ];
+    T.nudgeDone = true;
     W.saveSession();
     W.document.getElementById('save-new-plan-name').value = 'Do Livre';
     W.doSaveSession('new');
@@ -1493,6 +1510,146 @@
     const cfrm2 = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfrm2;
   }
 
+  // ── machines & session-mode defaults (E2 core, 2026-07-30) ─────────────────
+  g('machines & session-mode defaults');
+  {
+    const keepSessions = [...T.D.sessions], keepMachines = [...T.D.machines], keepGyms = [...T.D.gyms];
+    const keepGymId = T.gymId;
+
+    // Sixth collection is wired end to end through the sync shapes.
+    t('payload carries the machines collection', 'machines' in W.buildRemotePayload()
+      && W.buildRemotePayload().machines.schema === T.SCHEMA_VERSION);
+    t('supabase row mapping knows machines', W.sbRowsToRemote([{ collection: 'machines', content: { machines: [] } }]).machines !== null
+      && !('bogus' in W.sbRowsToRemote([{ collection: 'bogus', content: {} }])));
+
+    // Merge + tombstones behave like every other collection.
+    {
+      const localM  = [{ id: 'm1', name: 'A', exId: 'bench-press', gymIds: [], updatedAt: 5 }];
+      const remoteM = [{ id: 'm1', name: 'A renamed', exId: 'bench-press', gymIds: [], updatedAt: 9 },
+                       { id: 'm2', name: 'B', exId: 'bench-press', gymIds: [], updatedAt: 3 }];
+      const r1 = W.mergeCollection(localM, remoteM, {}, {});
+      t('machines merge: union by id, newer copy wins', r1.items.length === 2 && r1.items.find(m => m.id === 'm1').name === 'A renamed');
+      const r2 = W.mergeCollection(localM, [], {}, { m1: 10 });
+      t('machines merge: a remote tombstone removes the local copy', r2.items.length === 0 && r2.tombstones.m1 === 10);
+    }
+
+    // THE same-day ordering fix: date ties break by updatedAt, so the most
+    // recently SAVED session reads as most recent — not whatever array order
+    // insertion or a merge left behind.
+    T.D.sessions = [
+      { id: 'nf1', date: '2026-07-30', updatedAt: 100, exercises: [{ exId: 'bench-press', type: 'hypertrophy', regime: 'weighted', sets: [] }] },
+      { id: 'nf2', date: '2026-07-30', updatedAt: 900, exercises: [{ exId: 'bench-press', type: 'strength', regime: 'weighted', sets: [] }] },
+      { id: 'nf0', date: '2026-07-29', updatedAt: 999, exercises: [] },
+    ];
+    t('same-day sessions order by updatedAt, date still dominates',
+      T.sessionsNewestFirst().map(s => s.id).join(',') === 'nf2,nf1,nf0');
+    t('lastModesFor reads the truly latest session', W.lastModesFor('bench-press').type === 'strength');
+
+    // Machine helpers: gym-first ordering, last-instance default, same-machine history.
+    T.D.gyms = [{ id: 'g1', name: 'G1', updatedAt: 1 }, { id: 'g2', name: 'G2', updatedAt: 1 }];
+    T.D.machines = [
+      { id: 'ma', name: 'Technogym A', exId: 'machine-low-row', gymIds: ['g1'], note: 'banco 7', updatedAt: 1 },
+      { id: 'mb', name: 'LifeFitness B', exId: 'machine-low-row', gymIds: ['g2'], updatedAt: 1 },
+    ];
+    t('machinesFor lists the current gym\'s machines first', W.machinesFor('machine-low-row', 'g2')[0].id === 'mb'
+      && W.machinesFor('machine-low-row', 'g1')[0].id === 'ma');
+    T.D.sessions = [
+      { id: 'ms1', date: '2026-07-30', updatedAt: 100, gymId: 'g1', exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'ma', instanceName: 'Technogym A', sets: [{ intent: 'work', reps: 10, kg: 50, completed: true }] }] },
+      { id: 'ms2', date: '2026-07-30', updatedAt: 900, gymId: 'g2', exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'mb', instanceName: 'LifeFitness B', sets: [{ intent: 'work', reps: 10, kg: 65, completed: true }] }] },
+    ];
+    t('lastInstanceFor prefers the same gym, falls back to anywhere',
+      W.lastInstanceFor('machine-low-row', 'g1').id === 'ma' && W.lastInstanceFor('machine-low-row', 'g2').id === 'mb'
+      && W.lastInstanceFor('machine-low-row', null).id === 'mb');
+    t('history prefers the block\'s machine and keeps machines apart',
+      W.getRecentWorkHistory('machine-low-row', 'hypertrophy', 'weighted', 3, 'ma')[0][0].kg === 50
+      && W.getRecentWorkHistory('machine-low-row', 'hypertrophy', 'weighted', 3, 'mb')[0][0].kg === 65);
+    t('a machine with no history falls back to exercise-level numbers',
+      W.getRecentWorkHistory('machine-low-row', 'hypertrophy', 'weighted', 3, 'no-such-machine').length === 2);
+
+    // Auto-attach at add time + survival through the save strip.
+    T.gymId = 'g1';
+    W.startFree(); T.TAB = 'log';
+    W.addPickedEx('machine-low-row'); W.removeModal();
+    t('adding an exercise auto-attaches the last machine at this gym',
+      T.S.exercises[0].instanceId === 'ma' && T.S.exercises[0].instanceName === 'Technogym A');
+    t('...and its set rows carry that machine\'s own history', T.S.exercises[0].sets.some(s => s.intent === 'work' && s.lastKg === 50));
+    t('the machine chip renders in the block with its settings note',
+      W.document.getElementById('root').innerHTML.includes('Technogym A')
+      && W.document.getElementById('root').innerHTML.includes('banco 7'));
+    // switch machine via the picker path; untouched rows rebuild to B's history
+    W.selectMachine(0, 'mb');
+    t('switching machine rebuilds untouched rows onto its history',
+      T.S.exercises[0].instanceId === 'mb' && T.S.exercises[0].sets.some(s => s.intent === 'work' && s.lastKg === 65));
+    t('using a machine at a new gym auto-tags it there', T.D.machines.find(m => m.id === 'mb').gymIds.includes('g1'));
+    // typed data → switch keeps rows, only the suggestion context moves
+    const wj = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
+    W.setVal(0, wj, 'kg', '70');
+    W.selectMachine(0, 'ma');
+    t('switching with typed data keeps the rows (mid-set numbers are sacred)',
+      T.S.exercises[0].sets[wj].kg === 70 && T.S.exercises[0].instanceId === 'ma');
+    // save: nudge skipped (machine set), instance fields survive the strip
+    const cfmA = W.confirm; W.confirm = () => true;
+    W.toggleCompleted(0, wj); W.skipRestTimer();
+    W.saveSession(); W.doSaveSession('keep');
+    W.confirm = cfmA;
+    const savedM = T.D.sessions.find(s => s.exercises.some(e => e.instanceId === 'ma' && (e.sets||[]).some(x => x.kg === 70)));
+    t('saved sessions keep instanceId/instanceName through the strip',
+      !!savedM && savedM.exercises[0].instanceName === 'Technogym A');
+    T.D.sessions = T.D.sessions.filter(s => s !== savedM);
+
+    // The save-time nudge: fires for counted work without a machine, typed
+    // name creates-or-reuses, blank skips, re-edits stay silent.
+    W.startFree(); T.TAB = 'log';
+    W.addPickedEx('bench-press'); W.removeModal();
+    const bj = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
+    W.setVal(0, bj, 'reps', '8'); W.setVal(0, bj, 'kg', '60'); W.toggleCompleted(0, bj); W.skipRestTimer();
+    t('nudge targets = counted work with no machine', W.machineNudgeTargets().length === 1);
+    W.saveSession();
+    t('saving opens the machine nudge first', W.document.getElementById('modal-ov')?.innerHTML.includes('Em qual máquina?'));
+    W.document.getElementById('mn-0').value = 'LifeFitness B'; // existing name for ANOTHER exercise → must NOT reuse across exercises
+    W.applyMachineNudge();
+    const benchMachine = T.D.machines.find(m => m.exId === 'bench-press' && m.name === 'LifeFitness B');
+    t('nudge creates per-exercise machines (no cross-exercise capture)', !!benchMachine
+      && T.S.exercises[0].instanceId === benchMachine.id);
+    W.doSaveSession('keep');
+    T.D.sessions = T.D.sessions.filter(s => !s.exercises.some(e => e.instanceId === benchMachine.id));
+    // re-edits bypass the nudge entirely
+    T.nudgeDone = false;
+    T.S = { date: '2026-07-30', _editId: 'nf1', planId: null, planName: null, gymId: null,
+      exercises: [{ exId: 'bench-press', exName: 'X', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 50, completed: true }] }] };
+    W.saveSession();
+    t('re-edits of saved sessions never see the nudge', !W.document.getElementById('modal-ov') && T.S === null);
+
+    // Gym deletion strips machine tags; factory-reset tombstones machines.
+    T.D.machines.find(m => m.id === 'mb').gymIds = ['g1', 'g2'];
+    const cfm2 = W.confirm; W.confirm = () => true;
+    W.delGym('g2'); W.removeModal();
+    W.confirm = cfm2;
+    t('deleting a gym strips its id from machine gymIds', T.D.machines.every(m => !(m.gymIds||[]).includes('g2')));
+
+    // applyData normalizes machines on old backups.
+    const snap = JSON.parse(JSON.stringify(T.D));
+    delete snap.machines; delete snap.tombstones.machines;
+    W.applyData(snap);
+    t('importing a pre-machines backup normalizes the collection', Array.isArray(T.D.machines) && !!T.D.tombstones.machines);
+
+    // Type is no longer an identity claim on exercise rows.
+    const bench = T.D.exercises.find(e => e.id === 'bench-press');
+    t('library rows carry no type pill', !W.libExRow(bench).includes('Força') && !W.libExRow(bench).includes('Hipert.'));
+    // pickEx defaults from history (nf2 above logged bench as strength)
+    T.D.sessions = [
+      { id: 'nf2', date: '2026-07-30', updatedAt: 900, exercises: [{ exId: 'bench-press', type: 'strength', regime: 'weighted', sets: [] }] },
+    ];
+    W.pickEx('bench-press');
+    t('pickEx defaults to the mode of the LAST session, not the library label',
+      W.document.getElementById('modal-ov').innerHTML.includes('Adicionar') && W.eval('_pickType') === 'strength');
+    W.closeModal();
+
+    // restore
+    T.D.sessions = keepSessions; T.D.machines = keepMachines; T.D.gyms = keepGyms;
+    T.gymId = keepGymId; T.S = null; T.nudgeDone = false; W.render();
+  }
+
   // ── live-session survival & tap-to-edit (2026-07-29 gym-floor feedback) ────
   g('live-session survival & tap-to-edit');
   {
@@ -1562,6 +1719,7 @@
     T.S.exercises = [{ exId: 'bench-press', exName: 'Bench', type: 'strength', regime: 'weighted',
       sets: [{ intent: 'work', reps: 5, kg: 100 }] }];
     W.render();
+    T.nudgeDone = true; // machine nudge has its own group; this tests the stash
     W.saveSession(); W.doSaveSession('keep');
     t('saving the session clears the stash', T.S === null && !W.localStorage.getItem('gym:live-session'));
     T.D.sessions = T.D.sessions.filter(s => !(s.planId === null && s.exercises.length === 1 && s.exercises[0].exId === 'bench-press'));
