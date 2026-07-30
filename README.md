@@ -46,7 +46,7 @@ python -m http.server 8742        # from the repo root
 ```
 
 - Develop against `http://localhost:8742/` — `file://` breaks reloads and service workers.
-- **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (330+ checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
+- **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (370+ checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
 - Service-worker gotcha: if an edit doesn't seem to take effect, the SW may be serving cache — unregister it and hard-reload (the test runner does this automatically).
 - `supabase/` holds the canonical database SQL (01 = per-user storage, 02 = sharing tables, 03 = generated catalog seed); `.github/workflows/keepalive.yml` pings the project weekly so the free tier never pauses.
 - **The exercise catalog is not authored in this repo.** `library.json`, `supabase/03-catalog-seed.sql` and `SEED_CLASSIFICATION` are build output of `python tools/build-library.py`, which reads curated exercise notes from a separate Obsidian vault. Run `python tools/build-library.py --check` before pushing — it validates the catalog and fails if the committed artifacts drift from their source.
