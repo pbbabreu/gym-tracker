@@ -102,7 +102,7 @@
     get historyGuard() { return _historyGuard; }, set historyGuard(v) { _historyGuard = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
-    nameKey, findByName, sessionsNewestFirst,
+    nameKey, findByName, sessionsNewestFirst, calibratedInstanceId, equipChipLabel,
     get nudgeDone() { return _machineNudgeDone; }, set nudgeDone(v) { _machineNudgeDone = v; },
     SCHEMA_VERSION, MOVEMENTS, MOVEMENT_PATTERNS, SEED_CLASSIFICATION,
   })`);
@@ -1597,10 +1597,12 @@
       !!savedM && savedM.exercises[0].instanceName === 'Technogym A');
     T.D.sessions = T.D.sessions.filter(s => s !== savedM);
 
-    // The save-time nudge: fires for counted work without a machine, typed
-    // name creates-or-reuses, blank skips, re-edits stay silent.
+    // The save-time nudge: fires for counted work without a machine (on a
+    // CALIBRATED exercise — free weights are never nagged, see the
+    // free-weight group), typed name creates-or-reuses, blank skips,
+    // re-edits stay silent.
     W.startFree(); T.TAB = 'log';
-    W.addPickedEx('bench-press'); W.removeModal();
+    W.addPickedEx('leg-extension'); W.removeModal();
     const bj = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
     W.setVal(0, bj, 'reps', '8'); W.setVal(0, bj, 'kg', '60'); W.toggleCompleted(0, bj); W.skipRestTimer();
     t('nudge targets = counted work with no machine', W.machineNudgeTargets().length === 1);
@@ -1608,11 +1610,11 @@
     t('saving opens the machine nudge first', W.document.getElementById('modal-ov')?.innerHTML.includes('Em qual máquina?'));
     W.document.getElementById('mn-0').value = 'LifeFitness B'; // existing name for ANOTHER exercise → must NOT reuse across exercises
     W.applyMachineNudge();
-    const benchMachine = T.D.machines.find(m => m.exId === 'bench-press' && m.name === 'LifeFitness B');
-    t('nudge creates per-exercise machines (no cross-exercise capture)', !!benchMachine
-      && T.S.exercises[0].instanceId === benchMachine.id);
+    const legMachine = T.D.machines.find(m => m.exId === 'leg-extension' && m.name === 'LifeFitness B');
+    t('nudge creates per-exercise machines (no cross-exercise capture)', !!legMachine
+      && T.S.exercises[0].instanceId === legMachine.id);
     W.doSaveSession('keep');
-    T.D.sessions = T.D.sessions.filter(s => !s.exercises.some(e => e.instanceId === benchMachine.id));
+    T.D.sessions = T.D.sessions.filter(s => !s.exercises.some(e => e.instanceId === legMachine.id));
     // re-edits bypass the nudge entirely
     T.nudgeDone = false;
     T.S = { date: '2026-07-30', _editId: 'nf1', planId: null, planName: null, gymId: null,
@@ -1648,6 +1650,68 @@
     // restore
     T.D.sessions = keepSessions; T.D.machines = keepMachines; T.D.gyms = keepGyms;
     T.gymId = keepGymId; T.S = null; T.nudgeDone = false; W.render();
+  }
+
+  // ── free-weight equipment semantics (2026-07-30 owner model) ───────────────
+  g('free-weight equipment semantics');
+  {
+    const keepSessions = [...T.D.sessions], keepMachines = [...T.D.machines];
+
+    // The split: machines/cables are CALIBRATED (instances filter history);
+    // free weights are DESCRIPTIVE (the bar tells you what you did the
+    // movement with — progression stays one story per exercise).
+    t('machine/cable equipment is calibrated, free weights are not',
+      W.equipmentIsCalibrated('machine-low-row') === true && W.equipmentIsCalibrated('seated-cable-row') === true
+      && W.equipmentIsCalibrated('bench-press') === false && W.equipmentIsCalibrated('hammer-curl') === false
+      && W.equipmentIsCalibrated('kettlebell-swing') === false);
+    t('unknown equipment counts as calibrated (blending misleads, splitting only narrows)',
+      W.equipmentIsCalibrated('no-such-exercise') === true);
+    t('calibratedInstanceId gates the history filter by equipment class',
+      T.calibratedInstanceId({ exId: 'machine-low-row', instanceId: 'x1' }) === 'x1'
+      && T.calibratedInstanceId({ exId: 'bench-press', instanceId: 'x1' }) === null);
+
+    // Chip vocabulary follows the exercise's equipment.
+    t('chip invites in the exercise\'s own vocabulary', T.equipChipLabel('bench-press') === 'barra'
+      && T.equipChipLabel('hammer-curl') === 'halter' && T.equipChipLabel('machine-low-row') === 'máquina'
+      && T.equipChipLabel('no-such-exercise') === 'equipamento');
+
+    // Bar switches never split a free-weight progression story.
+    T.D.machines = [
+      { id: 'b20', name: 'Barra olímpica', exId: 'bench-press', gymIds: [], barKg: 20, updatedAt: 1 },
+      { id: 'b15', name: 'Barra reta 15', exId: 'bench-press', gymIds: [], barKg: 15, updatedAt: 1 },
+    ];
+    T.D.sessions = [
+      { id: 'fw1', date: '2026-07-30', updatedAt: 100, exercises: [{ exId: 'bench-press', type: 'hypertrophy', regime: 'weighted', instanceId: 'b20', instanceName: 'Barra olímpica', sets: [{ intent: 'work', reps: 8, kg: 60, completed: true }] }] },
+    ];
+    W.startFree(); T.TAB = 'log';
+    // Through the REAL pick flow — addPickedEx() reads _pickType/_pickRegime,
+    // which pickEx() sets (history-first); calling addPickedEx bare would
+    // inherit whatever mode a previous test group left behind (the
+    // harness-globals lesson).
+    W.pickEx('bench-press');
+    W.addPickedEx('bench-press'); W.removeModal();
+    W.selectMachine(0, 'b15'); // a DIFFERENT bar than history was logged on
+    t('free-weight history is shared across bars (no split)',
+      T.S.exercises[0].instanceId === 'b15'
+      && T.S.exercises[0].sets.some(s => s.intent === 'work' && s.lastKg === 60));
+
+    // Per-side readout: total stored, bar-vs-plates made visible, .25 rounding.
+    const wj = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
+    W.setVal(0, wj, 'kg', '57.5'); W.render();
+    t('barbell blocks with barKg show the per-side readout off the TOTAL',
+      W.document.getElementById('root').innerHTML.includes('por lado')
+      && W.document.getElementById('root').innerHTML.includes('= 21.25')); // (57.5-15)/2
+    // the nudge never fires for free-weight-only sessions
+    W.toggleCompleted(0, wj); W.skipRestTimer();
+    t('free-weight blocks are never nagged at save', W.machineNudgeTargets().length === 0);
+    // picker: descriptive copy + barKg field only where it means something
+    W.openMachinePicker(0);
+    t('picker copy is descriptive for free weights, with a barKg field for barbells',
+      W.document.getElementById('modal-ov').innerHTML.includes('descritivo') && !!W.document.getElementById('mc-barkg'));
+    W.closeModal();
+    const cfw = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfw;
+
+    T.D.sessions = keepSessions; T.D.machines = keepMachines; T.S = null; W.render();
   }
 
   // ── live-session survival & tap-to-edit (2026-07-29 gym-floor feedback) ────

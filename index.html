@@ -1481,6 +1481,31 @@ const sessionsNewestFirst = () =>
 
 // ── Machine (equipment instance) helpers ─────────────────────────────────────
 
+// Whether an exercise's equipment is CALIBRATED — i.e., per-unit numbers
+// genuinely differ (machines, cables) — or FREE-WEIGHT, where 60 kg is 60 kg
+// on any bar and the instance is purely descriptive ("what you do the
+// movement with" — owner model, 2026-07-30: trap bar vs barbell, EZ vs
+// straight — progression stays ONE story per exercise/movement). Calibrated
+// classes get same-instance-first suggestions and the save-time nudge;
+// free-weight classes share history across instances and are never nagged.
+// Unknown/unset equipment counts as calibrated — the conservative default,
+// since wrongly BLENDING two calibrations misleads, while wrongly splitting
+// merely narrows.
+const FREE_WEIGHT_EQUIPMENT = { barbell:1, dumbbell:1, kettlebell:1, band:1, bodyweight:1 };
+function equipmentIsCalibrated(exId) {
+  const eq = D.exercises.find(e => e.id === exId)?.equipment;
+  return !FREE_WEIGHT_EQUIPMENT[eq];
+}
+// The instanceId a suggestion may filter history by — null for free-weight
+// exercises, so their instances never split the progression story.
+const calibratedInstanceId = sessionEx =>
+  (sessionEx.instanceId && equipmentIsCalibrated(sessionEx.exId)) ? sessionEx.instanceId : null;
+
+// What the 🔧 chip calls an unset instance — the exercise's own equipment
+// vocabulary, so a barbell block invites "barra", not "máquina".
+const EQUIP_CHIP_LABEL = { barbell:'barra', dumbbell:'halter', kettlebell:'kettlebell', band:'elástico', cable:'máquina', machine:'máquina' };
+const equipChipLabel = exId => EQUIP_CHIP_LABEL[D.exercises.find(e => e.id === exId)?.equipment] || 'equipamento';
+
 // Machines known for an exercise, current gym's first — the picker's order.
 function machinesFor(exId, gymId) {
   const list = D.machines.filter(m => m.exId === exId);
@@ -1646,7 +1671,7 @@ function buildSetsFromMemory(ex) {
   const regime  = ex.regime || 'weighted';
   const isComp  = ex.compound !== false;
   const profile = profileFor(ex.type, regime);
-  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile, ex.instanceId || null);
+  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile, calibratedInstanceId(ex));
   ex._sug       = sug; // cached for buildExBlock()'s stall banner — see its comment
   const sets    = [];
 
@@ -2473,8 +2498,10 @@ function buildExBlock(ex, i) {
                teal with the machine's name (+ its settings note beside it,
                readable mid-set), empty = a quiet invitation to identify. -->
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
-            <button onclick="openMachinePicker(${i})" title="Máquina/equipamento específico" style="padding:4px 9px;border-radius:99px;border:1px solid ${ex.instanceId?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${ex.instanceId?'#0a2e2e':BG3};color:${ex.instanceId?'#4dd0c4':DM};max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${ex.instanceName?esc(ex.instanceName):'máquina'}</button>
-            ${(() => { const mn = ex.instanceId && D.machines.find(m=>m.id===ex.instanceId)?.note; return mn ? `<span style="font-size:11px;color:${DM}">${esc(mn)}</span>` : ''; })()}
+            <button onclick="openMachinePicker(${i})" title="Equipamento específico" style="padding:4px 9px;border-radius:99px;border:1px solid ${ex.instanceId?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${ex.instanceId?'#0a2e2e':BG3};color:${ex.instanceId?'#4dd0c4':DM};max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${ex.instanceName?esc(ex.instanceName):equipChipLabel(ex.exId)}</button>
+            ${(() => { const m = ex.instanceId && D.machines.find(mm => mm.id === ex.instanceId); if (!m) return '';
+              const bits = [m.barKg ? `barra ${m.barKg} kg` : null, m.note].filter(Boolean);
+              return bits.length ? `<span style="font-size:11px;color:${DM}">${esc(bits.join(' · '))}</span>` : ''; })()}
           </div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
@@ -2490,6 +2517,20 @@ function buildExBlock(ex, i) {
         ${estimatePrompt}
         ${!ex.sets.length ? `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma série. Adicione abaixo.</div>` : ''}
         ${setHeader}${setRows}
+        ${(() => {
+          // Per-side plate readout — barbell blocks with a known bar weight.
+          // Logged kg is always the TOTAL the body moves (owner convention,
+          // 2026-07-30); this line keeps the bar-vs-plates distinction
+          // visible while loading, one entry per distinct weight in the
+          // block (warm-ups ramp, which is exactly where the mental math
+          // bites). Values below the bar's own weight are skipped — nothing
+          // sensible to show for them.
+          const m = ex.instanceId ? D.machines.find(mm => mm.id === ex.instanceId) : null;
+          if (!m?.barKg || D.exercises.find(e => e.id === ex.exId)?.equipment !== 'barbell') return '';
+          const vals = [...new Set(ex.sets.filter(hasKg).map(s => Number(s.kg)))].filter(v => v >= m.barKg).sort((a,b) => a-b);
+          if (!vals.length) return '';
+          return `<div style="font-size:11px;color:${DM};margin-top:8px">Barra ${m.barKg} kg → por lado: ${vals.map(v => `<strong style="color:${TX}">${v}</strong> kg = ${round((v - m.barKg) / 2, 0.25)}`).join(' · ')}</div>`;
+        })()}
         ${B(BG3,TX,'+ Série',`addSet(${i})`,';margin-bottom:0;margin-top:4px')}
       </div>
     </div>`;
@@ -4315,10 +4356,17 @@ function openMachinePicker(i) {
   const ex = S?.exercises[i]; if (!ex) return;
   const list = machinesFor(ex.exId, S.gymId);
   const gymLabel = m => (m.gymIds||[]).map(id => D.gyms.find(g=>g.id===id)?.name).filter(Boolean).join(' · ');
-  const detail = m => [m.maker, m.model, m.location].filter(Boolean).join(' · ');
+  const detail = m => [m.barKg ? `barra ${m.barKg} kg` : null, m.maker, m.model, m.location].filter(Boolean).join(' · ');
+  // Calibrated equipment (machines/cables) carries the precision warning;
+  // free-weight equipment is descriptive — the copy says so, since here the
+  // instance never splits the progression (owner model, 2026-07-30).
+  const calibrated = equipmentIsCalibrated(ex.exId);
+  const isBarbell = D.exercises.find(e => e.id === ex.exId)?.equipment === 'barbell';
   showModal(`
-    <div style="font-size:17px;font-weight:700;margin-bottom:2px">Máquina</div>
-    <div style="font-size:12px;color:${DM};margin-bottom:12px">${esc(ex.exName)} — os números de uma máquina não valem para outra; identificar deixa as sugestões precisas.</div>
+    <div style="font-size:17px;font-weight:700;margin-bottom:2px">Equipamento</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">${esc(ex.exName)} — ${calibrated
+      ? 'os números de uma máquina não valem para outra; identificar deixa as sugestões precisas.'
+      : 'registra com o que você fez o movimento (barra reta, W, trap…). A progressão continua uma só — isto é descritivo.'}</div>
     ${list.length ? list.map(m => `
       <button onclick="selectMachine(${i},'${m.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${ex.instanceId===m.id?'#0a2e2e':BG3};border:1px solid ${ex.instanceId===m.id?'#14484a':BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;text-align:left">
         <span style="flex:1;min-width:0">
@@ -4330,10 +4378,13 @@ function openMachinePicker(i) {
         ${ex.instanceId===m.id ? `<span style="color:#4dd0c4;font-weight:700">✓</span>` : ''}
       </button>`).join('')
     : `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma máquina cadastrada para este exercício ainda.</div>`}
-    ${ex.instanceId ? B(BG3,DM,'Sem máquina neste treino',`clearMachine(${i})`) : ''}
-    <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:12px 0 6px">Nova máquina</div>
-    <input id="mc-name" type="text" placeholder="Nome (ex.: Remada Technogym #3)"
+    ${ex.instanceId ? B(BG3,DM,'Sem equipamento neste treino',`clearMachine(${i})`) : ''}
+    <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:12px 0 6px">Novo equipamento</div>
+    <input id="mc-name" type="text" placeholder="Nome (ex.: ${calibrated ? 'Remada Technogym #3' : 'Barra W do fundo'})"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    ${isBarbell ? `
+    <input id="mc-barkg" type="number" inputmode="decimal" step="0.5" min="0" placeholder="Peso da barra em kg (ex.: 20) — o registro soma tudo"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">` : ''}
     <input id="mc-note" type="text" placeholder="Ajustes (ex.: banco 7, pegada aberta) — opcional"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
     <button id="mc-more-toggle" style="background:none;border:none;color:${DM};font-size:12px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">+ marca, modelo, localização</button>
@@ -4344,6 +4395,9 @@ function openMachinePicker(i) {
     </div>
     ${B(CG,TX,'Criar e usar neste treino',`createMachine(${i})`)}
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0')}`);
+  // (mc-more toggle listener attached below — the barKg field, when present,
+  // sits above it as a first-class input: bar weight is the fact that makes
+  // the per-side readout and any future plate math possible.)
   document.getElementById('mc-more-toggle')?.addEventListener('click', function() {
     const d = document.getElementById('mc-more');
     const open = d.style.display !== 'none';
@@ -4363,7 +4417,7 @@ function remachineEx(i) {
   if (!touched) { ex.sets = []; ex.sets = buildSetsFromMemory(ex); }
   else {
     const profile = profileFor(ex.type, ex.regime||'weighted');
-    ex._sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, ex.instanceId || null);
+    ex._sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex));
   }
 }
 
@@ -4390,8 +4444,12 @@ function createMachine(i) {
   const name = (document.getElementById('mc-name')?.value||'').trim(); if (!name) return;
   const val = id => (document.getElementById(id)?.value||'').trim();
   const note = val('mc-note'), maker = val('mc-maker'), model = val('mc-model'), location = val('mc-location');
+  // Bar weight: a positive number or nothing — same parse-don't-|| care as
+  // setVal() (though a 0 kg bar is meaningless, so falsy IS invalid here).
+  const barKg = parseFloat(val('mc-barkg'));
   const m = { id: uid(), name, exId: ex.exId, gymIds: S.gymId ? [S.gymId] : [],
     ...(note ? { note } : {}), ...(maker ? { maker } : {}), ...(model ? { model } : {}), ...(location ? { location } : {}),
+    ...(barKg > 0 && barKg <= 100 ? { barKg } : {}),
     updatedAt: Date.now() };
   D.machines.push(m); persist();
   ex.instanceId = m.id; ex.instanceName = m.name;
@@ -4411,8 +4469,14 @@ function machineNudgeTargets() {
   if (!S) return [];
   return S.exercises
     .map((ex, i) => ({ ex, i }))
+    // Only CALIBRATED equipment is worth interrupting a save for — that's
+    // where an unidentified unit genuinely costs suggestion precision.
+    // Free-weight blocks keep the chip for opt-in labeling ("EZ vs barra
+    // reta") but are never nagged: their progression is one story either
+    // way (owner model, 2026-07-30).
     .filter(({ ex }) => !ex.instanceId
       && D.exercises.some(e => e.id === ex.exId)
+      && equipmentIsCalibrated(ex.exId)
       && (ex.sets||[]).some(s => isCountedWork(s) && (hasReps(s)||hasKg(s))));
 }
 
@@ -4561,7 +4625,7 @@ function editSess(id) {
     const profile = profileFor(ex.type, ex.regime||'weighted');
     return {
       ...ex,
-      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, ex.instanceId || null),
+      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex)),
       sets: ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true})),
     };
   }), _editId:s.id };
