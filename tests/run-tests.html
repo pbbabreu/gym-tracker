@@ -1874,6 +1874,72 @@
     T.D.exercises = keepEx; W.render();
   }
 
+  // ── per-machine progress series (E2 remainder C) ───────────────────────────
+  g('per-machine progress series');
+  {
+    const keepSessions = [...T.D.sessions], keepMachines = [...T.D.machines];
+
+    T.D.machines = [
+      { id: 'pc1', name: 'Hammer #1', exId: 'machine-low-row', gymIds: [], updatedAt: 1 },
+      { id: 'pc2', name: 'Life #2', exId: 'machine-low-row', gymIds: [], updatedAt: 1 },
+    ];
+    T.D.sessions = [
+      { id: 'pcS1', date: '2026-07-01', updatedAt: 100, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'pc1', instanceName: 'Hammer #1', sets: [{ intent: 'work', reps: 10, kg: 40, completed: true }] }] },
+      { id: 'pcS2', date: '2026-07-08', updatedAt: 200, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'pc1', instanceName: 'Hammer #1', sets: [{ intent: 'work', reps: 10, kg: 45, completed: true }] }] },
+      { id: 'pcS3', date: '2026-07-15', updatedAt: 300, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'pc2', instanceName: 'Life #2', sets: [{ intent: 'work', reps: 10, kg: 60, completed: true }] }] },
+      { id: 'pcS4', date: '2026-07-22', updatedAt: 400, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 10, kg: 50, completed: true }] }] },
+    ];
+
+    const pr = W.exerciseProgress('machine-low-row');
+    t('buckets: one per machine + "sem máquina", most recent first',
+      pr.instances.length === 3 && pr.instances[0].key === '__none__'
+      && pr.instances[1].key === 'pc2' && pr.instances[2].key === 'pc1');
+    t('default series = most recently used bucket, filtered',
+      pr.instance === '__none__' && pr.points.length === 1 && pr.points[0].metric === 50);
+    const prA = W.exerciseProgress('machine-low-row', 24, null, 'pc1');
+    t('an explicit machine filters to its own sessions only',
+      prA.instance === 'pc1' && prA.points.map(p => p.metric).join(',') === '40,45');
+
+    // A deleted machine's history stays chartable under its snapshot name.
+    T.D.machines = T.D.machines.filter(m => m.id !== 'pc2');
+    const prD = W.exerciseProgress('machine-low-row', 24, null, 'pc2');
+    t('a deleted machine stays chartable via its snapshot name',
+      prD.instances.find(b => b.key === 'pc2').name === 'Life #2 (removida)' && prD.points[0].metric === 60);
+
+    // Free weights never split — descriptive instances, one story.
+    T.D.machines.push({ id: 'pb1', name: 'Barra A', exId: 'bench-press', gymIds: [], updatedAt: 1 });
+    T.D.sessions.push(
+      { id: 'pcS5', date: '2026-07-23', updatedAt: 500, exercises: [{ exId: 'bench-press', type: 'hypertrophy', regime: 'weighted', instanceId: 'pb1', instanceName: 'Barra A', sets: [{ intent: 'work', reps: 8, kg: 60, completed: true }] }] },
+      { id: 'pcS6', date: '2026-07-24', updatedAt: 600, exercises: [{ exId: 'bench-press', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 8, kg: 62.5, completed: true }] }] });
+    const prF = W.exerciseProgress('bench-press');
+    t('free-weight exercises never split the chart',
+      prF.instances.length === 0 && prF.instance === null && prF.points.length === 2);
+
+    // One bucket = pooled already; the filter never engages.
+    T.D.sessions = [
+      { id: 'pcS7', date: '2026-07-25', updatedAt: 700, exercises: [{ exId: 'leg-extension', type: 'hypertrophy', regime: 'weighted', instanceId: 'zz', instanceName: 'Única', sets: [{ intent: 'work', reps: 10, kg: 30, completed: true }] }] },
+    ];
+    const pr1 = W.exerciseProgress('leg-extension');
+    t('a single bucket never filters (pooled = that machine already)',
+      pr1.instances.length === 1 && pr1.instance === null);
+
+    // Modal wiring: dropdown renders inside #prog-body, swaps in place.
+    T.D.sessions = [
+      { id: 'pcS8', date: '2026-07-26', updatedAt: 800, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'pc1', instanceName: 'Hammer #1', sets: [{ intent: 'work', reps: 10, kg: 45, completed: true }] }] },
+      { id: 'pcS9', date: '2026-07-27', updatedAt: 900, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 10, kg: 50, completed: true }] }] },
+    ];
+    W.openProgress('machine-low-row');
+    t('progress modal renders the machine dropdown and the filter note',
+      W.document.getElementById('modal-ov').innerHTML.includes('progInstSwitch')
+      && W.document.getElementById('modal-ov').innerHTML.includes('só esta máquina'));
+    W.progInstSwitch('machine-low-row', 'weighted', 'pc1');
+    t('switching machine swaps the series in place',
+      W.document.getElementById('prog-body').innerHTML.includes('45 kg'));
+    W.closeModal();
+
+    T.D.sessions = keepSessions; T.D.machines = keepMachines; W.render();
+  }
+
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
   g('warm-up floors & assisted ramp');
   {

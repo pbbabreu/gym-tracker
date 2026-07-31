@@ -1857,7 +1857,10 @@ const epley1RM = (kg, reps) => kg * (1 + reps / 30);
 // with counted history) wins, so the default chart reflects how the
 // exercise is trained NOW. Returns `regimes` — every regime with counted
 // history, most recent first — which is what feeds the chart's dropdown.
-function exerciseProgress(exId, cap = 24, regime = null) {
+// `instance` (E2 remainder C) narrows the series the same way for one
+// machine — see the bucket rules inside; returns `instances`/`instance`
+// as the machine dropdown's counterpart to `regimes`/`regime`.
+function exerciseProgress(exId, cap = 24, regime = null, instance = null) {
   const lib = D.exercises.find(e => e.id === exId);
   const sorted = [...D.sessions].sort((a, b) => a.date.localeCompare(b.date));
   const regimes = [];
@@ -1869,10 +1872,46 @@ function exerciseProgress(exId, cap = 24, regime = null) {
     });
   }
   const chosen = (regime && regimes.includes(regime)) ? regime : (regimes[0] || lib?.regime || 'weighted');
+  // ── Per-machine series buckets (E2 remainder C) ──
+  // The chart used to pool every machine of a calibrated exercise into one
+  // line — exactly the blending the suggestion engine refuses (two units'
+  // numbers aren't comparable). Buckets are per REGIME: the dropdown
+  // filters the series being displayed, which is per-regime, so every
+  // option is guaranteed a non-empty series. '__none__' collects entries
+  // logged without a machine — real data whose blending into a machine's
+  // line would be the same lie. Free-weight exercises never split (their
+  // instances are descriptive — one progression story by design), so their
+  // bucket list stays empty. Order is most-recently-used first via
+  // sessionsNewestFirst() (same-day ties break by save time — the
+  // 2026-07-30 ordering lesson), and the DEFAULT series is that first
+  // bucket: the machine actually in use these days. Names resolve live
+  // machine first (renames show the current name), then the history
+  // snapshot for deleted machines — dangling ids are chartable history,
+  // not errors.
+  const instances = [];
+  if (equipmentIsCalibrated(exId)) {
+    sessionsNewestFirst().forEach(sess => {
+      (sess.exercises || []).forEach(e => {
+        if (e.exId !== exId || (e.regime || 'weighted') !== chosen) return;
+        if (!(e.sets || []).some(isCountedWork)) return;
+        const key = e.instanceId || '__none__';
+        if (instances.some(b => b.key === key)) return;
+        const live = e.instanceId && D.machines.find(m => m.id === e.instanceId);
+        instances.push({ key, name: key === '__none__' ? 'Sem máquina'
+          : (live ? live.name : `${e.instanceName || 'Máquina'} (removida)`) });
+      });
+    });
+  }
+  // Filter only when there is genuinely more than one calibration story —
+  // with a single bucket the pooled line already IS that machine's line.
+  const chosenInst = instances.length > 1
+    ? (instance && instances.some(b => b.key === instance) ? instance : instances[0].key)
+    : null;
   const points = [];
   sorted.forEach(sess => {
     const sets = (sess.exercises || [])
-      .filter(e => e.exId === exId && (e.regime || 'weighted') === chosen)
+      .filter(e => e.exId === exId && (e.regime || 'weighted') === chosen
+        && (!chosenInst || (e.instanceId || '__none__') === chosenInst))
       .flatMap(e => (e.sets || []).filter(isCountedWork));
     if (!sets.length) return;
     const kgVals  = sets.filter(hasKg).map(s => Number(s.kg));
@@ -1894,7 +1933,7 @@ function exerciseProgress(exId, cap = 24, regime = null) {
     }
     points.push(p);
   });
-  return { regime: chosen, regimes, points: points.slice(-cap) };
+  return { regime: chosen, regimes, instance: chosenInst, instances, points: points.slice(-cap) };
 }
 
 // Monday of the week containing dateStr, as a local YYYY-MM-DD — the same
@@ -2987,10 +3026,20 @@ const REGIME_LABELS = { weighted: 'Carga', assisted: 'Assistido', bodyweight: 'C
 // The stats + chart + caption for ONE regime's series — split out so the
 // regime dropdown can swap it in place (#prog-body) without rebuilding the
 // modal (showModal() would close it).
-function progressBodyHTML(exId, regime) {
-  const prog = exerciseProgress(exId, 24, regime || null);
+function progressBodyHTML(exId, regime, instance) {
+  const prog = exerciseProgress(exId, 24, regime || null, instance ?? null);
   const P = prog.points;
   if (!P.length) return `<div style="text-align:center;color:${DM};padding:24px 0;font-size:13px">Nenhum treino registrado com este exercício ainda.</div>`;
+  // Machine dropdown (E2 remainder C): only when this regime's counted
+  // history spans >1 calibration bucket (exerciseProgress computes the
+  // buckets — empty for free weights by design). Lives INSIDE #prog-body,
+  // unlike the regime select in the modal header, because a regime switch
+  // must rebuild it: the bucket list is per-regime.
+  const instSelect = prog.instances.length > 1 ? `
+    <select onchange="progInstSwitch('${exId}', '${prog.regime}', this.value)"
+      style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:12px;padding:6px 8px;outline:none;margin-bottom:10px;box-sizing:border-box">
+      ${prog.instances.map(b => `<option value="${esc(b.key)}" ${b.key === prog.instance ? 'selected' : ''}>🔧 ${esc(b.name)}</option>`).join('')}
+    </select>` : '';
   const unit = prog.regime === 'bodyweight' ? 'reps' : 'kg';
   const metricName = prog.regime === 'bodyweight' ? 'Reps máx.' : prog.regime === 'assisted' ? 'Contrapeso' : 'Carga';
   const last = P[P.length - 1];
@@ -3001,6 +3050,7 @@ function progressBodyHTML(exId, regime) {
     <div style="font-size:16px;font-weight:700;margin-top:2px">${val}</div>
   </div>`;
   return `
+    ${instSelect}
     <div style="display:flex;gap:8px;margin-bottom:12px">
       ${stat('Último', `${last.metric} ${unit}`)}
       ${stat(prog.regime === 'assisted' ? 'Melhor (menor)' : 'Melhor', `${best} ${unit}`)}
@@ -3011,6 +3061,7 @@ function progressBodyHTML(exId, regime) {
       ${metricName} por treino (${P.length} treino${P.length!==1?'s':''}, séries contadas apenas).
       ${prog.regime === 'assisted' ? 'Assistido: linha CAINDO = progresso (menos contrapeso).' : ''}
       ${prog.regime === 'weighted' && bestE ? `Linha tracejada azul: 1RM estimado (Epley).` : ''}
+      ${prog.instance ? 'Mostrando só esta máquina — calibrações diferentes não se misturam.' : ''}
     </div>`;
 }
 
@@ -3034,6 +3085,15 @@ function openProgress(exId) {
 function progSwitch(exId, regime) {
   const el = document.getElementById('prog-body');
   if (el) el.innerHTML = progressBodyHTML(exId, regime);
+}
+
+// Machine-series switch (E2 remainder C) — same in-place #prog-body swap as
+// progSwitch(). The resolved regime rides along so the machine filter can
+// never cross regimes; a regime switch goes through progSwitch() instead,
+// which resets the machine to that regime's own most-recent default.
+function progInstSwitch(exId, regime, key) {
+  const el = document.getElementById('prog-body');
+  if (el) el.innerHTML = progressBodyHTML(exId, regime, key);
 }
 
 // Attached after render — handles library filter pill clicks
