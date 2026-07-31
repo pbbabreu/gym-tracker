@@ -4615,10 +4615,14 @@ const collectSessionRests = () => collectRestsFrom(S.exercises);
 // ── Machine picker & save-time nudge (E2) ────────────────────────────────────
 //
 // The 🔧 chip on every session block opens this picker: pick a known machine
-// for the exercise (current gym's listed first), create a new one, or clear
-// the association. Selecting a machine while training AT a gym auto-tags it
-// as existing there — the owner's "equipment added at gym A usable at gym B
-// should be simple", done with zero extra ceremony.
+// for the exercise (current gym's listed first), create a new one, clear
+// the association, or ✎-edit any listed machine (the manager below).
+// Selecting a machine while training AT a gym auto-tags it as existing
+// there — the owner's "equipment added at gym A usable at gym B should be
+// simple", done with zero extra ceremony. Each machine row is a flex
+// WRAPPER holding the select button and the ✎ button side by side — the ✎
+// can't live inside the select button because a button nested in a button
+// is invalid HTML and the click would ambiguously hit both.
 function openMachinePicker(i) {
   const ex = S?.exercises[i]; if (!ex) return;
   const list = machinesFor(ex.exId, S.gymId);
