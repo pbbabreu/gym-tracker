@@ -580,11 +580,20 @@
     W.fetch = async (url, opts = {}) => {
       const method = opts.method || 'GET';
       calls.push({ method, url: String(url), body: opts.body });
-      if (method === 'GET') return new W.Response(JSON.stringify({ files: { 'gym-tracker-plans.json': { content: JSON.stringify({ schema: 3, plans: [{ id: 'gist-plan-1', name: 'GP', exercises: [], updatedAt: 60 }], tombstones: {}, lastModified: 60 }) } } }), { status: 200 });
+      if (method === 'GET') return new W.Response(JSON.stringify({ files: {
+        'gym-tracker-plans.json': { content: JSON.stringify({ schema: 3, plans: [{ id: 'gist-plan-1', name: 'GP', exercises: [], updatedAt: 60 }], tombstones: {}, lastModified: 60 }) },
+        'gym-tracker-machines.json': { content: JSON.stringify({ schema: 4, machines: [{ id: 'gist-mach-1', name: 'GM', exId: 'bench-press', gymIds: [], updatedAt: 60 }], tombstones: {}, lastModified: 60 }) },
+      } }), { status: 200 });
       return new W.Response('{}', { status: 200 });
     };
     const gPulled = await W.remotePull();
     t('gist pull still merges through the same interface', gPulled === true && T.D.plans.some(p => p.id === 'gist-plan-1'));
+    // Would have caught the review find: the gist driver PUSHED the sixth
+    // file but gistFetchAll() never parsed it back — machines synced up,
+    // never down, on the legacy driver.
+    t('gist pull carries the machines file too', T.D.machines.some(m => m.id === 'gist-mach-1'));
+    T.D.machines = T.D.machines.filter(m => m.id !== 'gist-mach-1');
+    delete T.D.tombstones.machines['gist-mach-1'];
     await W.remoteSave();
     const patch = calls.find(c => c.method === 'PATCH');
     t('gist push PATCHes all six files', !!patch && Object.keys(JSON.parse(patch.body).files).length === 6);

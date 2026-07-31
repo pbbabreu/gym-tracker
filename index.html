@@ -549,14 +549,14 @@ function sanitizeRest(r) {
 // ║    3. Remote driver  — cross-device sync source of truth, one of two
 // ║       transports behind the same remoteSave()/remotePull() interface:
 // ║         · Supabase (default for fresh installs) — email magic-link
-// ║           account; five user_blobs rows, one per collection, guarded
+// ║           account; six user_blobs rows, one per collection, guarded
 // ║           by row-level security. See "Supabase account & client".
-// ║         · GitHub Gist (legacy) — five JSON files in a private Gist,
+// ║         · GitHub Gist (legacy) — six JSON files in a private Gist,
 // ║           the original PAT-based setup, kept until every existing
 // ║           device migrates.
-// ║       Both carry the SAME five payloads (buildRemotePayload() is the
+// ║       Both carry the SAME six payloads (buildRemotePayload() is the
 // ║       single source of the shape): sessions / library / plans /
-// ║       weights / gyms, each with its own tombstones + lastModified.
+// ║       weights / gyms / machines, each with tombstones + lastModified.
 // ║       Everything below the transport — queue, merge, tombstones,
 // ║       schema guard — is driver-blind.
 // ║
@@ -636,7 +636,7 @@ async function saveConfig() {
 // magic-link login, one private row per user per collection (user_blobs),
 // row-level security as the boundary. The client-side merge machinery
 // (queue / per-item LWW / tombstones / schema guard) is transport-agnostic
-// and identical for both drivers — Supabase changes WHERE the five payloads
+// and identical for both drivers — Supabase changes WHERE the six payloads
 // live, never how they reconcile.
 //
 // SUPABASE_KEY is the *publishable* key — public by design (it ships to
@@ -869,13 +869,14 @@ async function gistFetchAll() {
       plans:    parse('gym-tracker-plans.json'),
       weights:  parse('gym-tracker-weights.json'),
       gyms:     parse('gym-tracker-gyms.json'),
+      machines: parse('gym-tracker-machines.json'), // absent on pre-machines gists → null → merge skips
     };
   } catch(e) { return null; }
 }
 
 // ── Remote payload (shared by both drivers) ──────────────────────────────────
 
-// The five collection payloads, built in ONE place — the single source of
+// The six collection payloads, built in ONE place — the single source of
 // the remote data shape for BOTH drivers. The Gist driver stringifies each
 // into its own file; the Supabase driver stores each as one user_blobs
 // row's jsonb content. Identical shape either way — that's what makes
@@ -912,8 +913,8 @@ function payloadToGistFiles(payload) {
 // ── Supabase data driver ──────────────────────────────────────────────────────
 
 // Maps user_blobs rows back into the exact {sessions, library, plans,
-// weights, gyms} shape gistFetchAll() returns, so mergeRemote() stays
-// driver-blind. Unknown collection names (a future app version's new
+// weights, gyms, machines} shape gistFetchAll() returns, so mergeRemote()
+// stays driver-blind. Unknown collection names (a future app version's new
 // collection) are ignored rather than crashed on — the same tolerance the
 // Gist side gets for free by only parsing known filenames.
 function sbRowsToRemote(rows) {
@@ -1063,7 +1064,7 @@ function releaseSyncSlot() {
   if (_syncQueued) { _syncQueued = false; remoteSave(); }
 }
 
-// Push all five payloads to the active driver (fire-and-forget from persist())
+// Push all six payloads to the active driver (fire-and-forget from persist())
 async function remoteSave() {
   if (!syncConfigured()) return;
   // Never let an app build overwrite data written by a NEWER one — this
