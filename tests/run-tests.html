@@ -1940,6 +1940,66 @@
     T.D.sessions = keepSessions; T.D.machines = keepMachines; W.render();
   }
 
+  // ── start-of-session nudge (E2 remainder D) ────────────────────────────────
+  g('start-of-session nudge');
+  {
+    const keepSessions = [...T.D.sessions], keepMachines = [...T.D.machines], keepGyms = [...T.D.gyms];
+    const keepGymId = T.gymId;
+
+    T.D.gyms = [{ id: 'ng1', name: 'Academia N', updatedAt: 1 }];
+    T.D.machines = [
+      { id: 'nm1', name: 'Remada N', exId: 'machine-low-row', gymIds: ['ng1'], updatedAt: 1 },
+      { id: 'nm2', name: 'Extensora longe', exId: 'leg-extension', gymIds: ['other-gym'], updatedAt: 1 },
+    ];
+    T.D.sessions = []; // no history → auto-attach can't interfere
+    T.gymId = 'ng1';
+
+    W.startFree(); T.TAB = 'log';
+    W.pickEx('machine-low-row'); W.addPickedEx('machine-low-row'); W.removeModal();
+    W.pickEx('bench-press'); W.addPickedEx('bench-press'); W.removeModal();       // free weight — never counted
+    W.pickEx('leg-extension'); W.addPickedEx('leg-extension'); W.removeModal();   // its known machine is at ANOTHER gym
+    W.render();
+    t('nudge line: calibrated block + known machine at this gym',
+      W.startNudgeTargets().length === 1 && W.startNudgeTargets()[0].ex.exId === 'machine-low-row'
+      && W.document.getElementById('root').innerHTML.includes('1 exercício sem máquina identificada'));
+    t('free weights and out-of-gym machines never count',
+      !W.startNudgeTargets().some(x => x.ex.exId === 'bench-press' || x.ex.exId === 'leg-extension'));
+    t('the line is wired to scroll to the first target block',
+      W.document.getElementById('root').innerHTML.includes('startNudgeGo()') && !!W.document.getElementById('exblk-0'));
+
+    // Attaching the machine satisfies it; clearing brings it back.
+    W.selectMachine(0, 'nm1');
+    t('attaching the machine satisfies the nudge', W.startNudgeTargets().length === 0
+      && !W.document.getElementById('root').innerHTML.includes('sem máquina identificada'));
+    W.clearMachine(0);
+
+    // Dismissal is per-session state and survives re-renders.
+    W.startNudgeHide();
+    t('dismissal hides it for this session and sticks across renders',
+      !W.document.getElementById('root').innerHTML.includes('sem máquina identificada')
+      && (W.render(), !W.document.getElementById('root').innerHTML.includes('sem máquina identificada')));
+
+    // The flag never reaches the saved record (explicit-field rebuild).
+    const wj = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
+    W.setVal(0, wj, 'reps', '8'); W.setVal(0, wj, 'kg', '40'); W.toggleCompleted(0, wj); W.skipRestTimer();
+    T.nudgeDone = true; // silence the SAVE nudge — its own group covers it
+    W.saveSession(); W.doSaveSession('keep');
+    const savedN = T.D.sessions[T.D.sessions.length - 1];
+    t('the dismissal flag is stripped by the save rebuild', !!savedN && !('_startNudgeHidden' in savedN));
+
+    // Re-edits never see it — even with an uncovered calibrated block.
+    T.S = { date: '2026-07-30', _editId: savedN.id, planId: null, planName: null, gymId: 'ng1',
+      exercises: [{ exId: 'machine-low-row', exName: 'X', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 40, completed: true }] }] };
+    T.TAB = 'log'; // doSaveSession landed on Histórico — the wrong-tab lesson
+    W.render();
+    t('re-edits of saved sessions never see the start nudge',
+      !W.document.getElementById('root').innerHTML.includes('sem máquina identificada'));
+
+    T.S = null;
+    T.D.sessions = keepSessions; T.D.machines = keepMachines; T.D.gyms = keepGyms;
+    T.gymId = keepGymId; T.nudgeDone = false; W.render();
+  }
+
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
   g('warm-up floors & assisted ramp');
   {

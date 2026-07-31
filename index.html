@@ -2430,6 +2430,7 @@ function buildLogSession() {
         ${Bs(BG3,TX,'Cancelar','cancelSession()')}
       </div>
     </div>
+    ${startNudgeHTML()}
     ${restTimerHTML()}
     ${S.exercises.map((ex,i) => buildExBlock(ex,i)).join('')}
     ${B(BG3,TX,'+ Exercício','openAddEx()')}
@@ -4960,6 +4961,58 @@ function applyMachineNudge() {
   _machineNudgeDone = true;
   saveSession(); // re-enter the normal save routing, nudge satisfied
 }
+
+// ── Start-of-session nudge (E2 remainder D) ──────────────────────────────────
+//
+// The owner's "maybe once at the start, too" — belt-and-braces next to
+// auto-attach and the save-time nudge, which is why it's the smallest and
+// most disposable piece of the equipment layer (built last, by plan; drop
+// it if real sessions show the save nudge suffices). A dismissible inline
+// LINE under the session header, deliberately not a modal: nothing may
+// interrupt the start of a workout.
+//
+// Shows when ≥1 calibrated block has no machine while known machines for
+// that exercise exist AT THIS GYM — with a gym selected that means tagged
+// there or location-unknown (empty gymIds: it might be here, and the
+// picker lists it regardless); with no gym context, any known machine
+// counts. Blocks whose exercise has no known machines are never counted:
+// there'd be nothing to pick, and *creating* one is the save nudge's job.
+// Re-edits of saved sessions are excluded (the same convention every other
+// prompt follows — history touch-ups stay silent). The dismissal flag
+// lives on S, so it rides the live-session mirror across reloads (a
+// dismissed nudge stays dismissed for THIS session) but is dropped by the
+// explicit-field record rebuild at save — it can never leak into history.
+
+function startNudgeTargets() {
+  if (!S) return [];
+  return S.exercises
+    .map((ex, i) => ({ ex, i }))
+    .filter(({ ex }) => !ex.instanceId
+      && D.exercises.some(e => e.id === ex.exId)
+      && equipmentIsCalibrated(ex.exId)
+      && D.machines.some(m => m.exId === ex.exId
+        && (!S.gymId || !(m.gymIds||[]).length || m.gymIds.includes(S.gymId))));
+}
+
+function startNudgeHTML() {
+  if (!S || S._editId || S._startNudgeHidden) return '';
+  const targets = startNudgeTargets();
+  if (!targets.length) return '';
+  const n = targets.length;
+  return `
+    <div style="display:flex;align-items:center;gap:8px;background:#0a2e2e;border:1px solid #14484a;border-radius:10px;padding:9px 12px;margin-bottom:10px;font-size:12px;color:#4dd0c4">
+      <span onclick="startNudgeGo()" style="flex:1;cursor:pointer">🔧 ${n} exercício${n===1?'':'s'} sem máquina identificada — toque para ir</span>
+      <button onclick="startNudgeHide()" title="Dispensar neste treino" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:0 2px;font-family:inherit">×</button>
+    </div>`;
+}
+
+// Tap-to-go: same scroll idiom as the focus-mode advance (exblk-N ids).
+function startNudgeGo() {
+  const first = startNudgeTargets()[0];
+  if (first) document.getElementById('exblk-' + first.i)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function startNudgeHide() { if (S) { S._startNudgeHidden = true; render(); } }
 
 function openSaveOptions(diff) {
   const what = [diff.listChanged ? 'exercícios/ordem' : null, diff.restsChanged ? 'descansos' : null].filter(Boolean).join(' e ');
