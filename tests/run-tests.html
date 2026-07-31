@@ -102,7 +102,7 @@
     get historyGuard() { return _historyGuard; }, set historyGuard(v) { _historyGuard = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
-    nameKey, findByName, sessionsNewestFirst, calibratedInstanceId, equipChipLabel,
+    nameKey, findByName, sessionsNewestFirst, calibratedInstanceId, equipChipLabel, loadToDisplay, displayToTotal,
     get nudgeDone() { return _machineNudgeDone; }, set nudgeDone(v) { _machineNudgeDone = v; },
     SCHEMA_VERSION, MOVEMENTS, MOVEMENT_PATTERNS, SEED_CLASSIFICATION,
   })`);
@@ -1712,6 +1712,68 @@
     const cfw = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfw;
 
     T.D.sessions = keepSessions; T.D.machines = keepMachines; T.S = null; W.render();
+  }
+
+  // ── barbell plate-input modes (owner-designed, 2026-07-30) ─────────────────
+  g('barbell plate-input modes');
+  {
+    const keepSessions = [...T.D.sessions];
+
+    // Conversion math: storage is ALWAYS the grand total; only display flips.
+    const sideEx = { loadMode: 'side', barKg: 20 }, platesEx = { loadMode: 'plates', barKg: 20 }, plainEx = {};
+    t('side mode: typed 10 stores bar + 2×10; 0 stores the empty bar',
+      T.displayToTotal(sideEx, 10) === 40 && T.displayToTotal(sideEx, 0) === 20
+      && T.loadToDisplay(sideEx, 40) === 10 && T.loadToDisplay(sideEx, 20) === 0);
+    t('plates mode: typed 20 stores bar + 20', T.displayToTotal(platesEx, 20) === 40 && T.loadToDisplay(platesEx, 40) === 20);
+    t('no mode / empty values pass through untouched',
+      T.displayToTotal(plainEx, 37.5) === 37.5 && T.loadToDisplay(plainEx, 37.5) === 37.5
+      && T.displayToTotal(sideEx, '') === '' && T.loadToDisplay(sideEx, '') === '');
+
+    // The owner's walkthrough, end to end on a real block.
+    W.startFree(); T.TAB = 'log';
+    W.pickEx('bench-press'); W.addPickedEx('bench-press'); W.removeModal();
+    const rootHTML = () => W.document.getElementById('root').innerHTML;
+    t('barbell blocks carry the ⚖ chip (machine blocks don\'t)', rootHTML().includes('⚖ total'));
+    W.toggleLoadSetup(0); W.setBlockBarKg(0, '20'); W.setLoadMode(0, 'side');
+    t('choosing a mode collapses the setup back to the chip',
+      !T.S.exercises[0]._loadSetup && rootHTML().includes('⚖ por lado · barra 20 kg'));
+    t('the load column header and Total column follow the mode',
+      rootHTML().includes('Kg de cada lado') && rootHTML().includes('Total'));
+    const wj = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
+    W.setVal(0, wj, 'kg', '0'); W.render();
+    t('typed 0 = empty bar: stored barKg, hint shown',
+      T.S.exercises[0].sets[wj].kg === 20 && rootHTML().includes('barra vazia'));
+    W.setVal(0, wj, 'kg', '10'); W.render();
+    t('typed per-side 10 stores 40; input re-displays 10; Total shows 40',
+      T.S.exercises[0].sets[wj].kg === 40
+      && W.document.getElementById(`s-kg-0-${wj}`).value === '10'
+      && rootHTML().includes('>40<'));
+    W.toggleLoadSetup(0); W.setLoadMode(0, 'plates');
+    t('flipping modes is display-only (stored total untouched)',
+      T.S.exercises[0].sets[wj].kg === 40 && W.document.getElementById(`s-kg-0-${wj}`).value === '20'
+      && rootHTML().includes('Kg em anilhas'));
+    W.toggleLoadSetup(0); W.setLoadMode(0, 'side');
+    t('chips read in the block\'s input units', true); // covered live; chip text depends on history below
+
+    // Save keeps the preference (strips only the UI flag); the next session
+    // re-seeds it and displays history converted.
+    W.setVal(0, wj, 'reps', '8'); W.toggleCompleted(0, wj); W.skipRestTimer();
+    T.nudgeDone = true; W.saveSession(); W.doSaveSession('keep');
+    const savedFW = T.D.sessions[T.D.sessions.length-1].exercises[0];
+    t('saved entries keep loadMode/barKg, never _loadSetup, sets stay totals',
+      savedFW.loadMode === 'side' && savedFW.barKg === 20 && !('_loadSetup' in savedFW) && savedFW.sets[wj].kg === 40);
+    t('lastModesFor carries the plate preference', W.lastModesFor('bench-press').loadMode === 'side'
+      && W.lastModesFor('bench-press').barKg === 20);
+    T.TAB = 'log'; W.startFree();
+    W.pickEx('bench-press'); W.addPickedEx('bench-press'); W.removeModal();
+    const wj2 = T.S.exercises[0].sets.findIndex(s => s.intent === 'work');
+    t('next session re-seeds the mode and shows history converted',
+      T.S.exercises[0].loadMode === 'side' && T.S.exercises[0].barKg === 20
+      && W.document.getElementById(`s-kg-0-${wj2}`).value === '10'
+      && rootHTML().includes('/lado'));
+    const cfp = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfp;
+
+    T.D.sessions = keepSessions; T.S = null; T.nudgeDone = false; W.render();
   }
 
   // ── live-session survival & tap-to-edit (2026-07-29 gym-floor feedback) ────

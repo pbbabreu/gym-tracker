@@ -1464,7 +1464,10 @@ function lastModesFor(exId) {
   const sorted = sessionsNewestFirst();
   for (const sess of sorted) {
     const e = (sess.exercises||[]).find(x => x.exId === exId);
-    if (e) return { type: e.type || 'hypertrophy', regime: e.regime || 'weighted' };
+    // loadMode/barKg ride along (barbell plate-input preference, 2026-07-30)
+    // so the NEXT session opens in the same input units as the last one.
+    if (e) return { type: e.type || 'hypertrophy', regime: e.regime || 'weighted',
+                    loadMode: e.loadMode || null, barKg: e.barKg || null };
   }
   return null;
 }
@@ -1505,6 +1508,28 @@ const calibratedInstanceId = sessionEx =>
 // vocabulary, so a barbell block invites "barra", not "máquina".
 const EQUIP_CHIP_LABEL = { barbell:'barra', dumbbell:'halter', kettlebell:'kettlebell', band:'elástico', cable:'máquina', machine:'máquina' };
 const equipChipLabel = exId => EQUIP_CHIP_LABEL[D.exercises.find(e => e.id === exId)?.equipment] || 'equipamento';
+
+// ── Barbell plate-input modes (owner-designed, 2026-07-30) ───────────────────
+//
+// On barbell blocks the user can choose to TYPE loads as per-side plate
+// weight ('side' — "10" meaning +10 kg each side) or total plate weight
+// ('plates' — bar excluded), set alongside the bar's own weight in a
+// collapsible setup row. STORAGE never changes: s.kg is always the grand
+// total the body moves (bar included), so history, suggestions, charts and
+// sync are unit-blind — only the input/display boundary converts. barKg 0
+// is tolerated (plates-only arithmetic still holds). loadMode/barKg live on
+// the session exercise entry and are re-seeded from the last session, so a
+// preference sticks without re-setup every workout.
+const loadToDisplay = (ex, total) => {
+  if (total === '' || total == null || !ex.loadMode) return total;
+  const bar = ex.barKg || 0;
+  return ex.loadMode === 'side' ? round((Number(total) - bar) / 2, 0.25) : round(Number(total) - bar, 0.25);
+};
+const displayToTotal = (ex, v) => {
+  if (v === '' || v == null || !ex.loadMode) return v;
+  const bar = ex.barKg || 0;
+  return ex.loadMode === 'side' ? round(bar + Number(v) * 2, 0.25) : round(bar + Number(v), 0.25);
+};
 
 // Machines known for an exercise, current gym's first — the picker's order.
 function machinesFor(exId, gymId) {
@@ -2353,6 +2378,15 @@ function buildExBlock(ex, i) {
       ${Bs(BG3,TX,'Trocar',`openSwapEx(${i})`,';flex-shrink:0;padding:6px 10px;font-size:12px')}
     </div>` : '';
 
+  // Barbell plate-input mode: whether this block converts typed loads (see
+  // loadToDisplay()'s banner). Everything below branches its GRID (an extra
+  // computed Total column), its header label, and every displayed kg on it.
+  const isBarbell  = libEx?.equipment === 'barbell';
+  const plateMode  = isBarbell ? (ex.loadMode || null) : null;
+  const gridCols   = plateMode ? '28px 54px 1fr 1fr 1fr 38px' : '28px 54px 1fr 1fr 38px';
+  const kgHeader   = plateMode === 'side' ? 'Kg de cada lado' : plateMode === 'plates' ? 'Kg em anilhas' : (isAs?'Assist.':isBW?'BW':'Kg');
+  const dispKg     = k => (k===''||k==null) ? '' : loadToDisplay(ex, k);
+
   // First-ever log of this exercise (no sug) has no warm-ups yet — see
   // estimateWarmups(). Disappears on its own once warm-up rows exist
   // (generated from an estimate, or from real history the next time this
@@ -2361,24 +2395,28 @@ function buildExBlock(ex, i) {
   const estimatePrompt = (!sug && !isBW && !hasWarmups) ? `
     <div style="background:${BG3};border:1px solid ${BD};border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:${DM}">
       Primeira vez com este exercício — sem histórico para calcular o aquecimento. Quanto você espera usar hoje?
-      <input type="number" inputmode="decimal" step="0.5" placeholder="${isAs?'Assist. estimado':'Kg estimado'}"
+      <input type="number" inputmode="decimal" step="0.5" placeholder="${isAs?'Assist. estimado':(plateMode?'Kg estimado (total, com barra)':'Kg estimado')}"
         onchange="estimateWarmups(${i}, this.value)"
         style="margin-top:8px;width:100%;background:${BG2};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 10px;outline:none;box-sizing:border-box">
     </div>` : '';
 
   const setHeader = ex.sets.length ? `
-    <div style="display:grid;grid-template-columns:28px 54px 1fr 1fr 38px;gap:6px;margin-bottom:6px">
+    <div style="display:grid;grid-template-columns:${gridCols};gap:6px;margin-bottom:6px">
       <span></span>
       <span style="font-size:11px;color:${DM};text-align:center">Tipo</span>
       <span style="font-size:11px;color:${DM};text-align:center">Reps</span>
-      <span style="font-size:11px;color:${DM};text-align:center">${isAs?'Assist.':isBW?'BW':'Kg'}</span>
+      <span style="font-size:11px;color:${DM};text-align:center">${kgHeader}</span>
+      ${plateMode ? `<span style="font-size:11px;color:${DM};text-align:center">Total</span>` : ''}
       <span></span>
     </div>` : '';
 
   // Formats a reps/kg pair for a quick-fill chip label. BW rows have no
   // meaningful kg (it's always just current bodyweight, not user-entered),
-  // so they only ever show reps.
-  const fmtPair = (r,k) => isBW ? `${r??'–'} reps` : `${r??'–'} × ${k??'–'} ${isAs?'assist.':'kg'}`;
+  // so they only ever show reps. In a plate mode the kg shown is CONVERTED
+  // to the block's input units — a chip must read in the same currency the
+  // field expects, or "▲ 8 × 100" over a per-side column would mislead.
+  const fmtPair = (r,k) => isBW ? `${r??'–'} reps`
+    : `${r??'–'} × ${k==null?'–':dispKg(k)} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
 
   const setRows = ex.sets.map((s,j) => {
     const isWork = s.intent === 'work';
@@ -2421,9 +2459,17 @@ function buildExBlock(ex, i) {
     // toggleCompleted()).
     const checkCell = `<button onclick="toggleCompleted(${i},${j})" aria-label="Concluído" style="width:100%;min-height:38px;border-radius:7px;border:1px solid ${s.completed?CG:BD};background:${s.completed?CG:'transparent'};color:#fff;font-size:14px;font-weight:700;cursor:pointer;padding:0">${s.completed?'✓':''}</button>`;
 
+    // The Total cell (plate modes only) — computed, read-only, always the
+    // stored grand total. A converted input of exactly 0 is the empty bar:
+    // the total shows barKg with the "barra vazia" hint the owner specced.
+    const dv = dispKg(s.kg);
+    const totalCell = !plateMode ? '' : (kv === ''
+      ? `<div style="text-align:center;font-size:12px;color:${DM}">–</div>`
+      : `<div style="text-align:center;line-height:1.2"><span style="font-size:13px;color:${TX}">${kv}</span>${dv === 0 ? `<div style="font-size:9px;color:${DM}">barra vazia</div>` : ''}</div>`);
+
     return `<div style="margin-bottom:8px">
       ${chips}
-      <div style="display:grid;grid-template-columns:28px 54px 1fr 1fr 38px;gap:6px;align-items:center">
+      <div style="display:grid;grid-template-columns:${gridCols};gap:6px;align-items:center">
         ${checkCell}
         <button onclick="toggleIntent(${i},${j})" style="padding:10px 0;border:none;border-radius:7px;
           background:${isWork?CG:'#555'};color:#fff;font-weight:700;font-size:11px;cursor:pointer;
@@ -2433,9 +2479,10 @@ function buildExBlock(ex, i) {
           style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
         ${isBW
           ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
-          : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${isAs?'Assist.':'Kg'}" step="0.5" value="${kv}"
+          : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${plateMode==='side'?'Por lado':plateMode==='plates'?'Anilhas':(isAs?'Assist.':'Kg')}" step="0.5" value="${dispKg(kv)}"
                oninput="setVal(${i},${j},'kg',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
                style="background:${BG3};border:1px solid ${isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
+        ${totalCell}
         <button onclick="rmSet(${i},${j})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;text-align:center;width:100%">×</button>
       </div>
     </div>`;
@@ -2499,10 +2546,27 @@ function buildExBlock(ex, i) {
                readable mid-set), empty = a quiet invitation to identify. -->
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
             <button onclick="openMachinePicker(${i})" title="Equipamento específico" style="padding:4px 9px;border-radius:99px;border:1px solid ${ex.instanceId?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${ex.instanceId?'#0a2e2e':BG3};color:${ex.instanceId?'#4dd0c4':DM};max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${ex.instanceName?esc(ex.instanceName):equipChipLabel(ex.exId)}</button>
+            ${isBarbell && !ex._loadSetup ? `<button onclick="toggleLoadSetup(${i})" title="Como digitar a carga" style="padding:4px 9px;border-radius:99px;border:1px solid ${plateMode?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${plateMode?'#0a2e2e':BG3};color:${plateMode?'#4dd0c4':DM};white-space:nowrap">⚖ ${plateMode==='side'?`por lado · barra ${ex.barKg||0} kg`:plateMode==='plates'?`anilhas · barra ${ex.barKg||0} kg`:'total'}</button>` : ''}
             ${(() => { const m = ex.instanceId && D.machines.find(mm => mm.id === ex.instanceId); if (!m) return '';
-              const bits = [m.barKg ? `barra ${m.barKg} kg` : null, m.note].filter(Boolean);
+              const bits = [m.barKg && !isBarbell ? `barra ${m.barKg} kg` : null, m.note].filter(Boolean);
               return bits.length ? `<span style="font-size:11px;color:${DM}">${esc(bits.join(' · '))}</span>` : ''; })()}
           </div>
+          ${isBarbell && ex._loadSetup ? `
+          <!-- The plate-input setup (owner-designed flow): bar weight + how
+               loads will be TYPED. Choosing a mode collapses this back to
+               the ⚖ chip. Display-only switch — stored kg stays the grand
+               total, so flipping modes mid-session rewrites no data, only
+               how the fields read. -->
+          <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;padding:8px 10px;background:${BG3};border:1px solid ${BD};border-radius:8px">
+            <span style="font-size:11px;color:${DM}">Barra</span>
+            <input id="lb-bar-${i}" type="number" inputmode="decimal" step="0.5" min="0" value="${ex.barKg??''}" placeholder="kg"
+              onchange="setBlockBarKg(${i}, this.value)"
+              style="width:58px;background:${BG2};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:6px 6px;text-align:center;outline:none">
+            <span style="font-size:11px;color:${DM}">· digitar em:</span>
+            <button onclick="setLoadMode(${i}, null)"     style="padding:5px 10px;border-radius:99px;border:none;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${!plateMode?CG:BG2};color:${!plateMode?TX:DM}">Total</button>
+            <button onclick="setLoadMode(${i}, 'side')"   style="padding:5px 10px;border-radius:99px;border:none;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${plateMode==='side'?CG:BG2};color:${plateMode==='side'?TX:DM}">Por lado</button>
+            <button onclick="setLoadMode(${i}, 'plates')" style="padding:5px 10px;border-radius:99px;border:none;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${plateMode==='plates'?CG:BG2};color:${plateMode==='plates'?TX:DM}">Anilhas</button>
+          </div>` : ''}
         </div>
         <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0">
           <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px 6px;line-height:1;margin-top:-2px">×</button>
@@ -2518,18 +2582,18 @@ function buildExBlock(ex, i) {
         ${!ex.sets.length ? `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma série. Adicione abaixo.</div>` : ''}
         ${setHeader}${setRows}
         ${(() => {
-          // Per-side plate readout — barbell blocks with a known bar weight.
-          // Logged kg is always the TOTAL the body moves (owner convention,
-          // 2026-07-30); this line keeps the bar-vs-plates distinction
-          // visible while loading, one entry per distinct weight in the
-          // block (warm-ups ramp, which is exactly where the mental math
-          // bites). Values below the bar's own weight are skipped — nothing
-          // sensible to show for them.
-          const m = ex.instanceId ? D.machines.find(mm => mm.id === ex.instanceId) : null;
-          if (!m?.barKg || D.exercises.find(e => e.id === ex.exId)?.equipment !== 'barbell') return '';
-          const vals = [...new Set(ex.sets.filter(hasKg).map(s => Number(s.kg)))].filter(v => v >= m.barKg).sort((a,b) => a-b);
+          // Per-side plate readout — barbell blocks with a known bar weight
+          // that are still typing plain TOTALS. In a plate-input mode the
+          // grid itself carries the conversion (input column + Total
+          // column), so this line would be redundant noise there. Values
+          // below the bar's own weight are skipped — nothing sensible to
+          // show for them.
+          if (plateMode || !isBarbell) return '';
+          const bar = ex.barKg || (ex.instanceId ? D.machines.find(mm => mm.id === ex.instanceId)?.barKg : null);
+          if (!bar) return '';
+          const vals = [...new Set(ex.sets.filter(hasKg).map(s => Number(s.kg)))].filter(v => v >= bar).sort((a,b) => a-b);
           if (!vals.length) return '';
-          return `<div style="font-size:11px;color:${DM};margin-top:8px">Barra ${m.barKg} kg → por lado: ${vals.map(v => `<strong style="color:${TX}">${v}</strong> kg = ${round((v - m.barKg) / 2, 0.25)}`).join(' · ')}</div>`;
+          return `<div style="font-size:11px;color:${DM};margin-top:8px">Barra ${bar} kg → por lado: ${vals.map(v => `<strong style="color:${TX}">${v}</strong> kg = ${round((v - bar) / 2, 0.25)}`).join(' · ')}</div>`;
         })()}
         ${B(BG3,TX,'+ Série',`addSet(${i})`,';margin-bottom:0;margin-top:4px')}
       </div>
@@ -4192,8 +4256,22 @@ function addPickedEx(exId) {
   // history, so the attachment has to exist when it runs.
   const lim = lastInstanceFor(exId, S.gymId);
   if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
+  seedLoadPrefs(o, lim);
   o.sets = buildSetsFromMemory(o);
   S.exercises.push(o); closeModal(); render();
+}
+
+// Barbell plate-input preference carry-over: reuse last session's
+// loadMode/barKg for this exercise; a bar weight known on the attached
+// equipment fills barKg when history has none. Non-barbell exercises never
+// get either field.
+function seedLoadPrefs(o, attachedInstance) {
+  if (D.exercises.find(e => e.id === o.exId)?.equipment !== 'barbell') return;
+  const lm = lastModesFor(o.exId);
+  if (lm?.loadMode) o.loadMode = lm.loadMode;
+  const bar = lm?.barKg || attachedInstance?.barKg
+    || (o.instanceId ? D.machines.find(m => m.id === o.instanceId)?.barKg : null);
+  if (bar > 0) o.barKg = bar;
 }
 
 function createAndAdd() {
@@ -4211,6 +4289,7 @@ function createAndAdd() {
                   regime: existing.regime || 'weighted', rest: seedRestFor(existing.id, S.planId), sets: [] };
       const lim = lastInstanceFor(existing.id, S.gymId);
       if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
+      seedLoadPrefs(o, lim);
       o.sets = buildSetsFromMemory(o);
       S.exercises.push(o);
     }
@@ -4278,6 +4357,7 @@ function startPlan(id) {
       // buildSetsFromMemory so same-machine suggestions see it.
       const lim = lastInstanceFor(exId, gm?.id || null);
       if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
+      seedLoadPrefs(o, lim);
       o.sets   = buildSetsFromMemory(o);
       return o;
     })
@@ -4428,6 +4508,10 @@ function selectMachine(i, mid) {
     m.gymIds = [...(m.gymIds||[]), S.gymId]; m.updatedAt = Date.now(); persist();
   }
   ex.instanceId = m.id; ex.instanceName = m.name;
+  // Switching BARS moves the block's bar weight with it — the per-side
+  // readout and any plate-input conversion must do their math against the
+  // bar actually in hand. Display-only, as ever: stored totals don't move.
+  if (m.barKg > 0) ex.barKg = m.barKg;
   remachineEx(i);
   closeModal(); render();
 }
@@ -4437,6 +4521,24 @@ function clearMachine(i) {
   delete ex.instanceId; delete ex.instanceName;
   remachineEx(i);
   closeModal(); render();
+}
+
+// ── Plate-input setup handlers (see loadToDisplay()'s banner) ────────────────
+// All three are DISPLAY-ONLY switches: stored kg is the grand total either
+// way, so flipping mode or correcting the bar weight mid-session rewrites
+// no logged data — the fields just start reading in the new units.
+function toggleLoadSetup(i) { const ex = S?.exercises[i]; if (!ex) return; ex._loadSetup = !ex._loadSetup; render(); }
+function setBlockBarKg(i, v) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  const n = parseFloat(v);
+  if (n > 0 && n <= 100) ex.barKg = n; else delete ex.barKg;
+  render();
+}
+function setLoadMode(i, mode) {
+  const ex = S?.exercises[i]; if (!ex) return;
+  if (mode) ex.loadMode = mode; else delete ex.loadMode;
+  ex._loadSetup = false; // the owner's flow: choosing collapses the section
+  render();
 }
 
 function createMachine(i) {
@@ -4453,6 +4555,7 @@ function createMachine(i) {
     updatedAt: Date.now() };
   D.machines.push(m); persist();
   ex.instanceId = m.id; ex.instanceName = m.name;
+  if (m.barKg > 0) ex.barKg = m.barKg; // same bar-follows-the-block rule as selectMachine()
   remachineEx(i);
   closeModal(); render();
 }
@@ -4591,8 +4694,11 @@ function doSaveSession(mode) {
   // scrubSessionSetMetadata() (section 2) is this strip's cleanup twin for
   // sessions saved before it existed.
   // _collapsed joins _sug in the strip: both are live-session UI state
-  // (which blocks are folded right now), meaningless as history.
-  const exercises = S.exercises.map(({_sug, _collapsed, ...ex}) => ({
+  // (which blocks are folded right now), meaningless as history. So does
+  // _loadSetup (whether the ⚖ section is expanded). loadMode/barKg are NOT
+  // stripped — they're the entry-units preference the next session re-seeds
+  // from (see seedLoadPrefs()).
+  const exercises = S.exercises.map(({_sug, _collapsed, _loadSetup, ...ex}) => ({
     ...ex,
     sets: (ex.sets||[]).map(s => {
       const set = { intent: s.intent, reps: s.reps, kg: s.kg };
@@ -4718,7 +4824,11 @@ function setVal(i,j,f,v) {
   // Parse first, then check for a genuinely invalid/empty result — NOT
   // `parseInt(v)||''`, which silently blanks a real, intentionally-typed
   // "0" (0 is falsy, indistinguishable from a failed parse under ||).
-  const n = f==='reps' ? parseInt(v) : parseFloat(v);
+  let n = f==='reps' ? parseInt(v) : parseFloat(v);
+  // The typed load is in the block's chosen input units (per-side/plates);
+  // what gets STORED is always the grand total — see loadToDisplay()'s
+  // banner. A typed "0" in side mode is the empty bar: stored = barKg.
+  if (f === 'kg' && !Number.isNaN(n)) n = displayToTotal(S.exercises[i], n);
   s[f] = Number.isNaN(n) ? '' : n;
   s[f==='reps' ? 'repsEdited' : 'kgEdited'] = true;
   const el = document.getElementById(`s-${f}-${i}-${j}`);
