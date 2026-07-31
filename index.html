@@ -230,8 +230,10 @@ const SEED_CLASSIFICATION = {
   'cable-low-to-high-fly':         ['chest', 'fly', ['shoulders'], 'low-to-high-fly'],
   'pec-deck-fly':                  ['chest', 'fly', [], 'fly'],
   'dip-gravitron':                 ['chest', 'press', ['triceps','shoulders'], 'chest-dip'],
+  'dumbbell-incline-press':        ['chest', 'press', ['shoulders','triceps'], 'incline-press'],
   'incline-press-machine':         ['chest', 'press', ['shoulders','triceps'], 'incline-press'],
   'bench-press':                   ['chest', 'press', ['triceps','shoulders'], 'bench-press'],
+  'dumbbell-bench-press':          ['chest', 'press', ['triceps','shoulders'], 'bench-press'],
   'single-leg-45-back-extension':  ['back', 'extension', ['hamstrings','glutes'], 'back-extension'],
   'narrow-stance-sumo-deadlift':   ['back', 'hinge', ['hamstrings','glutes','quads'], 'narrow-sumo-deadlift'],
   'scapular-pull-up':              ['back', 'other', [], 'scapular-pull-up'],
@@ -409,8 +411,11 @@ let _libFMuscle = null, _libFPattern = null;
 // the movement whose variants are open, null = browsing/searching. The
 // compound/isolation and pattern filter axes deliberately don't exist here
 // — movements subsume pattern-level navigation, and mid-set nobody narrows
-// by "isolado").
-let _aSearch = '', _aFMuscle = null, _aMovement = null;
+// by "isolado"). _newVarEquip = the equipment class picked for a new
+// variant (owner report 2026-07-30: "supino com halteres não é possível" —
+// the variant form inherited the sibling's class invisibly, offering no way
+// to create the same movement on different equipment).
+let _aSearch = '', _aFMuscle = null, _aMovement = null, _newVarEquip = null;
 
 // Filter state — plan editor modal
 let _peFMove = null, _peSearch = '', _peAlpha = false;
@@ -4178,6 +4183,10 @@ function aRefreshList() {
 
 function openPickMovement(slug) {
   _aMovement = slug; _aSearch = '';
+  // The new-variant form defaults to the first sibling's equipment class —
+  // the likeliest case — but shows it as a SELECTED CHIP the user can flip
+  // (barra → halteres is exactly how "Supino com halteres" gets born).
+  _newVarEquip = D.exercises.find(e => e.movement === slug)?.equipment || null;
   const inp = document.getElementById('a-search'); if (inp) inp.value = '';
   aRefreshList();
 }
@@ -4206,11 +4215,31 @@ function aVariantViewHTML(slug) {
     ${aSectionHeader('Nova variação')}
     <input id="av-name" type="text" value="${esc(m.pt)} " placeholder="Nome da variação"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    <!-- Equipment class chips — the same movement on different apparatus is
+         a NEW VARIANT ("Supino reto" barra vs halteres), and this is where
+         it's born. Defaults to the sibling's class (openPickMovement); the
+         choice drives the variant's calibrated-vs-descriptive semantics and
+         its chip vocabulary from day one. -->
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:8px">
+      ${Object.entries(EQUIPMENT_LABELS).map(([k,label]) =>
+        `<button id="av-eq-${k}" onclick="setVarEquip('${k}')" style="padding:5px 10px;border-radius:99px;border:none;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newVarEquip===k?'#0a2e2e':BG3};color:${_newVarEquip===k?'#4dd0c4':DM}">${label}</button>`).join('')}
+    </div>
     <div style="display:flex;gap:6px;margin-bottom:8px">
       <button id="v-str" onclick="setNewType('strength')"    style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_newType==='strength'?'#A32D2D':BG3};color:${_newType==='strength'?TX:DM}">Força</button>
       <button id="v-hyt" onclick="setNewType('hypertrophy')" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_newType==='hypertrophy'?CB:BG3};color:${_newType==='hypertrophy'?TX:DM}">Hipert.</button>
     </div>
     ${B(CG,TX,'Criar variação e adicionar',`createVariant('${slug}')`,';margin-bottom:0')}`;
+}
+
+// In-place chip restyle, same no-rerender pattern as setNewType() — a full
+// aRefreshList() here would rebuild the form and eat the half-typed name.
+function setVarEquip(k) {
+  _newVarEquip = _newVarEquip === k ? null : k;
+  Object.keys(EQUIPMENT_LABELS).forEach(key => {
+    const b = document.getElementById(`av-eq-${key}`); if (!b) return;
+    b.style.background = _newVarEquip === key ? '#0a2e2e' : BG3;
+    b.style.color = _newVarEquip === key ? '#4dd0c4' : DM;
+  });
 }
 
 // Create a variant INSIDE a movement. Same duplicate discipline as the old
@@ -4231,6 +4260,11 @@ function createVariant(slug) {
     regime: sib ? (sib.regime||'weighted') : 'weighted',
     mainMuscle: m.muscle, movementPattern: m.pattern, movement: slug,
     accessoryMuscles: sib ? [...(sib.accessoryMuscles||[])] : [],
+    // The chosen equipment class (chips above) — what makes a same-movement
+    // variant on different apparatus a real, correctly-behaving exercise:
+    // it decides the picker grouping, the 🔧 vocabulary, and whether
+    // instances calibrate history or stay descriptive.
+    ...(_newVarEquip && EQUIPMENT_LABELS[_newVarEquip] ? { equipment: _newVarEquip } : {}),
     updatedAt: Date.now(),
   };
   D.exercises.push(ex);
@@ -4554,8 +4588,9 @@ function selectMachine(i, mid) {
   ex.instanceId = m.id; ex.instanceName = m.name;
   // Switching BARS moves the block's bar weight with it — the per-side
   // readout and any plate-input conversion must do their math against the
-  // bar actually in hand. Display-only, as ever: stored totals don't move.
-  if (m.barKg > 0) ex.barKg = m.barKg;
+  // bar actually in hand. Display-only, as ever: stored totals don't move —
+  // except generated warm-ups, which re-clamp to the new bar's floor.
+  if (m.barKg > 0) { ex.barKg = m.barKg; applyBarFloor(ex); }
   remachineEx(i);
   closeModal(); render();
 }
@@ -4568,20 +4603,39 @@ function clearMachine(i) {
 }
 
 // ── Plate-input setup handlers (see loadToDisplay()'s banner) ────────────────
-// All three are DISPLAY-ONLY switches: stored kg is the grand total either
-// way, so flipping mode or correcting the bar weight mid-session rewrites
-// no logged data — the fields just start reading in the new units.
+// Mode/bar changes are DISPLAY-ONLY for anything the user touched: stored
+// kg is the grand total either way, so flipping units rewrites no logged
+// data. The one exception is applyBarFloor() below — generated warm-ups.
+
+// Re-clamp GENERATED warm-up rows to the empty bar after the bar weight
+// becomes known. buildWarmupSets() floors at generation — but the bar can
+// arrive AFTER the rows exist (⚖ set up after the estimate prompt, or a bar
+// attached via 🔧), and the owner hit exactly that: a pre-existing 15 kg
+// warm-up under a late-set 20 kg bar still displayed as −2.5/lado. Only
+// untouched warm-ups are clamped: a hand-edited row is the user's claim,
+// and work-row prefills are last session's real history — neither is ours
+// to rewrite.
+function applyBarFloor(ex) {
+  if (!(ex.barKg > 0)) return;
+  if (D.exercises.find(e => e.id === ex.exId)?.equipment !== 'barbell') return;
+  (ex.sets||[]).forEach(s => {
+    if (s.intent === 'warmup' && !s.kgEdited && hasKg(s) && Number(s.kg) < ex.barKg) s.kg = ex.barKg;
+  });
+}
+
 function toggleLoadSetup(i) { const ex = S?.exercises[i]; if (!ex) return; ex._loadSetup = !ex._loadSetup; render(); }
 function setBlockBarKg(i, v) {
   const ex = S?.exercises[i]; if (!ex) return;
   const n = parseFloat(v);
   if (n > 0 && n <= 100) ex.barKg = n; else delete ex.barKg;
+  applyBarFloor(ex);
   render();
 }
 function setLoadMode(i, mode) {
   const ex = S?.exercises[i]; if (!ex) return;
   if (mode) ex.loadMode = mode; else delete ex.loadMode;
   ex._loadSetup = false; // the owner's flow: choosing collapses the section
+  applyBarFloor(ex);
   render();
 }
 
@@ -4599,7 +4653,7 @@ function createMachine(i) {
     updatedAt: Date.now() };
   D.machines.push(m); persist();
   ex.instanceId = m.id; ex.instanceName = m.name;
-  if (m.barKg > 0) ex.barKg = m.barKg; // same bar-follows-the-block rule as selectMachine()
+  if (m.barKg > 0) { ex.barKg = m.barKg; applyBarFloor(ex); } // same bar-follows-the-block rule as selectMachine()
   remachineEx(i);
   closeModal(); render();
 }

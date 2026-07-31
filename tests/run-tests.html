@@ -104,6 +104,7 @@
     hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
     nameKey, findByName, sessionsNewestFirst, calibratedInstanceId, equipChipLabel, loadToDisplay, displayToTotal,
     get nudgeDone() { return _machineNudgeDone; }, set nudgeDone(v) { _machineNudgeDone = v; },
+    get varEquip() { return _newVarEquip; }, set varEquip(v) { _newVarEquip = v; },
     SCHEMA_VERSION, MOVEMENTS, MOVEMENT_PATTERNS, SEED_CLASSIFICATION,
   })`);
 
@@ -430,10 +431,17 @@
     t('unrelated exercises land in others', tiers.others.some(e => e.id === 'zercher-squat'));
     t('never suggests itself', !tiers.samePattern.concat(tiers.sameMuscle, tiers.others).some(e => e.id === 'bench-press'));
     tiers = W.swapCandidates({ exId: 'bench-press' }, 'incline');
-    // Two seed exercises match "incline": the chest press (tier 1) and the
-    // biceps Incline deficit curl (others) — search filters within EVERY
-    // tier, it doesn't collapse the ranking.
-    t('search narrows candidates within each tier', tiers.samePattern.length === 1 && tiers.samePattern[0].id === 'incline-press-machine' && tiers.sameMuscle.length === 0 && tiers.others.length === 1 && tiers.others[0].id === 'incline-deficit-curl');
+    // "incline" matches chest presses (tier 1 — machine + dumbbell variants)
+    // and the biceps Incline deficit curl (others) — search filters within
+    // EVERY tier, it doesn't collapse the ranking. Membership is asserted
+    // rather than exact counts, so promoting more incline variants can't
+    // break this (the de-hardcoding rule content growth keeps teaching).
+    t('search narrows candidates within each tier',
+      tiers.samePattern.some(e => e.id === 'incline-press-machine')
+      && tiers.samePattern.some(e => e.id === 'dumbbell-incline-press')
+      && tiers.samePattern.every(e => e.mainMuscle === 'chest' && e.movementPattern === 'press')
+      && tiers.sameMuscle.length === 0
+      && tiers.others.every(e => e.id === 'incline-deficit-curl') && tiers.others.length >= 1);
     // gym filter removes unavailable-there suggestions entirely
     const inclineEx = T.D.exercises.find(e => e.id === 'incline-press-machine');
     inclineEx.gyms = ['somewhere-else'];
@@ -1755,6 +1763,55 @@
     t('estimate in plate mode: no warm-up below the bar, first = barra vazia',
       wu.every(s => s.kg >= 20) && T.loadToDisplay(T.S.exercises[0], wu[0].kg) === 0);
     const cfwf = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfwf;
+
+    // The SECOND owner repro ("supino ainda negativo"): rows generated
+    // BEFORE the bar was known keep their sub-bar values — the ⚖ setup
+    // arriving late must re-clamp generated warm-ups (and only those:
+    // hand-edited rows are the user's claim, work prefills are history).
+    W.startFree(); T.TAB = 'log';
+    T.S.exercises = [{ exId: 'bench-press', exName: 'Supino', type: 'hypertrophy', regime: 'weighted', compound: true,
+      sets: [
+        { intent: 'warmup', reps: 10, kg: 15 },
+        { intent: 'warmup', reps: 8,  kg: 12, kgEdited: true },
+        { intent: 'work',   reps: 8,  kg: 15, lastReps: 8, lastKg: 15 },
+      ] }];
+    W.render();
+    W.setBlockBarKg(0, '20'); W.setLoadMode(0, 'side');
+    const late = T.S.exercises[0].sets;
+    t('late bar setup re-clamps generated warm-ups only',
+      late[0].kg === 20 && late[1].kg === 12 && late[2].kg === 15);
+    const cfw2 = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfw2;
+    T.S = null; W.render();
+  }
+
+  // ── dumbbell variants: content + equipment choice at creation ──────────────
+  g('dumbbell variants & equipment choice');
+  {
+    // Content: the supino movements now span barra AND halteres.
+    const dbb = T.D.exercises.find(e => e.id === 'dumbbell-bench-press');
+    const dbi = T.D.exercises.find(e => e.id === 'dumbbell-incline-press');
+    t('curated dumbbell supino variants are seeded, correctly classified',
+      dbb?.movement === 'bench-press' && dbb?.equipment === 'dumbbell'
+      && dbi?.movement === 'incline-press' && dbi?.equipment === 'dumbbell');
+    W.startFree(); T.TAB = 'log';
+    W.openAddEx(); W.openPickMovement('bench-press');
+    const list = () => W.document.getElementById('a-list').innerHTML;
+    t('the movement view groups barra and halteres side by side',
+      list().includes('Barra') && list().includes('Halter') && list().includes('Supino reto com halteres'));
+
+    // The variant form now OFFERS the equipment class (default = sibling's).
+    t('variant form defaults the equipment chips to the sibling class', T.varEquip === 'barbell'
+      && list().includes('av-eq-dumbbell'));
+    W.setVarEquip('dumbbell');
+    W.document.getElementById('av-name').value = 'Supino teste halteres';
+    W.createVariant('bench-press');
+    const made = T.D.exercises.find(e => e.name === 'Supino teste halteres');
+    t('a created variant carries the chosen equipment (and its semantics)',
+      made?.equipment === 'dumbbell' && W.equipmentIsCalibrated(made.id) === false);
+    W.closeModal();
+    T.D.exercises = T.D.exercises.filter(e => e !== made);
+    delete T.D.tombstones.exercises[made?.id];
+    const cfdv = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfdv;
     T.S = null; W.render();
   }
 

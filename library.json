@@ -58,6 +58,47 @@
       "equipment": "machine"
     },
     {
+      "id": "dumbbell-incline-press",
+      "name": "Supino inclinado com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "incline-press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Dumbbell incline press",
+      "aliases": [
+        "dumbbell incline press",
+        "inclinado halteres",
+        "db incline",
+        "supino inclinado halter"
+      ],
+      "equipment": "dumbbell",
+      "cues_pt": [
+        "Banco entre 30° e 45° — mais que isso vira desenvolvimento de ombro",
+        "Halteres partem da linha do peitoral superior, cotovelos sob os punhos",
+        "Trajetória sobe levemente para trás, terminando acima das clavículas"
+      ],
+      "cues_en": [
+        "Bench between 30° and 45° — steeper turns it into a shoulder press",
+        "Dumbbells start at the upper-chest line, elbows stacked under wrists",
+        "Bar path drifts slightly back, finishing above the collarbones"
+      ],
+      "errors_pt": [
+        "Inclinar demais o banco e transferir o trabalho para os ombros",
+        "Deixar os ombros descolarem do banco no esforço final"
+      ],
+      "errors_en": [
+        "Setting the bench too steep and handing the work to the shoulders",
+        "Letting the shoulders peel off the bench on the final grind"
+      ],
+      "stretchEmphasis": false
+    },
+    {
       "id": "incline-press-machine",
       "name": "Supino inclinado máquina",
       "type": "hypertrophy",
@@ -95,6 +136,47 @@
         "supino"
       ],
       "equipment": "barbell"
+    },
+    {
+      "id": "dumbbell-bench-press",
+      "name": "Supino reto com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "bench-press",
+      "accessoryMuscles": [
+        "triceps",
+        "shoulders"
+      ],
+      "name_en": "Dumbbell bench press",
+      "aliases": [
+        "dumbbell bench press",
+        "supino halteres",
+        "db bench press",
+        "supino com halter"
+      ],
+      "equipment": "dumbbell",
+      "cues_pt": [
+        "Halteres na linha do peito, punhos firmes, cotovelos a uns 45° do tronco",
+        "Suba os dois juntos até quase se tocarem no topo, sem bater um no outro",
+        "Desça controlando até um alongamento confortável do peito"
+      ],
+      "cues_en": [
+        "Dumbbells at chest line, wrists stacked, elbows about 45° from the torso",
+        "Press both up together until they nearly touch — no clanking at the top",
+        "Lower under control to a comfortable chest stretch"
+      ],
+      "errors_pt": [
+        "Bater os halteres no topo e perder a tensão do peitoral",
+        "Abrir os cotovelos a 90° do tronco, jogando o esforço para o ombro"
+      ],
+      "errors_en": [
+        "Clanking the dumbbells at the top and dumping pec tension",
+        "Flaring the elbows to 90°, shifting the strain onto the shoulders"
+      ],
+      "stretchEmphasis": false
     },
     {
       "id": "single-leg-45-back-extension",
