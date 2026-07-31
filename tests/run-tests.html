@@ -1714,6 +1714,50 @@
     T.D.sessions = keepSessions; T.D.machines = keepMachines; T.S = null; W.render();
   }
 
+  // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
+  g('warm-up floors & assisted ramp');
+  {
+    const kgs = sets => sets.map(s => s.kg);
+
+    // The −2.5-per-side bug: a 60 kg total target with a 20 kg bar generated
+    // a 15 kg first warm-up. With the floor, the first warm-up IS the bar.
+    t('barbell floor clamps warm-ups to the empty bar', eq(kgs(W.buildWarmupSets('weighted', true, 60, { floorKg: 20 })), [20, 33, 51]));
+    t('no floor → unchanged legacy ramp', eq(kgs(W.buildWarmupSets('weighted', true, 60)), [15, 33, 51]));
+
+    // The 96 kg-assistance bug: counterweight-space multiplication had no
+    // ceiling. With the bodyweight known, the ramp runs in effective-load
+    // space — assistance can never reach the bodyweight, easiest set first.
+    const aw = kgs(W.buildWarmupSets('assisted', true, 55, { bodyKg: 90 }));
+    t('assisted ramp scales the EFFECTIVE load when bodyweight is known', eq(aw, [81.5, 71, 60.5]));
+    t('assistance never reaches the bodyweight', aw.every(k => k < 90) && aw[0] > aw[1] && aw[1] > aw[2]);
+    t('tiny effective loads cap 2.5 short of bodyweight', kgs(W.buildWarmupSets('assisted', true, 88, { bodyKg: 90 })).every(k => k <= 87.5));
+    const iso = W.buildWarmupSets('assisted', false, 55, { bodyKg: 90 });
+    t('isolation assisted: one warm-up at half the effective load, 6 reps', iso.length === 1 && iso[0].kg === 72.5 && iso[0].reps === 6);
+    t('no bodyweight logged → the legacy complement fallback, explicitly', eq(kgs(W.buildWarmupSets('assisted', true, 55, {})), [96.5, 80, 63]));
+
+    // Context builder: barbell blocks feed the floor, weights feed bodyKg.
+    const keepW = [...T.D.weights];
+    T.D.weights = [{ id: 'wx', date: T.today(), kg: 90, updatedAt: 1 }];
+    const ctxBar = W.warmupCtxFor({ exId: 'bench-press', barKg: 20 });
+    const ctxMach = W.warmupCtxFor({ exId: 'machine-low-row' });
+    t('warmupCtxFor: barbell floor + current bodyweight; machines floorless',
+      ctxBar.floorKg === 20 && ctxBar.bodyKg === 90 && ctxMach.floorKg === null && ctxMach.bodyKg === 90);
+    T.D.weights = keepW;
+
+    // Integration regression: the owner's exact repro — plate mode, estimate
+    // 60 total on a 20 kg bar → nothing below the bar, first shows 0/lado.
+    W.startFree(); T.TAB = 'log';
+    T.S.exercises = [{ exId: 'bench-press', exName: 'Supino', type: 'hypertrophy', regime: 'weighted',
+      compound: true, loadMode: 'side', barKg: 20, sets: [{ intent: 'work', reps: '', kg: '', lastReps: null, lastKg: null, sugReps: null, sugKg: null }] }];
+    W.render();
+    W.estimateWarmups(0, '60');
+    const wu = T.S.exercises[0].sets.filter(s => s.intent === 'warmup');
+    t('estimate in plate mode: no warm-up below the bar, first = barra vazia',
+      wu.every(s => s.kg >= 20) && T.loadToDisplay(T.S.exercises[0], wu[0].kg) === 0);
+    const cfwf = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfwf;
+    T.S = null; W.render();
+  }
+
   // ── barbell plate-input modes (owner-designed, 2026-07-30) ─────────────────
   g('barbell plate-input modes');
   {

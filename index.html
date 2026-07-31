@@ -1677,19 +1677,63 @@ const WU_REPS = [10, 8, 6];
 // of the compound ramp, not the first. Isolation's multiplier mirrors the
 // compound ramp's assisted inversion (less counterweight = harder): 0.5
 // weighted's complement is 1.5, the same "2 − x" relationship the compound
-// mults already use (0.25↔1.75, 0.55↔1.45, 0.85↔1.15). No warm-ups for
-// bodyweight (no adjustable resistance to warm up into).
-function buildWarmupSets(regime, isComp, baseKg) {
+// mults already use (0.25↔1.75, 0.55↔1.45, 0.85↔1.15) — BUT that complement
+// is only the assisted FALLBACK now: with a logged bodyweight the assisted
+// ramp runs in effective-load space instead (see inside). ctx (from
+// warmupCtxFor()) carries the barbell floor and the bodyweight. No warm-ups
+// for bodyweight regime (no adjustable resistance to warm up into).
+function buildWarmupSets(regime, isComp, baseKg, ctx = {}) {
   if (regime === 'bodyweight' || baseKg == null) return [];
+  const wuReps = idx => isComp ? WU_REPS[idx] : WU_REPS[WU_REPS.length - 1];
+  const mkSet = (kg, idx) => ({ intent: 'warmup', reps: wuReps(idx), kg,
+    lastReps:null, lastKg:null, sugReps:null, sugKg:null });
+  const effMults = isComp ? [0.25, 0.55, 0.85] : [0.5];
+
+  // ASSISTED, with the bodyweight known: ramp in EFFECTIVE-LOAD space
+  // (effective = bodyweight − counterweight), then convert back. The old
+  // heuristic multiplied the COUNTERWEIGHT by a "2 − x" complement — which
+  // has no ceiling and produced real absurdities (owner report, 2026-07-30:
+  // a 96 kg assistance warm-up, more than the user weighs — the machine
+  // would lift them off the pads). Scaling the effective load is the
+  // physically meaningful ramp, and by construction the counterweight can
+  // never reach the bodyweight (capped 2.5 kg short of it for safety when
+  // the working effective load is already tiny).
+  if (regime === 'assisted' && ctx.bodyKg > 0) {
+    const workEff = Math.max(ctx.bodyKg - baseKg, 0);
+    return effMults.map((m, idx) => {
+      let counter = round(ctx.bodyKg - workEff * m, 0.5);
+      counter = Math.max(0, Math.min(counter, round(ctx.bodyKg - 2.5, 0.5)));
+      return mkSet(counter, idx);
+    });
+  }
+
+  // ASSISTED with no bodyweight logged: the legacy complement heuristic is
+  // the best available (the app already banners for a bodyweight entry
+  // before load-dependent numbers) — kept, explicitly, as the fallback.
   const mults = isComp
-    ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : [0.25, 0.55, 0.85])
+    ? (regime === 'assisted' ? [1.75, 1.45, 1.15] : effMults)
     : (regime === 'assisted' ? [1.5] : [0.5]);
-  return mults.map((m, idx) => ({
-    intent: 'warmup',
-    reps: isComp ? WU_REPS[idx] : WU_REPS[WU_REPS.length - 1],
-    kg: round(baseKg*m, 0.5),
-    lastReps:null, lastKg:null, sugReps:null, sugKg:null,
-  }));
+  return mults.map((m, idx) => {
+    let kg = round(baseKg*m, 0.5);
+    // Barbell floor: a warm-up can't weigh less than the empty bar. Without
+    // it, a 60 kg total target with a 20 kg bar generated a 15 kg first
+    // warm-up — displayed as “−2.5 por lado” in plate mode (owner report,
+    // 2026-07-30). Clamping to the bar IS the real-world answer: the first
+    // warm-up on a light day is the empty bar.
+    if (regime !== 'assisted' && ctx.floorKg > 0 && kg < ctx.floorKg) kg = ctx.floorKg;
+    return mkSet(kg, idx);
+  });
+}
+
+// The warm-up generation context an exercise block can supply: the barbell
+// floor (this block's bar, or its attached equipment's) and the current
+// bodyweight for assisted effective-load ramps.
+function warmupCtxFor(ex) {
+  const lib = D.exercises.find(e => e.id === ex.exId);
+  const floorKg = lib?.equipment === 'barbell'
+    ? (ex.barKg || (ex.instanceId ? D.machines.find(m => m.id === ex.instanceId)?.barKg : null) || null)
+    : null;
+  return { floorKg, bodyKg: currentBW() || null };
 }
 
 function buildSetsFromMemory(ex) {
@@ -1710,7 +1754,7 @@ function buildSetsFromMemory(ex) {
     return sets;
   }
 
-  sets.push(...buildWarmupSets(regime, isComp, sug.suggestedKg));
+  sets.push(...buildWarmupSets(regime, isComp, sug.suggestedKg, warmupCtxFor(ex)));
 
   // Work rows: always start from what actually happened last time (never
   // silently replaced by the suggestion) — lastReps/lastKg feed the "repeat
@@ -4803,7 +4847,7 @@ function estimateWarmups(i, v) {
   // applied everywhere else in this file.
   if (Number.isNaN(kg) || kg < 0) return;
   const ex = S.exercises[i];
-  ex.sets = [...buildWarmupSets(ex.regime||'weighted', ex.compound!==false, kg), ...ex.sets];
+  ex.sets = [...buildWarmupSets(ex.regime||'weighted', ex.compound!==false, kg, warmupCtxFor(ex)), ...ex.sets];
   // The guess is also today's intended WORKING weight — prefill the work
   // rows' load with it (kgEdited: the user typed this number themselves,
   // it's not a machine suggestion to render dim). Only rows still empty:
