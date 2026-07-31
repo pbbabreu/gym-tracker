@@ -1731,6 +1731,92 @@
     T.D.sessions = keepSessions; T.D.machines = keepMachines; T.S = null; W.render();
   }
 
+  // ── machine manager: edit / rename / delete (E2 remainder A) ───────────────
+  g('machine manager');
+  {
+    const keepSessions = [...T.D.sessions], keepMachines = [...T.D.machines], keepGyms = [...T.D.gyms];
+    const keepGymId = T.gymId;
+
+    T.D.gyms = [{ id: 'g1', name: 'Casa', updatedAt: 1 }, { id: 'g2', name: 'Trabalho', updatedAt: 1 }];
+    T.D.machines = [
+      { id: 'mm1', name: 'Remada Hammer', exId: 'machine-low-row', gymIds: ['g1'], note: 'banco 5', updatedAt: 1 },
+      { id: 'mm2', name: 'Barra velha', exId: 'bench-press', gymIds: [], barKg: 15, updatedAt: 1 },
+    ];
+    T.D.sessions = [
+      { id: 'mmS1', date: '2026-07-20', updatedAt: 100, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'mm1', instanceName: 'Remada Hammer', sets: [{ intent: 'work', reps: 10, kg: 50, completed: true }] }] },
+      { id: 'mmS2', date: '2026-07-21', updatedAt: 200, exercises: [{ exId: 'machine-low-row', type: 'hypertrophy', regime: 'weighted', instanceId: 'mm1', instanceName: 'Remada Hammer', sets: [{ intent: 'work', reps: 10, kg: 52.5, completed: true }] }] },
+    ];
+
+    // The ✎ affordances: picker rows and detail-view rows both open the editor.
+    W.startFree(); T.TAB = 'log';
+    W.pickEx('machine-low-row'); W.addPickedEx('machine-low-row'); W.removeModal();
+    W.openMachinePicker(0);
+    t('picker rows carry an ✎ into the editor', W.document.getElementById('modal-ov').innerHTML.includes(`openMachineEditor('mm1', 0)`));
+    W.openExerciseDetail('bench-press');
+    t('detail-view machine rows carry the same ✎', W.document.getElementById('modal-ov').innerHTML.includes(`openMachineEditor('mm2', null)`));
+
+    // Editor opens prefilled; rename + note + gym retag save with an LWW bump.
+    W.openMachineEditor('mm1', 0);
+    t('editor opens prefilled (name, note, gym chips)',
+      W.document.getElementById('me-name').value === 'Remada Hammer'
+      && W.document.getElementById('me-note').value === 'banco 5'
+      && !!W.document.getElementById('meg-g1'));
+    W.document.getElementById('me-name').value = 'Remada Technogym #3';
+    W.document.getElementById('me-note').value = 'banco 7';
+    W.meGymToggle('g2');
+    W.saveMachineEdit('mm1', 0);
+    const mm1 = T.D.machines.find(m => m.id === 'mm1');
+    t('rename saves name/note/gyms with an updatedAt bump (LWW)',
+      mm1.name === 'Remada Technogym #3' && mm1.note === 'banco 7' && mm1.gymIds.includes('g2') && mm1.updatedAt > 1);
+    t('history keeps its instanceName snapshots exactly as logged',
+      T.D.sessions.every(s => s.exercises[0].instanceName === 'Remada Hammer'));
+    t('the live block follows the rename (it is not history yet)', T.S.exercises[0].instanceName === 'Remada Technogym #3');
+    t('saving routes back to the picker it came from', W.document.getElementById('modal-ov')?.innerHTML.includes('Novo equipamento'));
+    W.closeModal();
+
+    // Bar-weight edit follows into a live barbell block and re-clamps
+    // GENERATED warm-ups only — a kgEdited row is the user's claim.
+    W.pickEx('bench-press'); W.addPickedEx('bench-press'); W.removeModal();
+    const bi = T.S.exercises.length - 1;
+    W.selectMachine(bi, 'mm2');
+    T.S.exercises[bi].sets = [
+      { intent: 'warmup', reps: 10, kg: 15 },
+      { intent: 'work', reps: 8, kg: 60, repsEdited: true, kgEdited: true },
+    ];
+    W.openMachineEditor('mm2', null);
+    W.document.getElementById('me-barkg').value = '20';
+    W.saveMachineEdit('mm2', null);
+    t('bar-weight edit moves the live block\'s bar and re-clamps generated warm-ups',
+      T.S.exercises[bi].barKg === 20 && T.S.exercises[bi].sets[0].kg === 20 && T.S.exercises[bi].sets[1].kg === 60);
+    t('...and routes back to the detail view when opened from there',
+      W.document.getElementById('modal-ov')?.innerHTML.includes('Máquinas conhecidas'));
+    W.closeModal();
+
+    // Delete: confirm names usage, tombstone set, history untouched, live cleared.
+    let confMsg = '';
+    const cfm = W.confirm; W.confirm = msg => { confMsg = msg; return true; };
+    W.delMachine('mm1', null);
+    W.confirm = cfm;
+    t('delete confirm names how many sessions used it', confMsg.includes('2 treinos') && confMsg.includes('continua registrado'));
+    t('delete tombstones the machine and removes it from the live list',
+      !T.D.machines.some(m => m.id === 'mm1') && !!T.D.tombstones.machines.mm1);
+    t('saved history keeps instanceId + snapshot after the delete',
+      T.D.sessions[0].exercises[0].instanceId === 'mm1' && T.D.sessions[0].exercises[0].instanceName === 'Remada Hammer');
+    t('the live block pointing at it is cleared', !T.S.exercises[0].instanceId && !T.S.exercises[0].instanceName);
+    t('a deleted machine never returns as an auto-attach default', W.lastInstanceFor('machine-low-row', null) === null);
+
+    // A declined confirm changes nothing.
+    const cfm2 = W.confirm; W.confirm = () => false;
+    W.delMachine('mm2', null);
+    W.confirm = cfm2;
+    t('declining the delete confirm keeps the machine', T.D.machines.some(m => m.id === 'mm2'));
+
+    // cleanup
+    const cfmC = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfmC;
+    T.D.sessions = keepSessions; T.D.machines = keepMachines; T.D.gyms = keepGyms;
+    T.gymId = keepGymId; T.S = null; T.nudgeDone = false; W.render();
+  }
+
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
   g('warm-up floors & assisted ramp');
   {

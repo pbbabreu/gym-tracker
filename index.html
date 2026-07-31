@@ -417,6 +417,11 @@ let _libFMuscle = null, _libFPattern = null;
 // to create the same movement on different equipment).
 let _aSearch = '', _aFMuscle = null, _aMovement = null, _newVarEquip = null;
 
+// Machine-editor working state (E2 remainder A) — just the gym chips, which
+// need in-place restyling on toggle like every other chip row; the editor's
+// text fields are read straight off the DOM at save, same as the create form.
+let _meGyms = [];
+
 // Filter state — plan editor modal
 let _peFMove = null, _peSearch = '', _peAlpha = false;
 let _peFMuscle = null, _peFPattern = null;
@@ -2957,7 +2962,10 @@ function openExerciseDetail(exId) {
       <div style="font-size:12px">${gymNames.map(esc).join(' · ')}</div>` : ''}
     ${(() => { const ms = D.machines.filter(m => m.exId === ex.id); return ms.length ? `
       <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Máquinas conhecidas</div>
-      ${ms.map(m => `<div style="font-size:12px;margin-bottom:4px">🔧 ${esc(m.name)}${m.note ? ` <span style="color:#4dd0c4">— ${esc(m.note)}</span>` : ''}${[m.maker,m.model,m.location].filter(Boolean).length ? ` <span style="color:${DM}">(${[m.maker,m.model,m.location].filter(Boolean).map(esc).join(' · ')})</span>` : ''}</div>`).join('')}` : ''; })()}
+      ${ms.map(m => `<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:4px">
+        <span style="flex:1;min-width:0">🔧 ${esc(m.name)}${m.note ? ` <span style="color:#4dd0c4">— ${esc(m.note)}</span>` : ''}${[m.maker,m.model,m.location].filter(Boolean).length ? ` <span style="color:${DM}">(${[m.maker,m.model,m.location].filter(Boolean).map(esc).join(' · ')})</span>` : ''}</span>
+        <button onclick="openMachineEditor('${m.id}', null)" title="Editar equipamento" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:13px;cursor:pointer;padding:2px 6px;font-family:inherit">✎</button>
+      </div>`).join('')}` : ''; })()}
     ${!cues.length && !errs.length ? `<div style="margin-top:14px;font-size:12px;color:${DM};line-height:1.5">Sem dicas cadastradas para este exercício ainda.</div>` : ''}
 
     <div style="display:flex;gap:8px;margin-top:18px">
@@ -4527,15 +4535,18 @@ function openMachinePicker(i) {
       ? 'os números de uma máquina não valem para outra; identificar deixa as sugestões precisas.'
       : 'registra com o que você fez o movimento (barra reta, W, trap…). A progressão continua uma só — isto é descritivo.'}</div>
     ${list.length ? list.map(m => `
-      <button onclick="selectMachine(${i},'${m.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${ex.instanceId===m.id?'#0a2e2e':BG3};border:1px solid ${ex.instanceId===m.id?'#14484a':BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;text-align:left">
-        <span style="flex:1;min-width:0">
-          <span style="font-weight:600;font-size:13px;display:block">${esc(m.name)}</span>
-          ${detail(m) ? `<span style="font-size:11px;color:${DM};display:block">${esc(detail(m))}</span>` : ''}
-          ${m.note ? `<span style="font-size:11px;color:#4dd0c4;display:block">${esc(m.note)}</span>` : ''}
-          ${gymLabel(m) ? `<span style="font-size:10px;color:${DM};display:block">${esc(gymLabel(m))}</span>` : ''}
-        </span>
-        ${ex.instanceId===m.id ? `<span style="color:#4dd0c4;font-weight:700">✓</span>` : ''}
-      </button>`).join('')
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:stretch">
+        <button onclick="selectMachine(${i},'${m.id}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:10px 12px;background:${ex.instanceId===m.id?'#0a2e2e':BG3};border:1px solid ${ex.instanceId===m.id?'#14484a':BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;text-align:left">
+          <span style="flex:1;min-width:0">
+            <span style="font-weight:600;font-size:13px;display:block">${esc(m.name)}</span>
+            ${detail(m) ? `<span style="font-size:11px;color:${DM};display:block">${esc(detail(m))}</span>` : ''}
+            ${m.note ? `<span style="font-size:11px;color:#4dd0c4;display:block">${esc(m.note)}</span>` : ''}
+            ${gymLabel(m) ? `<span style="font-size:10px;color:${DM};display:block">${esc(gymLabel(m))}</span>` : ''}
+          </span>
+          ${ex.instanceId===m.id ? `<span style="color:#4dd0c4;font-weight:700">✓</span>` : ''}
+        </button>
+        <button onclick="openMachineEditor('${m.id}', ${i})" title="Editar equipamento" style="flex-shrink:0;width:40px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${DM};font-size:14px;cursor:pointer;font-family:inherit">✎</button>
+      </div>`).join('')
     : `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma máquina cadastrada para este exercício ainda.</div>`}
     ${ex.instanceId ? B(BG3,DM,'Sem equipamento neste treino',`clearMachine(${i})`) : ''}
     <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:12px 0 6px">Novo equipamento</div>
@@ -4657,6 +4668,145 @@ function createMachine(i) {
   if (m.barKg > 0) { ex.barKg = m.barKg; applyBarFloor(ex); } // same bar-follows-the-block rule as selectMachine()
   remachineEx(i);
   closeModal(); render();
+}
+
+// ── Machine manager: edit / rename / delete (E2 remainder A) ─────────────────
+//
+// Until this existed a machine could only be CREATED and SELECTED — a typo,
+// a changed settings note, or a machine the gym hauled away had no answer
+// short of a factory reset. The editor is reached from the two places
+// machines are already seen (the ✎ on each 🔧-picker row and on each
+// detail-view "Máquinas conhecidas" row) — deliberately no standalone
+// management screen: machines belong to their exercise, which is how people
+// think of them ("the low-row machine"), so that's where they're managed.
+//
+// RENAME semantics: saved history keeps its instanceName snapshots exactly
+// as logged — same precedent as gymName/exName, history says what things
+// were called *then*. The rename bumps updatedAt so LWW propagates it to
+// other devices; future sessions attach under the new name. A LIVE session
+// block holding the machine does follow the rename immediately — it isn't
+// history yet, and its save should snapshot what the machine is called now.
+//
+// DELETE semantics: tombstone through the sixth collection's existing merge
+// machinery; saved history is untouched (entries keep instanceId +
+// instanceName as historical record — every reader already tolerates a
+// dangling id: lastInstanceFor only returns live machines, and suggestion
+// filtering on a dead id simply finds that machine's old sessions, which is
+// correct — the data happened). Live blocks pointing at it get their
+// instance cleared, with remachineEx() refreshing their suggestion context.
+//
+// NON-GOAL: a machine *merge* tool. Machines are cheap and personal;
+// delete + re-select covers the mess cases until proven otherwise.
+
+// fromBlock: the session-block index when opened from the 🔧 picker (routes
+// the return trip back there), null when opened from the exercise detail
+// view. showModal() replaces the origin modal in place — the history-guard
+// entry is reused, so Back still closes whatever is on top.
+function openMachineEditor(mid, fromBlock) {
+  const m = D.machines.find(x => x.id === mid); if (!m) return;
+  const lib = D.exercises.find(e => e.id === m.exId);
+  const isBarbell = lib?.equipment === 'barbell';
+  // Phantom-gym filter, same as openEditEx(): tags may reference a gym
+  // deleted on another device before its delGym cleanup merged in.
+  _meGyms = (m.gymIds||[]).filter(id => D.gyms.some(g => g.id === id));
+  const inp = (id, ph, val) => `
+    <input id="${id}" type="text" placeholder="${ph}" value="${esc(val||'')}"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">`;
+  const fromArg = fromBlock == null ? 'null' : fromBlock;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:2px">Editar equipamento</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">${esc(lib?.name || '?')} — renomear não altera treinos já salvos: o histórico guarda o nome da época.</div>
+    <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome</label>
+    <input id="me-name" type="text" value="${esc(m.name)}"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+    ${isBarbell ? `
+    <input id="me-barkg" type="number" inputmode="decimal" step="0.5" min="0" placeholder="Peso da barra em kg (ex.: 20)" value="${m.barKg ?? ''}"
+      style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">` : ''}
+    ${inp('me-note', 'Ajustes (ex.: banco 7, pegada aberta) — opcional', m.note)}
+    ${inp('me-maker', 'Marca (ex.: Technogym)', m.maker)}
+    ${inp('me-model', 'Modelo', m.model)}
+    ${inp('me-location', 'Localização (ex.: 2º andar, fundo)', m.location)}
+    ${D.gyms.length ? `
+    <label style="font-size:12px;color:${DM};margin:6px 0 2px;display:block">Academias onde existe</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Ordena o seletor — as da academia atual aparecem primeiro.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+      ${D.gyms.map(gm =>
+        `<button id="meg-${gm.id}" onclick="meGymToggle('${gm.id}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_meGyms.includes(gm.id)?'#0a2e24':BG3};color:${_meGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
+      ).join('')}
+    </div>` : ''}
+    ${B(CG,TX,'Salvar',`saveMachineEdit('${m.id}', ${fromArg})`)}
+    ${B('#2d1010','#e57373','Excluir equipamento',`delMachine('${m.id}', ${fromArg})`)}
+    ${B(BG3,DM,'Cancelar',`machineEditorReturn('${m.exId}', ${fromArg})`,';margin-bottom:0')}`);
+}
+
+// Gym availability multi-toggle — same in-place restyle pattern as exF('gymav').
+function meGymToggle(gid) {
+  const idx = _meGyms.indexOf(gid);
+  if (idx === -1) _meGyms.push(gid); else _meGyms.splice(idx, 1);
+  const el = document.getElementById('meg-' + gid);
+  if (el) { el.style.background = _meGyms.includes(gid)?'#0a2e24':BG3; el.style.color = _meGyms.includes(gid)?'#6fcf97':DM; }
+}
+
+// The editor's way back to wherever it was opened from — the same
+// "Voltar returns to the exact view you left" convention the picker's
+// variant form set. Falls through detail → plain close if the origin is
+// gone (block removed mid-edit, exercise deleted on another device).
+function machineEditorReturn(exId, fromBlock) {
+  if (fromBlock != null && S?.exercises[fromBlock]) { openMachinePicker(fromBlock); return; }
+  if (D.exercises.some(e => e.id === exId)) { openExerciseDetail(exId); return; }
+  closeModal();
+}
+
+function saveMachineEdit(mid, fromBlock) {
+  const m = D.machines.find(x => x.id === mid); if (!m) return;
+  const name = (document.getElementById('me-name')?.value||'').trim(); if (!name) return;
+  const val = id => (document.getElementById(id)?.value||'').trim();
+  m.name = name;
+  // Optional fields: blank clears — delete rather than storing '', keeping
+  // the object the same lean shape createMachine() writes.
+  [['me-note','note'],['me-maker','maker'],['me-model','model'],['me-location','location']].forEach(([id,k]) => {
+    const v = val(id); if (v) m[k] = v; else delete m[k];
+  });
+  // Bar weight only exists where the field was shown (barbell-class
+  // exercise) — same parse + sanity bounds as createMachine().
+  const barEl = document.getElementById('me-barkg');
+  if (barEl) { const bk = parseFloat(barEl.value); if (bk > 0 && bk <= 100) m.barKg = bk; else delete m.barKg; }
+  m.gymIds = [..._meGyms];
+  m.updatedAt = Date.now(); // LWW: the edit must outrank stale copies on other devices
+  // Live blocks holding this machine follow the edit: the name (a live
+  // session isn't history yet — its save should snapshot the current name)
+  // and, for bars, the weight — same bar-follows-the-block rule as
+  // selectMachine(), including the generated-warm-up re-clamp. A REMOVED
+  // barKg deliberately doesn't strip the block's: the user may have set
+  // that via ⚖ independently, and deleting their data isn't ours to do.
+  (S?.exercises||[]).forEach(ex => {
+    if (ex.instanceId !== mid) return;
+    ex.instanceName = m.name;
+    if (m.barKg > 0) { ex.barKg = m.barKg; applyBarFloor(ex); }
+  });
+  persist();
+  machineEditorReturn(m.exId, fromBlock);
+  render();
+}
+
+function delMachine(mid, fromBlock) {
+  const m = D.machines.find(x => x.id === mid); if (!m) return;
+  // The confirm names real usage, like the exercise-merge modal does —
+  // and says out loud that history survives, because "excluir" next to
+  // workout data reads scarier than what this actually does.
+  const uses = D.sessions.filter(s => (s.exercises||[]).some(e => e.instanceId === mid)).length;
+  if (!confirm(`Excluir "${m.name}"?\n\n${uses
+    ? `Usada em ${uses} treino${uses===1?'':'s'} — o histórico continua registrado com o nome da máquina.`
+    : 'Nenhum treino registrado nela.'} Ela só deixa de aparecer para escolher.`)) return;
+  D.tombstones.machines[mid] = Date.now();
+  D.machines = D.machines.filter(x => x.id !== mid);
+  const exId = m.exId; // captured before the object goes out of scope conceptually — routing needs it after deletion
+  (S?.exercises||[]).forEach((ex, i) => {
+    if (ex.instanceId === mid) { delete ex.instanceId; delete ex.instanceName; remachineEx(i); }
+  });
+  persist();
+  machineEditorReturn(exId, fromBlock);
+  render();
 }
 
 // Save-time nudge (owner spec 2026-07-29: "prompt the user to identify the
