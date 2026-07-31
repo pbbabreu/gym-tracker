@@ -1817,6 +1817,63 @@
     T.gymId = keepGymId; T.S = null; T.nudgeDone = false; W.render();
   }
 
+  // ── equipment class in the exercise modal (E2 remainder B) ─────────────────
+  g('equipment class in the exercise modal');
+  {
+    const keepEx = JSON.parse(JSON.stringify(T.D.exercises));
+
+    // The chip row exists and reflects the current class.
+    W.openEditEx('machine-low-row');
+    t('edit modal shows equipment chips with the current class active',
+      !!W.document.getElementById('exq-machine') && W.eval('_newEquip') === 'machine');
+
+    // Flipping the class flips the downstream semantics — grouping,
+    // vocabulary and calibration all read ex.equipment live.
+    W.exF('equip', 'barbell');
+    W.saveEditEx();
+    t('class change saves and flips calibrated→descriptive semantics',
+      T.D.exercises.find(e => e.id === 'machine-low-row').equipment === 'barbell'
+      && W.equipmentIsCalibrated('machine-low-row') === false
+      && T.equipChipLabel('machine-low-row') === 'barra');
+
+    // Nullable: tapping the active chip clears it — "não definido" is a
+    // valid state and stays conservative-calibrated.
+    W.openEditEx('machine-low-row');
+    W.exF('equip', 'barbell');
+    W.saveEditEx();
+    t('clearing the class saves as undefined = conservative calibrated',
+      T.D.exercises.find(e => e.id === 'machine-low-row').equipment === undefined
+      && W.equipmentIsCalibrated('machine-low-row') === true
+      && T.equipChipLabel('machine-low-row') === 'equipamento');
+
+    // The avulso gap this feature closes: a class-less quick-created
+    // exercise can finally get a class in-app.
+    T.D.exercises.push({ id: 'avulso-x', name: 'Coisa avulsa', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'undefined', movementPattern: 'undefined', accessoryMuscles: [], updatedAt: 1 });
+    W.openEditEx('avulso-x');
+    W.exF('equip', 'machine');
+    W.saveEditEx();
+    t('a class-less avulso exercise can finally be classified in-app',
+      T.D.exercises.find(e => e.id === 'avulso-x').equipment === 'machine');
+
+    // A class this app version doesn't know (from a future library) must
+    // survive an untouched edit — only chip taps may change the value.
+    T.D.exercises.find(e => e.id === 'avulso-x').equipment = 'hover-machine-3000';
+    W.openEditEx('avulso-x');
+    W.saveEditEx();
+    t('an untouched edit preserves an unknown (future) class verbatim',
+      T.D.exercises.find(e => e.id === 'avulso-x').equipment === 'hover-machine-3000');
+
+    // + Novo writes the class at creation.
+    W.openNewEx();
+    W.document.getElementById('ex-name').value = 'Teste equipamento novo';
+    W.exF('equip', 'dumbbell');
+    W.saveNewEx();
+    t('+ Novo can set the class at creation',
+      T.D.exercises.find(e => e.name === 'Teste equipamento novo')?.equipment === 'dumbbell');
+
+    T.D.exercises = keepEx; W.render();
+  }
+
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
   g('warm-up floors & assisted ramp');
   {

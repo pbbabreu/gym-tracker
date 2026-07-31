@@ -439,6 +439,13 @@ let _newType = 'hypertrophy', _newCompound = true, _newRegime = 'weighted';
 // Tracks whether the Composto/Isolado toggle was actually clicked during
 // the current edit — see saveEditEx() for why this matters.
 let _newCompoundTouched = false;
+// Equipment class (E2 remainder B) — nullable: null = "não definido", a
+// valid state that equipmentIsCalibrated() treats as calibrated (the
+// conservative default). Holds the RAW current value, even one this app
+// version's EQUIPMENT_LABELS doesn't know — only a chip tap changes it, so
+// an untouched edit writes an unknown (future) class back verbatim instead
+// of silently stripping it.
+let _newEquip = null;
 // Classification working state — see MUSCLE_GROUPS/MOVEMENT_PATTERNS
 // (section 2). Unlike _newCompound, these are mandatory-with-an-escape-
 // valve rather than nullable, so no _touched flag is needed: every save
@@ -3822,6 +3829,8 @@ if (_historyGuard && history.state && history.state.modal) { try { history.repla
 // ║
 // ║  Used from the Library tab to create or edit an exercise definition.
 // ║  Fields: name, type (strength/hypertrophy), compound/isolation, regime,
+// ║  equipment class (nullable chips — drives picker grouping, 🔧 vocabulary
+// ║  and calibrated-vs-descriptive semantics; see equipmentIsCalibrated),
 // ║  muscle classification (cascading main-muscle select → that group's own
 // ║  movement patterns + accessory multi-select), gym availability chips
 // ║  (only when gyms exist), and the optional per-exercise rest override
@@ -3852,6 +3861,13 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
       <button id="ex-w"  onclick="exF('regime','weighted')"   style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='weighted'?CB:BG3};color:${_newRegime==='weighted'?TX:DM}">Carga</button>
       <button id="ex-a"  onclick="exF('regime','assisted')"   style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='assisted'?CA:BG3};color:${_newRegime==='assisted'?TX:DM}">Assist.</button>
       <button id="ex-bw" onclick="exF('regime','bodyweight')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='bodyweight'?CG:BG3};color:${_newRegime==='bodyweight'?TX:DM}">BW</button>
+    </div>
+    <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Equipamento</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Agrupa variações no seletor e define o 🔧: máquina/cabo têm sugestões por aparelho; pesos livres compartilham a progressão. Sem escolha, vale o comportamento de máquina.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px">
+      ${Object.entries(EQUIPMENT_LABELS).map(([k,label]) =>
+        `<button id="exq-${k}" onclick="exF('equip','${k}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newEquip===k?'#0a2e2e':BG3};color:${_newEquip===k?'#4dd0c4':DM}">${label}</button>`
+      ).join('')}
     </div>
     <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Grupo muscular principal</label>
     <select id="ex-muscle" onchange="exF('muscle', this.value)"
@@ -3941,6 +3957,15 @@ function exF(field, val) {
     if (idx === -1) _newGyms.push(val); else _newGyms.splice(idx,1);
     const el = document.getElementById('gav-'+val);
     if (el) { el.style.background = _newGyms.includes(val)?'#0a2e24':BG3; el.style.color = _newGyms.includes(val)?'#6fcf97':DM; }
+  } else if (field === 'equip') {
+    // Equipment class single-toggle (E2 remainder B): tapping the active
+    // chip clears it back to "não definido" — nullable by design, and the
+    // null state stays conservative-calibrated (see equipmentIsCalibrated).
+    _newEquip = _newEquip === val ? null : val;
+    Object.keys(EQUIPMENT_LABELS).forEach(k => {
+      const el = document.getElementById('exq-'+k);
+      if (el) { el.style.background = _newEquip===k?'#0a2e2e':BG3; el.style.color = _newEquip===k?'#4dd0c4':DM; }
+    });
   }
 }
 
@@ -3955,6 +3980,7 @@ function readModalRest() {
 function openNewEx()  {
   _newType='hypertrophy'; _newCompound=true; _newRegime='weighted';
   _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[]; _newGyms=[];
+  _newEquip=null;
   _newRest={ wuwu:'', wuw:'', ww:'' };
   showModal(exModalBody('Novo exercício','','saveNewEx()'));
 }
@@ -3978,6 +4004,10 @@ function openEditEx(id) {
   // another device before its delGym cleanup arrives — filter to real gyms
   // so the modal never shows phantom chips.
   _newGyms = (ex.gyms||[]).filter(id => D.gyms.some(g => g.id === id));
+  // Raw value, deliberately not validated against EQUIPMENT_LABELS — an
+  // unknown class just highlights no chip, and an untouched save writes it
+  // back unchanged (see _newEquip's declaration for the future-class case).
+  _newEquip = ex.equipment || null;
   _newRest = { wuwu: ex.rest?.wuwu ?? '', wuw: ex.rest?.wuw ?? '', ww: ex.rest?.ww ?? '' };
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
@@ -4010,7 +4040,7 @@ function saveNewEx() {
   const rest = readModalRest();
   D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime,
     mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
-    gyms:[..._newGyms], ...(rest ? { rest } : {}), updatedAt:Date.now() });
+    gyms:[..._newGyms], ...(_newEquip ? { equipment:_newEquip } : {}), ...(rest ? { rest } : {}), updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -4029,6 +4059,15 @@ function saveEditEx() {
     ex.name=name; ex.type=_newType; if(_newCompoundTouched) ex.compound=_newCompound; ex.regime=_newRegime;
     ex.mainMuscle=_newMuscle; ex.movementPattern=_newPattern; ex.accessoryMuscles=[..._newAccessory];
     ex.gyms=[..._newGyms];
+    // Equipment class (E2 remainder B): the one field this modal couldn't
+    // touch — which left "exercício avulso" creations class-less with no
+    // in-app fix. Changing it on an exercise WITH history is safe by
+    // construction: stored kg is unit-blind totals, so nothing rewrites;
+    // what flips is picker grouping, 🔧 vocabulary and calibrated-vs-
+    // descriptive semantics going forward (flipping a machine exercise to
+    // barbell releases its instance-filtered history into the shared pool —
+    // the honest meaning of the correction, not a hazard).
+    if (_newEquip) ex.equipment = _newEquip; else delete ex.equipment;
     const rest = readModalRest();
     if (rest) ex.rest = rest; else delete ex.rest; // all-blank inputs mean "back to inheriting"
     ex.updatedAt=Date.now();
