@@ -381,7 +381,7 @@ let D = {
                       // empty means "available everywhere" (the zero-config
                       // default — nobody is forced to tag anything; see
                       // availableAtGym() in section 4) }
-  plans:        [],  // training plans:  { id, name, exercises:[exId,...], updatedAt }
+  plans:        [],  // training plans (schema 5): { id, name, exercises:[{eid, exId|null, movement|null, perGym?, prescription?},...], rests:{eid:{...}}, updatedAt }
   sessions:     [],  // history:         { id, date, planId, planName, gymId?, gymName?,
                       // exercises:[...], updatedAt } — gymId/gymName tag which gym the
                       // session happened at; gymName is a snapshot (same pattern as
