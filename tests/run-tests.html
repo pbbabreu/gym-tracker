@@ -101,7 +101,7 @@
     get liveRestoreDone() { return _liveRestoreDone; }, set liveRestoreDone(v) { _liveRestoreDone = v; },
     get historyGuard() { return _historyGuard; }, set historyGuard(v) { _historyGuard = v; },
     get timerCfgVar() { return _timerCfg; }, set timerCfgVar(v) { _timerCfg = v; },
-    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, collectSessionRests, epley1RM,
+    hasKg, hasReps, round, esc, today, availableAtGym, currentGym, fmtRest, exIsDone, epley1RM,
     nameKey, findByName, sessionsNewestFirst, calibratedInstanceId, equipChipLabel, loadToDisplay, displayToTotal,
     get nudgeDone() { return _machineNudgeDone; }, set nudgeDone(v) { _machineNudgeDone = v; },
     get varEquip() { return _newVarEquip; }, set varEquip(v) { _newVarEquip = v; },
@@ -390,7 +390,7 @@
   // ── gym profiles (M0) ──────────────────────────────────────────────────────
   g('gym profiles (M0)');
   {
-    t('SCHEMA_VERSION at 4 (per-exercise rest era)', T.SCHEMA_VERSION === 4);
+    t('SCHEMA_VERSION at 5 (plan-entries era)', T.SCHEMA_VERSION === 5);
 
     // availability semantics — absent/empty = everywhere, null gym = no filtering
     t('no gym selected → everything available', T.availableAtGym({ gyms: ['g9'] }, null) === true);
@@ -471,7 +471,7 @@
     // plan export deliberately excludes gyms (sender-local ids)
     const pbench = T.D.exercises.find(e => e.id === 'bench-press');
     pbench.gyms = ['g-mine'];
-    T.D.plans.push({ id: 'exp-test', name: 'Exp', exercises: ['bench-press'], updatedAt: 1 });
+    T.D.plans.push({ id: 'exp-test', name: 'Exp', exercises: [{ eid: 'ee1', exId: 'bench-press' }], updatedAt: 1 });
     let capturedBlob = null;
     const realCreate = W.URL.createObjectURL, realRevoke = W.URL.revokeObjectURL, realClick = W.HTMLAnchorElement.prototype.click;
     W.URL.createObjectURL = b => { capturedBlob = b; return 'blob:test'; };
@@ -506,7 +506,7 @@
     // shared payload builder — the single source of the remote shape
     const payload = W.buildRemotePayload();
     t('payload has exactly the six collections', eq(Object.keys(payload).sort(), ['gyms','library','machines','plans','sessions','weights']));
-    t('every payload slice stamped with the current schema (4) + own tombstones', Object.values(payload).every(p => p.schema === 4 && typeof p.tombstones === 'object'));
+    t('every payload slice stamped with the current schema + own tombstones', Object.values(payload).every(p => p.schema === T.SCHEMA_VERSION && typeof p.tombstones === 'object'));
     const files = W.payloadToGistFiles(payload);
     t('gist mapping produces the six known filenames', eq(Object.keys(files).sort(), ['gym-tracker-gyms.json','gym-tracker-library.json','gym-tracker-machines.json','gym-tracker-plans.json','gym-tracker-sessions.json','gym-tracker-weights.json']));
     t('gist file content round-trips the payload', eq(JSON.parse(files['gym-tracker-library.json'].content), payload.library));
@@ -631,7 +631,7 @@
     // buildPlanPayload — the shared unit for file export AND in-app send
     const bench2 = T.D.exercises.find(e => e.id === 'bench-press');
     bench2.gyms = ['gym-local-x'];
-    T.D.plans.push({ id: 'pp1', name: 'Peito Teste', exercises: ['bench-press'], updatedAt: 1 });
+    T.D.plans.push({ id: 'pp1', name: 'Peito Teste', exercises: [{ eid: 'ppe1', exId: 'bench-press' }], updatedAt: 1 });
     const pl = W.buildPlanPayload(T.D.plans.find(p => p.id === 'pp1'));
     t('payload carries type/name/exercise snapshot', pl.type === 'gym-tracker-plan' && pl.name === 'Peito Teste' && pl.exercises.length === 1 && pl.exercises[0].id === 'bench-press');
     t('payload excludes sender-local gym tags', !('gyms' in pl.exercises[0]));
@@ -854,8 +854,12 @@
     // seeding cascade: plan override beats library, key by key
     const bench3 = T.D.exercises.find(e => e.id === 'bench-press');
     bench3.rest = { ww: 200, wuwu: 45 };
-    T.D.plans.push({ id: 'rp1', name: 'RestPlan', exercises: ['bench-press', 'zercher-squat'], rests: { 'bench-press': { ww: 150 } }, updatedAt: 1 });
-    t('seed: plan key beats library key, others pass through', eq(W.seedRestFor('bench-press', 'rp1'), { ww: 150, wuwu: 45 }));
+    // Entry-shaped plan (schema 5): rests key by ENTRY id. seedRestFor is
+    // deliberately called WITHOUT the eid here — the exId fallback (what
+    // mid-session adds rely on) must find en1's timing on its own.
+    T.D.plans.push({ id: 'rp1', name: 'RestPlan', exercises: [{ eid: 'en1', exId: 'bench-press' }, { eid: 'en2', exId: 'zercher-squat' }], rests: { en1: { ww: 150 } }, updatedAt: 1 });
+    t('seed: plan key beats library key, others pass through (exId fallback)', eq(W.seedRestFor('bench-press', 'rp1'), { ww: 150, wuwu: 45 })
+      && eq(W.seedRestFor('bench-press', 'rp1', 'en1'), { ww: 150, wuwu: 45 }));
     t('seed: library-only when plan silent', eq(W.seedRestFor('bench-press', null), { ww: 200, wuwu: 45 }));
     t('seed: undefined when neither has anything', W.seedRestFor('zercher-squat', 'rp1') === undefined);
 
@@ -879,20 +883,21 @@
     t('reorder → diff (listChanged)', !!diff && diff.listChanged);
     T.S.exercises.reverse();
 
-    // collectSessionRests: plan gets what differs from the LIBRARY, not frozen lib copies
-    let collected = T.collectSessionRests();
-    t('collect keeps the changed override, skips lib-identical', eq(collected, { 'bench-press': { ww: 90 } }));
+    // sessionPlanShape: the plan-worthy rests key by ENTRY id, and only
+    // overrides that differ from the LIBRARY survive (not frozen lib copies)
+    let shape = W.sessionPlanShape(T.D.plans.find(p => p.id === 'rp1'));
+    t('shape keeps the changed override under its entry id, skips lib-identical', eq(shape.rests, { en1: { ww: 90 } }));
     T.S.exercises[0].rest = { ww: 200, wuwu: 45 }; // exactly the library values
-    t('collect drops overrides identical to library defaults', eq(T.collectSessionRests(), {}));
+    t('shape drops overrides identical to library defaults', eq(W.sessionPlanShape(T.D.plans.find(p => p.id === 'rp1')).rests, {}));
     T.S.exercises[0].rest = { ww: 90 };
 
-    // doSaveSession('update') writes list+rests into the plan
+    // doSaveSession('update') writes entries+rests into the plan
     T.S.exercises[0].sets = [{ intent: 'work', reps: 5, kg: 100 }];
     const planBefore = T.D.plans.find(p => p.id === 'rp1');
     const updBefore = planBefore.updatedAt;
     W.doSaveSession('update');
     const planAfter = T.D.plans.find(p => p.id === 'rp1');
-    t("'update' rewrites plan exercises + rests + updatedAt", eq(planAfter.rests, { 'bench-press': { ww: 90 } }) && planAfter.updatedAt > updBefore && eq(planAfter.exercises, ['bench-press', 'zercher-squat']));
+    t("'update' rewrites plan entries + rests + updatedAt", eq(planAfter.rests, { en1: { ww: 90 } }) && planAfter.updatedAt > updBefore && eq(planAfter.exercises, [{ eid: 'en1', exId: 'bench-press' }, { eid: 'en2', exId: 'zercher-squat' }]));
     const savedSess = T.D.sessions.find(s => s.planId === 'rp1');
     t('session saved with its rest override intact', !!savedSess && eq(savedSess.exercises[0].rest, { ww: 90 }));
     T.D.sessions = T.D.sessions.filter(s => s !== savedSess);
@@ -906,10 +911,10 @@
     const planCount3 = T.D.plans.length;
     W.doSaveSession('new');
     const forked = T.D.plans.find(p => p.name === 'Forked Plan');
-    t("'new' creates the fork with the session's shape", T.D.plans.length === planCount3 + 1 && !!forked && eq(forked.rests, { 'bench-press': { ww: 75 } }));
+    t("'new' creates the fork with the session's shape (eids preserved from the source)", T.D.plans.length === planCount3 + 1 && !!forked && eq(forked.rests, { en1: { ww: 75 } }));
     const sess2 = T.D.sessions.find(s => s.planId === forked.id);
     t('session retagged to the forked plan', !!sess2 && sess2.planName === 'Forked Plan');
-    t('original plan untouched by the fork', eq(T.D.plans.find(p => p.id === 'rp1').rests, { 'bench-press': { ww: 90 } }));
+    t('original plan untouched by the fork', eq(T.D.plans.find(p => p.id === 'rp1').rests, { en1: { ww: 90 } }));
     T.D.sessions = T.D.sessions.filter(s => s !== sess2);
     T.D.plans = T.D.plans.filter(p => p.id !== forked.id);
 
@@ -918,25 +923,29 @@
     T.S.exercises[0].sets = [{ intent: 'work', reps: 5, kg: 100 }];
     T.S.exercises[0].rest = { ww: 60 };
     W.doSaveSession('keep');
-    t("'keep' saves the session, plan intact", eq(T.D.plans.find(p => p.id === 'rp1').rests, { 'bench-press': { ww: 90 } }));
+    t("'keep' saves the session, plan intact", eq(T.D.plans.find(p => p.id === 'rp1').rests, { en1: { ww: 90 } }));
     T.D.sessions = T.D.sessions.filter(s => s.planId !== 'rp1');
 
-    // sharing round-trip: payload carries rests + exercise rest; import remaps + sanitizes
+    // sharing round-trip: payload carries entries + rests + exercise rest;
+    // a LEGACY payload (no `entries`) still imports, its exId-keyed rests
+    // remapped onto the derived entry's minted eid.
     const pl4 = W.buildPlanPayload(T.D.plans.find(p => p.id === 'rp1'));
-    t('payload ships plan rests and exercise rest', eq(pl4.rests, { 'bench-press': { ww: 90 } }) && eq(pl4.exercises[0].rest, { ww: 200, wuwu: 45 }));
+    t('payload ships entries, plan rests and exercise rest', eq(pl4.rests, { en1: { ww: 90 } }) && eq(pl4.exercises[0].rest, { ww: 200, wuwu: 45 })
+      && eq(pl4.entries, [{ eid: 'en1', exId: 'bench-press' }, { eid: 'en2', exId: 'zercher-squat' }]));
     const exCount4 = T.D.exercises.length;
     W.applyImportedPlan({ name: 'RImp', exercises: [{ id: 'foreign-b', name: 'BENCH PRESS', rest: { ww: 111 } }], rests: { 'foreign-b': { ww: 141, wuw: 'junk' }, 'ghost': { ww: 99 } } });
     const rImp = T.D.plans.find(p => p.name === 'RImp');
-    t('import remaps sender rest keys to resolved local ids + sanitizes', eq(rImp.rests, { 'bench-press': { ww: 141 } }) && T.D.exercises.length === exCount4);
+    t('legacy import derives entries and remaps rest keys onto them', rImp.exercises.length === 1 && rImp.exercises[0].exId === 'bench-press'
+      && eq(rImp.rests, { [rImp.exercises[0].eid]: { ww: 141 } }) && T.D.exercises.length === exCount4);
     T.D.plans = T.D.plans.filter(p => p.name !== 'RImp');
 
-    // plan editor state fns: setPlanRest + collectPlanRests prune
-    W.eval("_planExs = ['bench-press']; _planRests = {};");
-    W.setPlanRest('bench-press', 'ww', '210');
-    W.setPlanRest('bench-press', 'wuw', '');
-    t('setPlanRest stores valid keys, ignores blanks', eq(W.eval('_planRests')['bench-press'], { ww: 210 }));
-    W.setPlanRest('bench-press', 'ww', '');
-    t('clearing the last key removes the override entirely', W.eval("_planRests['bench-press']") === undefined);
+    // plan editor state fns: setPlanRest keys by entry id since schema 5
+    W.eval("_planExs = [{ eid: 'pe1', exId: 'bench-press' }]; _planRests = {};");
+    W.setPlanRest('pe1', 'ww', '210');
+    W.setPlanRest('pe1', 'wuw', '');
+    t('setPlanRest stores valid keys under the entry id, ignores blanks', eq(W.eval('_planRests').pe1, { ww: 210 }));
+    W.setPlanRest('pe1', 'ww', '');
+    t('clearing the last key removes the override entirely', W.eval("_planRests.pe1") === undefined);
 
     delete bench3.rest;
     T.D.plans = T.D.plans.filter(p => p.id !== 'rp1');
@@ -974,7 +983,8 @@
     W.document.getElementById('save-new-plan-name').value = 'Do Livre';
     W.doSaveSession('new');
     const livrePlan = T.D.plans.find(p => p.name === 'Do Livre');
-    t('free save can fork a plan (ids + non-lib rests)', !!livrePlan && eq(livrePlan.exercises, ['bench-press']) && eq(livrePlan.rests, { 'bench-press': { ww: 111 } }));
+    t('free save can fork a plan (fresh entries + non-lib rests)', !!livrePlan && livrePlan.exercises.length === 1 && livrePlan.exercises[0].exId === 'bench-press'
+      && eq(livrePlan.rests, { [livrePlan.exercises[0].eid]: { ww: 111 } }));
     const livreSess = T.D.sessions.find(s => s.planId === livrePlan?.id);
     t('the saved free session is retagged to the new plan', !!livreSess && livreSess.planName === 'Do Livre');
     t('saved exercises carry no _collapsed scaffolding', livreSess.exercises.every(e => !('_collapsed' in e)));
@@ -991,7 +1001,8 @@
     W.document.getElementById('pfs-name').value = 'Extraído';
     W.doPlanFromSession(histSess.id);
     const extPlan = T.D.plans.find(p => p.name === 'Extraído');
-    t('plan extracted from saved session (ids + rests)', !!extPlan && eq(extPlan.exercises, ['bench-press']) && eq(extPlan.rests, { 'bench-press': { ww: 111 } }));
+    t('plan extracted from saved session (fresh entries + rests)', !!extPlan && extPlan.exercises.length === 1 && extPlan.exercises[0].exId === 'bench-press'
+      && eq(extPlan.rests, { [extPlan.exercises[0].eid]: { ww: 111 } }));
     t('extraction does NOT retag the session', T.D.sessions.find(s => s.id === histSess.id).planName === 'Do Livre');
     t('lands on the Plans tab', T.TAB === 'plans');
     T.D.sessions = T.D.sessions.filter(s => s.id !== histSess.id);
@@ -1182,7 +1193,7 @@
       { id: 'ds2', date: '2026-07-02', updatedAt: 1, exercises: [{ exId: 'dup-a', exName: 'Supino teste', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 105 }] }] },
       { id: 'ds3', date: '2026-07-03', updatedAt: 1, exercises: [{ exId: 'dup-b', exName: 'supino  TESTE', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 8, kg: 70 }] }] },
     );
-    T.D.plans.push({ id: 'dp1', name: 'Plano dup', exercises: ['dup-b', 'bench-press'], rests: { 'dup-b': { ww: 150 } }, updatedAt: 1 });
+    T.D.plans.push({ id: 'dp1', name: 'Plano dup', exercises: [{ eid: 'de1', exId: 'dup-b' }, { eid: 'de2', exId: 'bench-press' }], rests: { de1: { ww: 150 } }, updatedAt: 1 });
     t('exerciseUsage counts sessions and plans', W.exerciseUsage('dup-a').sessions === 2 && W.exerciseUsage('dup-b').sessions === 1 && W.exerciseUsage('dup-b').plans === 1);
 
     // THE point of the feature: split ids = split progression history
@@ -1197,18 +1208,21 @@
     t('history snapshot name preserved (what it was called then)', T.D.sessions.find(s => s.id === 'ds3').exercises[0].exName === 'supino  TESTE');
     t('merged history is now whole', W.exerciseProgress('dup-a', 24, 'weighted').points.length === 3);
     const mp = T.D.plans.find(p => p.id === 'dp1');
-    t('plan reference rewritten and de-duplicated', eq(mp.exercises, ['dup-a', 'bench-press']));
-    t('plan rest override moved to the keeper', eq(mp.rests, { 'dup-a': { ww: 150 } }));
+    t('plan entries repointed to the keeper', eq(mp.exercises, [{ eid: 'de1', exId: 'dup-a' }, { eid: 'de2', exId: 'bench-press' }]));
+    t('plan rest override survives under its entry id (eid keys, nothing to move)', eq(mp.rests, { de1: { ww: 150 } }));
     t('tombstones recorded so the merge survives sync', 'dup-b' in T.D.tombstones.exercises && 'dup-c' in T.D.tombstones.exercises);
     t('touched records got updatedAt bumped', T.D.sessions.find(s => s.id === 'ds3').updatedAt > 1 && mp.updatedAt > 1);
     t('no duplicate groups remain', !W.duplicateGroups().some(x => x.entries.some(e => e.id === 'dup-a')));
 
-    // a plan holding BOTH keeper and duplicate must not end up listing it twice
+    // a plan holding BOTH keeper and duplicate keeps TWO entries since E3 —
+    // both repointed at the keeper: that's the valid superset shape (each
+    // occurrence its own eid), no longer an artifact to de-duplicate.
     T.D.exercises.push({ id: 'dup-x', name: 'Remada teste', type: 'strength', compound: true, regime: 'weighted', mainMuscle: 'back', movementPattern: 'row', accessoryMuscles: [], updatedAt: 1 });
     T.D.exercises.push({ id: 'dup-y', name: 'remada teste', type: 'strength', compound: true, regime: 'weighted', mainMuscle: 'back', movementPattern: 'row', accessoryMuscles: [], updatedAt: 1 });
-    T.D.plans.push({ id: 'dp2', name: 'Ambos', exercises: ['dup-x', 'dup-y'], rests: {}, updatedAt: 1 });
+    T.D.plans.push({ id: 'dp2', name: 'Ambos', exercises: [{ eid: 'dx1', exId: 'dup-x' }, { eid: 'dx2', exId: 'dup-y' }], rests: {}, updatedAt: 1 });
     W.mergeExercises('dup-x', ['dup-y']);
-    t('plan with both copies collapses to one entry', eq(T.D.plans.find(p => p.id === 'dp2').exercises, ['dup-x']));
+    t('plan with both copies keeps two entries, both on the keeper (superset shape)',
+      eq(T.D.plans.find(p => p.id === 'dp2').exercises, [{ eid: 'dx1', exId: 'dup-x' }, { eid: 'dx2', exId: 'dup-x' }]));
 
     // prevention: quick-create reuses instead of forking a new id
     W.startFree();
@@ -1248,7 +1262,7 @@
 
     // a realistic mess: history, plans, weights, a gym, and custom exercises
     T.D.sessions = [{ id: 'rs1', date: '2026-07-01', updatedAt: 5, exercises: [{ exId: 'bench-press', exName: 'Bench press', type: 'strength', regime: 'weighted', sets: [{ intent: 'work', reps: 5, kg: 100 }] }] }];
-    T.D.plans    = [{ id: 'rp1', name: 'Plano velho', exercises: ['bench-press'], rests: {}, updatedAt: 5 }];
+    T.D.plans    = [{ id: 'rp1', name: 'Plano velho', exercises: [{ eid: 're1', exId: 'bench-press' }], rests: {}, updatedAt: 5 }];
     T.D.weights  = [{ id: 'rw1', date: '2026-07-01', kg: 80, updatedAt: 5 }];
     T.D.gyms     = [{ id: 'rg1', name: 'Academia velha', updatedAt: 5 }];
     T.D.exercises.push({ id: 'custom-junk', name: 'Duplicado bagunçado', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'undefined', movementPattern: 'undefined', accessoryMuscles: [], updatedAt: 5 });
@@ -1998,6 +2012,90 @@
     T.S = null;
     T.D.sessions = keepSessions; T.D.machines = keepMachines; T.D.gyms = keepGyms;
     T.gymId = keepGymId; T.nudgeDone = false; W.render();
+  }
+
+  // ── plan entries & movement slots (E3 core, schema 5) ──────────────────────
+  g('plan entries & movement slots');
+  {
+    const keepPlans = JSON.parse(JSON.stringify(T.D.plans)), keepSessions = [...T.D.sessions];
+    const slug = T.D.exercises.find(e => e.id === 'machine-low-row').movement;
+
+    // Backfill: strings → entries, rests re-keyed to eids (duplicates copy
+    // onto EACH minted entry), idempotent, never bumps updatedAt.
+    T.D.plans.push({ id: 'bf1', name: 'Legacy', exercises: ['bench-press', 'leg-extension', 'bench-press'], rests: { 'bench-press': { ww: 120 } }, updatedAt: 7 });
+    W.backfillPlanEntries();
+    const bf = T.D.plans.find(p => p.id === 'bf1');
+    t('backfill mints entries from legacy strings', bf.exercises.length === 3 && bf.exercises.every(en => en.eid && typeof en.eid === 'string')
+      && bf.exercises[0].exId === 'bench-press' && bf.exercises[1].exId === 'leg-extension');
+    t('backfill re-keys rests to eids, copying onto both duplicate entries',
+      eq(bf.rests[bf.exercises[0].eid], { ww: 120 }) && eq(bf.rests[bf.exercises[2].eid], { ww: 120 }) && !('bench-press' in bf.rests));
+    t('backfill never bumps updatedAt (merge safety)', bf.updatedAt === 7);
+    const bfSnap = JSON.stringify(bf);
+    W.backfillPlanEntries();
+    t('backfill is idempotent', JSON.stringify(T.D.plans.find(p => p.id === 'bf1')) === bfSnap);
+
+    // Slot entries: placeholder block at session start, inert to nudges and
+    // save, preserved AS A SLOT by 'update' even after a reorder.
+    T.D.plans.push({ id: 'sp1', name: 'SlotPlan', exercises: [
+      { eid: 'se1', exId: 'bench-press' },
+      { eid: 'se2', exId: null, movement: slug, prescription: { note: 'pegada aberta' } },
+    ], rests: {}, updatedAt: 1 });
+    W.startPlan('sp1'); T.TAB = 'log'; W.render();
+    t('a slot entry becomes a placeholder block with the plan note',
+      T.S.exercises.length === 2 && T.S.exercises[1].slot === true && T.S.exercises[1]._planEid === 'se2'
+      && W.document.getElementById('root').innerHTML.includes('Slot do plano')
+      && W.document.getElementById('root').innerHTML.includes('pegada aberta'));
+    T.S.exercises[0].sets = [{ intent: 'work', reps: 5, kg: 100, completed: true }];
+    t('an unresolved slot is invisible to the machine nudges',
+      W.machineNudgeTargets().length === 0 && W.startNudgeTargets().length === 0);
+    t('an untouched slot plan shows no drift', W.sessionPlanDiff() === null);
+    T.S.exercises.reverse();
+    t('reordering with a slot detects drift', !!W.sessionPlanDiff()?.listChanged);
+    T.nudgeDone = true;
+    W.doSaveSession('update');
+    const sp1 = T.D.plans.find(p => p.id === 'sp1');
+    t("'update' writes the slot back as a slot, reordered",
+      sp1.exercises.length === 2 && sp1.exercises[0].eid === 'se2' && sp1.exercises[0].exId === null
+      && sp1.exercises[0].movement === slug && sp1.exercises[0].prescription.note === 'pegada aberta'
+      && sp1.exercises[1].eid === 'se1' && sp1.exercises[1].exId === 'bench-press');
+    const savedS = T.D.sessions[T.D.sessions.length - 1];
+    t('the unresolved slot never reaches the saved session',
+      savedS.exercises.length === 1 && savedS.exercises[0].exId === 'bench-press' && !('_planEid' in savedS.exercises[0]));
+    T.D.sessions = T.D.sessions.filter(s => s !== savedS);
+
+    // Editor state: duplicates allowed (each add its own entry), slot adds
+    // validated against the movement vocabulary.
+    W.eval("_planExs = []; _planRests = {};");
+    W.addExToPlan('bench-press'); W.addExToPlan('bench-press');
+    t('editor allows duplicate entries (superset shape)',
+      W.eval('_planExs').length === 2 && W.eval('_planExs')[0].eid !== W.eval('_planExs')[1].eid);
+    W.addSlotToPlan(slug); W.addSlotToPlan('no-such-movement');
+    t('addSlotToPlan adds vocabulary movements only',
+      W.eval('_planExs').length === 3 && W.eval('_planExs')[2].movement === slug && W.eval('_planExs')[2].exId === null);
+
+    // Sharing: entries travel without perGym; import keeps known slots and
+    // sender eids, drops unknown-movement slots and their rests.
+    T.D.plans.push({ id: 'sh1', name: 'ShareSlots', exercises: [
+      { eid: 'she1', exId: 'bench-press', perGym: { g1: 'somewhere-local' }, prescription: { note: 'nota' } },
+      { eid: 'she2', exId: null, movement: slug },
+    ], rests: { she2: { ww: 100 } }, updatedAt: 1 });
+    const pay = W.buildPlanPayload(T.D.plans.find(p => p.id === 'sh1'));
+    t('payload entries carry structure but never perGym',
+      pay.entries.length === 2 && !('perGym' in pay.entries[0])
+      && pay.entries[0].prescription.note === 'nota' && pay.entries[1].movement === slug && pay.entries[1].exId === null);
+    W.applyImportedPlan({ name: 'ImpSlots', exercises: [{ id: 'bench-press', name: 'Supino reto' }],
+      entries: [
+        { eid: 'she1', exId: 'bench-press', prescription: { note: 'nota' } },
+        { eid: 'she2', exId: null, movement: slug },
+        { eid: 'she3', exId: null, movement: 'martian-press' },
+      ],
+      rests: { she2: { ww: 100 }, she3: { ww: 55 } } });
+    const imp = T.D.plans.find(p => p.name === 'ImpSlots');
+    t('import keeps known slots + sender eids, drops unknown-movement slots',
+      imp.exercises.length === 2 && imp.exercises[0].eid === 'she1' && imp.exercises[1].eid === 'she2'
+      && imp.exercises[1].movement === slug && eq(imp.rests, { she2: { ww: 100 } }));
+
+    T.D.plans = keepPlans; T.D.sessions = keepSessions; T.S = null; T.nudgeDone = false; W.render();
   }
 
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
