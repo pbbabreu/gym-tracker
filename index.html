@@ -2514,7 +2514,20 @@ function buildSlotBlock(ex, i) {
         </div>
         <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px;flex-shrink:0">×</button>
       </div>
-      ${typeof resolveSlot === 'function' ? Bs(CG,TX,'Escolher variação',`resolveSlot(${i})`,';width:100%;justify-content:center;margin-top:10px') : ''}
+      ${(() => {
+        // The evidence-based suggestion, inline with a one-tap Usar — the
+        // owner's "reminder or suggestion, not just being automatically
+        // picked": the fast path costs one tap, silence costs nothing.
+        const sug = slotSuggestionFor(ex);
+        const sugEx = sug && D.exercises.find(e => e.id === sug.exId);
+        return sugEx ? `
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
+          <span style="flex:1;min-width:0;font-size:12px;color:${TX}">sugerido: <strong>${esc(sugEx.name)}</strong>
+            <span style="font-size:10px;color:${DM}">· ${sug.why === 'lembrado' ? 'lembrado nesta academia' : 'última vez aqui'}</span></span>
+          ${Bs(CG,TX,'Usar',`resolveSlotTo(${i},'${sugEx.id}')`,';flex-shrink:0;padding:6px 12px;font-size:12px')}
+        </div>` : '';
+      })()}
+      ${Bs(BG3,TX,'Escolher variação',`resolveSlot(${i})`,';width:100%;justify-content:center;margin-top:8px')}
     </div>`;
 }
 
@@ -2716,6 +2729,7 @@ function buildExBlock(ex, i) {
             ${isDuplicated ? `<button onclick="alert('Este exercício aparece mais de uma vez neste treino (mesmo tipo e regime). O histórico combina os dados das duas entradas para sugestões futuras, mas cada uma é salva separadamente, na ordem em que foram adicionadas.')" style="flex-shrink:0;background:none;border:1px solid ${CA};color:${CA};border-radius:99px;width:16px;height:16px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0">i</button>` : ''}
             ${doneCheck}
           </div>
+          ${ex._planNote ? `<div style="font-size:11px;color:#4dd0c4;margin:-2px 0 6px">📋 ${esc(ex._planNote)}</div>` : ''}
           <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
             <button onclick="setExType(${i},'strength')"    style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isS?'#A32D2D':BG3};color:${isS?TX:DM}">Força</button>
             <button onclick="setExType(${i},'hypertrophy')" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isH?CB:BG3};color:${isH?TX:DM}">Hipert.</button>
@@ -3098,6 +3112,7 @@ function openExerciseDetail(exId) {
     ${!cues.length && !errs.length ? `<div style="margin-top:14px;font-size:12px;color:${DM};line-height:1.5">Sem dicas cadastradas para este exercício ainda.</div>` : ''}
 
     <div style="display:flex;gap:8px;margin-top:18px">
+      ${Bs(BG3, ex.favorite?'#e6c84a':TX, ex.favorite?'★':'☆', `toggleFavorite('${ex.id}');openExerciseDetail('${ex.id}')`, ';flex:0 0 44px;justify-content:center;padding:10px')}
       ${Bs(BG3,TX,'📈 Progresso',`closeModal();openProgress('${ex.id}')`,';flex:1;justify-content:center;padding:10px')}
       ${Bs(BG3,TX,'Editar',`closeModal();openEditEx('${ex.id}')`,';flex:1;justify-content:center;padding:10px')}
     </div>
@@ -4430,12 +4445,17 @@ function movementMatchesSearch(m, q) {
 // tags might just be stale; never block).
 function aExRow(ex) {
   const unavail = S?.gymId && !availableAtGym(ex, S.gymId);
+  // Flex wrapper, not a nested button (invalid HTML, ambiguous click — the
+  // machine-picker ✎ precedent): the row picks, the star toggles ★.
   return `
-    <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px${unavail?';opacity:.55':''}">
-      <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
-      <span style="color:${DM};font-size:12px">→</span>
-    </button>`;
+    <div style="display:flex;gap:6px;margin-bottom:7px;align-items:stretch">
+      <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer${unavail?';opacity:.55':''}">
+        <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
+        <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
+        <span style="color:${DM};font-size:12px">→</span>
+      </button>
+      <button onclick="toggleFavStar('${ex.id}')" title="Favorita" style="flex-shrink:0;width:38px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${ex.favorite?'#e6c84a':DM};font-size:15px;cursor:pointer;font-family:inherit">${ex.favorite?'★':'☆'}</button>
+    </div>`;
 }
 
 function aMovementRow(m) {
@@ -4516,7 +4536,10 @@ function aVariantViewHTML(slug) {
       <span style="font-size:11px;color:${DM}">${esc(MUSCLE_GROUPS[m.muscle]||'')}</span>
     </div>
     ${groups.map(g => aSectionHeader(g === '_none' ? 'Equipamento não definido' : EQUIPMENT_LABELS[g])
-      + byEquip[g].map(aExRow).join('')).join('')}
+      // ★ favorites float to the top WITHIN each equipment group (a stable
+      // sort keeps the rest in library order) — the owner's "favorite
+      // variations stay at the top of the list", per class.
+      + byEquip[g].slice().sort((a,b) => (b.favorite?1:0) - (a.favorite?1:0)).map(aExRow).join('')).join('')}
     ${aSectionHeader('Nova variação')}
     <input id="av-name" type="text" value="${esc(m.pt)} " placeholder="Nome da variação"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
@@ -5266,6 +5289,153 @@ function startNudgeGo() {
 }
 
 function startNudgeHide() { if (S) { S._startNudgeHidden = true; render(); } }
+
+// ── Slot resolution & ★ favorites (E3) ───────────────────────────────────────
+//
+// A slot NEVER resolves silently (owner redirection at kickoff: "a reminder
+// or a suggestion, not just being automatically picked"). The placeholder
+// block surfaces the top EVIDENCE-BASED suggestion inline (one-tap Usar);
+// the picker ranks the movement's variants:
+//   1. perGym[gymKey]        — "lembrado nesta academia", written ONLY by
+//                               the explicit 📌 lembrar tap (owner call)
+//   2. last-used at this gym — computed from session history
+//   3. ★ favorites           — the owner's star system: a PREFERENCE, so it
+//                               orders the list but never claims "sugerido"
+//                               (suggestions are facts about here; a star
+//                               isn't)
+//   4. the rest, alphabetical
+// gymKey is S.gymId or '' — the empty key covers gym-less sessions with the
+// same mechanism, no second field. Resolving records fromMovement on the
+// session entry (E4's movement-history data, accumulating from day one) and
+// builds the block exactly as startPlan would have (modes from history,
+// eid-keyed rest seed, machine auto-attach, load prefs).
+
+const slotGymKey = () => S?.gymId || '';
+
+// The live plan entry behind a slot block — resolution memory (perGym)
+// lives THERE, on the plan, not on the session copy.
+function planEntryFor(ex) {
+  if (!S?.planId || !ex?._planEid) return null;
+  return (D.plans.find(p => p.id === S.planId)?.exercises||[]).find(e => e.eid === ex._planEid) || null;
+}
+
+// Last exercise of this movement trained at this gym (any variant counts as
+// evidence, whether or not it came from a slot — fromMovement OR the
+// exercise's own movement). sessionsNewestFirst: the same-day-tie rule.
+function lastMovementExAt(movement, gymKey) {
+  if (!movement) return null;
+  for (const sess of sessionsNewestFirst()) {
+    if ((sess.gymId || '') !== gymKey) continue;
+    const e = (sess.exercises||[]).find(x => x.exId
+      && (x.fromMovement === movement || D.exercises.find(le => le.id === x.exId)?.movement === movement));
+    if (e) return e.exId;
+  }
+  return null;
+}
+
+// Evidence rungs only (remembered → last-here); returns null when neither
+// exists — the block then shows just "Escolher variação".
+function slotSuggestionFor(ex) {
+  const gymKey = slotGymKey();
+  const remembered = planEntryFor(ex)?.perGym?.[gymKey];
+  if (remembered && D.exercises.some(e => e.id === remembered)) return { exId: remembered, why: 'lembrado' };
+  const last = lastMovementExAt(ex.movement, gymKey);
+  if (last && D.exercises.some(e => e.id === last)) return { exId: last, why: 'ultima' };
+  return null;
+}
+
+function resolveSlot(i) {
+  const ex = S?.exercises[i]; if (!ex || !ex.slot) return;
+  const m = MOVEMENTS[ex.movement];
+  const gymKey = slotGymKey();
+  const remembered = planEntryFor(ex)?.perGym?.[gymKey] || null;
+  const lastHere = lastMovementExAt(ex.movement, gymKey);
+  const vars = D.exercises.filter(e => e.movement === ex.movement);
+  const rank = e => e.id === remembered ? 0 : e.id === lastHere ? 1 : e.favorite ? 2 : 3;
+  vars.sort((a,b) => rank(a) - rank(b) || a.name.localeCompare(b.name, 'pt'));
+  const badge = (txt, teal) => `<span style="display:inline-flex;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:700;background:${teal?'#0a2e2e':BG3};color:${teal?'#4dd0c4':DM}">${txt}</span>`;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:2px">🎯 ${esc(m?.pt || ex.movement || 'Movimento')}</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Escolha a variação de hoje${S.gymName ? ` — ${esc(S.gymName)}` : ''}. 📌 lembra a escolha para ${S.gymName ? 'esta academia' : 'treinos sem academia'}; ★ marca favoritas, que ficam no topo.</div>
+    ${vars.length ? vars.map(e => {
+      const unavail = S?.gymId && !availableAtGym(e, S.gymId);
+      const isRem = e.id === remembered;
+      return `
+      <div style="display:flex;gap:6px;margin-bottom:6px;align-items:stretch">
+        <button onclick="resolveSlotTo(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;text-align:left${unavail?';opacity:.55':''}">
+          <span style="flex:1;min-width:0">
+            <span style="font-weight:600;font-size:13px;display:block">${e.favorite?'★ ':''}${esc(e.name)}</span>
+            <span style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">
+              ${isRem ? badge('lembrado nesta academia', true) : ''}
+              ${e.id === lastHere && !isRem ? badge('última vez aqui', false) : ''}
+              ${unavail ? `<span style="display:inline-flex;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>` : ''}
+            </span>
+          </span>
+        </button>
+        <button onclick="toggleFavorite('${e.id}');resolveSlot(${i})" title="Favorita" style="flex-shrink:0;width:38px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${e.favorite?'#e6c84a':DM};font-size:15px;cursor:pointer;font-family:inherit">${e.favorite?'★':'☆'}</button>
+        <button onclick="slotRemember(${i},'${e.id}')" title="Lembrar nesta academia" style="flex-shrink:0;width:38px;background:${isRem?'#0a2e2e':BG3};border:1px solid ${isRem?'#14484a':BD};border-radius:8px;color:${isRem?'#4dd0c4':DM};font-size:14px;cursor:pointer;font-family:inherit">📌</button>
+      </div>`;
+    }).join('') : `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma variação deste movimento na biblioteca ainda — crie uma no seletor de exercícios ou na Biblioteca.</div>`}
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0')}`);
+}
+
+// The explicit "lembrar" toggle (owner call: memory is written by THIS tap
+// and nothing else). Lives on the PLAN entry — it's the plan's per-gym
+// memory, not session state — with an updatedAt bump so LWW propagates.
+// Toggling off = same tap on the remembered row.
+function slotRemember(i, exId) {
+  const ex = S?.exercises[i]; const en = planEntryFor(ex);
+  if (!en) return; // plan deleted mid-session — nowhere to remember
+  const gymKey = slotGymKey();
+  en.perGym = en.perGym || {};
+  if (en.perGym[gymKey] === exId) delete en.perGym[gymKey]; else en.perGym[gymKey] = exId;
+  if (!Object.keys(en.perGym).length) delete en.perGym;
+  const plan = D.plans.find(p => p.id === S.planId);
+  if (plan) plan.updatedAt = Date.now();
+  persist();
+  resolveSlot(i); // re-rank + re-badge in place
+}
+
+// Turns the placeholder into a full exercise block IN PLACE — the same
+// seeding startPlan gives a concrete entry (history-first modes, eid-keyed
+// rest, last-used machine, load prefs), plus fromMovement: the record of
+// which slot this exercise answered, which SURVIVES the save (unlike
+// _planEid/_planNote) because it's E4's movement-history data.
+function resolveSlotTo(i, exId) {
+  const ph = S?.exercises[i]; if (!ph || !ph.slot) return;
+  const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
+  const lm = lastModesFor(exId);
+  const o = { exId, exName: ex.name, type:(lm?lm.type:ex.type)||'hypertrophy', compound:ex.compound, regime:(lm?lm.regime:ex.regime)||'weighted',
+    rest: seedRestFor(exId, S.planId, ph._planEid), sets: [],
+    fromMovement: ph.movement,
+    ...(ph._planEid ? { _planEid: ph._planEid } : {}),
+    ...(ph._planNote ? { _planNote: ph._planNote } : {}) };
+  const lim = lastInstanceFor(exId, S.gymId || null);
+  if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
+  seedLoadPrefs(o, lim);
+  o.sets = buildSetsFromMemory(o);
+  S.exercises[i] = o;
+  closeModal(); render();
+}
+
+// ── ★ Favorites (E3, owner proposal at kickoff) ──────────────────────────────
+// A per-user preference flag ON the library exercise, synced through the
+// normal exercise LWW like any edit (toggling bumps updatedAt). It's a
+// RANKING signal for variant lists — resolve picker and movement browse —
+// never an auto-pick. Deliberately NOT in normalizeExerciseDef: someone
+// else's favorite is not the receiver's, so imports arrive unstarred.
+function toggleFavorite(exId) {
+  const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
+  if (ex.favorite) delete ex.favorite; else ex.favorite = true;
+  ex.updatedAt = Date.now();
+  persist();
+}
+
+// Star tap in the add-exercise picker rows — rebuilds the list so the
+// ★-first ordering is immediately visible. (In the variant view this also
+// rebuilds the new-variant form; starring while half-typing a name is rare
+// enough to accept over a stale order.)
+function toggleFavStar(exId) { toggleFavorite(exId); aRefreshList(); }
 
 function openSaveOptions(diff) {
   const what = [diff.listChanged ? 'exercícios/ordem' : null, diff.restsChanged ? 'descansos' : null].filter(Boolean).join(' e ');

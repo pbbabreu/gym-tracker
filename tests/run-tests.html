@@ -2122,6 +2122,64 @@
     t('start screen counts slots separately', W.document.getElementById('root').innerHTML.includes('2 exerc. · 1 slot'));
     T.D.plans = T.D.plans.filter(p => p !== cs);
 
+    // ── Resolution + ★ favorites (E3.3) ──
+    {
+      const keepGyms2 = [...T.D.gyms], keepGymId2 = T.gymId, exLen = T.D.exercises.length;
+      const anchor = T.MOVEMENTS[slug];
+      T.D.exercises.push(
+        { id: 'sv-a', name: 'Var A', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: anchor.muscle, movementPattern: anchor.pattern, accessoryMuscles: [], movement: slug, updatedAt: 1 },
+        { id: 'sv-b', name: 'Var B', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: anchor.muscle, movementPattern: anchor.pattern, accessoryMuscles: [], movement: slug, updatedAt: 1 });
+      T.D.gyms.push({ id: 'rg-slot', name: 'Slot Gym', updatedAt: 1 });
+      T.gymId = 'rg-slot';
+      T.D.sessions = [{ id: 'slotS1', date: '2026-07-20', updatedAt: 100, gymId: 'rg-slot', exercises: [{ exId: 'sv-a', exName: 'Var A', type: 'hypertrophy', regime: 'weighted', sets: [{ intent: 'work', reps: 10, kg: 40, completed: true }] }] }];
+      T.D.plans.push({ id: 'rsp1', name: 'ResolvePlan', exercises: [{ eid: 'rse1', exId: null, movement: slug }], rests: { rse1: { ww: 99 } }, updatedAt: 1 });
+
+      W.startPlan('rsp1'); T.TAB = 'log'; W.render();
+      t('slot suggests the last variant done at this gym (evidence, not auto-pick)',
+        W.slotSuggestionFor(T.S.exercises[0])?.exId === 'sv-a'
+        && W.document.getElementById('root').innerHTML.includes('sugerido:')
+        && W.document.getElementById('root').innerHTML.includes('última vez aqui'));
+
+      W.toggleFavorite('sv-b');
+      W.resolveSlot(0);
+      let rh = W.document.getElementById('modal-ov').innerHTML;
+      t('picker ranks última-vez > ★ > rest',
+        rh.indexOf("resolveSlotTo(0,'sv-a')") < rh.indexOf("resolveSlotTo(0,'sv-b')")
+        && rh.indexOf("resolveSlotTo(0,'sv-b')") < rh.indexOf("resolveSlotTo(0,'machine-low-row')"));
+
+      W.slotRemember(0, 'sv-b');
+      const rse1 = T.D.plans.find(p => p.id === 'rsp1').exercises[0];
+      rh = W.document.getElementById('modal-ov').innerHTML;
+      t('📌 lembrar writes perGym on the PLAN entry (updatedAt bumped) and re-ranks to rung 1',
+        rse1.perGym['rg-slot'] === 'sv-b' && T.D.plans.find(p => p.id === 'rsp1').updatedAt > 1
+        && rh.indexOf("resolveSlotTo(0,'sv-b')") < rh.indexOf("resolveSlotTo(0,'sv-a')")
+        && rh.includes('lembrado nesta academia'));
+      t('remembered beats last-used in the inline suggestion', W.slotSuggestionFor(T.S.exercises[0])?.why === 'lembrado');
+
+      W.resolveSlotTo(0, 'sv-b');
+      t('resolution replaces the placeholder in place with full seeding',
+        !T.S.exercises[0].slot && T.S.exercises[0].exId === 'sv-b' && T.S.exercises[0].fromMovement === slug
+        && eq(T.S.exercises[0].rest, { ww: 99 }) && T.S.exercises[0]._planEid === 'rse1');
+      T.S.exercises[0].sets = [{ intent: 'work', reps: 10, kg: 40, completed: true }];
+      t('a resolved slot reads as NO drift (the slot is the plan intent)', W.sessionPlanDiff() === null);
+      T.nudgeDone = true;
+      W.saveSession();
+      const resSaved = T.D.sessions[T.D.sessions.length - 1];
+      t('fromMovement survives the save; _planEid does not',
+        resSaved.exercises[0].fromMovement === slug && !('_planEid' in resSaved.exercises[0]));
+
+      W.toggleFavorite('sv-b');
+      t('★ toggles off cleanly', !T.D.exercises.find(e => e.id === 'sv-b').favorite);
+      t("imports never carry someone else's ★", !('favorite' in W.normalizeExerciseDef({ name: 'X', favorite: true })));
+      t('picker rows carry the ★ toggle', W.aExRow(T.D.exercises.find(e => e.id === 'machine-low-row')).includes('toggleFavStar'));
+      W.openExerciseDetail('machine-low-row');
+      t('detail view carries the ★ toggle', W.document.getElementById('modal-ov').innerHTML.includes('toggleFavorite'));
+      W.closeModal();
+
+      T.D.exercises = T.D.exercises.slice(0, exLen);
+      T.D.gyms = keepGyms2; T.gymId = keepGymId2;
+    }
+
     T.D.plans = keepPlans; T.D.sessions = keepSessions; T.S = null; T.nudgeDone = false; W.render();
   }
 
