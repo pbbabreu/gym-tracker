@@ -2095,6 +2095,33 @@
       imp.exercises.length === 2 && imp.exercises[0].eid === 'she1' && imp.exercises[1].eid === 'she2'
       && imp.exercises[1].movement === slug && eq(imp.rests, { she2: { ww: 100 } }));
 
+    // Editor UX (E3.2): slot mode lists movements through the same search;
+    // the prescription-note editor expands inline and writes the entry.
+    W.openNewPlan();
+    t('editor offers the slot-mode tab', !!W.document.getElementById('pe-mode-slot'));
+    W.peSetMode('slot');
+    t('slot mode lists movements with variant counts', W.document.getElementById('pe-ex-list').innerHTML.includes('variaç'));
+    W.eval(`_peSearch = ${JSON.stringify(T.MOVEMENTS[slug].pt)}`); W.peRefreshList();
+    t('slot list honors the bilingual search', W.document.getElementById('pe-ex-list').innerHTML.includes(`addSlotToPlan('${slug}')`));
+    W.eval("_peSearch = ''; _planExs = [{ eid: 'ne1', exId: 'bench-press' }]; _planRests = {}; _planNoteEdit = null;");
+    W.refreshPlanExList();
+    W.togglePlanNoteEdit('ne1');
+    t('note editor expands inline on 📝', !!W.document.querySelector('#plan-ex-list input[type="text"]'));
+    W.setPlanNote('ne1', '  3s excêntrica  ');
+    t('setPlanNote trims and stores on the entry', W.eval('_planExs')[0].prescription.note === '3s excêntrica');
+    W.setPlanNote('ne1', '');
+    t('clearing the note removes prescription entirely', !('prescription' in W.eval('_planExs')[0]));
+    W.eval(`_planExs = [{ eid: 'ne1', exId: 'bench-press', prescription: { note: 'nota X' } }, { eid: 'ne2', exId: null, movement: ${JSON.stringify(slug)} }]; _planRests = {};`);
+    W.document.getElementById('plan-name').value = 'Com Slot';
+    W.savePlan();
+    const cs = T.D.plans.find(p => p.name === 'Com Slot');
+    t('savePlan persists notes and slot entries', !!cs && cs.exercises[0].prescription.note === 'nota X'
+      && cs.exercises[1].exId === null && cs.exercises[1].movement === slug);
+    // start screen counts slots separately
+    T.S = null; T.TAB = 'log'; W.render();
+    t('start screen counts slots separately', W.document.getElementById('root').innerHTML.includes('2 exerc. · 1 slot'));
+    T.D.plans = T.D.plans.filter(p => p !== cs);
+
     T.D.plans = keepPlans; T.D.sessions = keepSessions; T.S = null; T.nudgeDone = false; W.render();
   }
 

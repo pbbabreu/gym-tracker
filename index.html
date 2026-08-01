@@ -460,9 +460,11 @@ let _aSearch = '', _aFMuscle = null, _aMovement = null, _newVarEquip = null;
 // text fields are read straight off the DOM at save, same as the create form.
 let _meGyms = [];
 
-// Filter state — plan editor modal
+// Filter state — plan editor modal. _peMode switches the add-list between
+// concrete exercises and movement SLOTS (E3) — same search box and muscle
+// chips serve both; compound/pattern filters only apply to exercises.
 let _peFMove = null, _peSearch = '', _peAlpha = false;
-let _peFMuscle = null, _peFPattern = null;
+let _peFMuscle = null, _peFPattern = null, _peMode = 'ex';
 
 // Plan editor working state. _planRests maps exId → rest override for THIS
 // plan ({wuwu?,wuw?,ww?}, seconds) — plans can't hold duplicate exercises
@@ -471,6 +473,10 @@ let _peFMuscle = null, _peFPattern = null;
 // expansion instead of a sub-modal: showModal() would replace the plan
 // editor modal and lose its inputs).
 let _planExs = [], _planId = null, _planRests = {}, _planRestEdit = null;
+// The entry whose prescription-note input is currently expanded inline —
+// same one-at-a-time pattern as _planRestEdit, for the same sub-modal-
+// would-replace-the-editor reason.
+let _planNoteEdit = null;
 
 // Exercise modal working state
 let _newType = 'hypertrophy', _newCompound = true, _newRegime = 'weighted';
@@ -2448,7 +2454,8 @@ function buildLogStartScreen() {
         padding:13px 16px;background:${BG2};border:1px solid ${BD};border-radius:10px;cursor:pointer;
         width:100%;margin-bottom:8px;color:${TX};font-family:inherit">
         <span style="font-weight:600">${esc(p.name)}</span>
-        <span style="color:${DM};font-size:13px">${(p.exercises||[]).length} exerc.</span>
+        <span style="color:${DM};font-size:13px">${(() => { const n=(p.exercises||[]).length, ns=(p.exercises||[]).filter(en=>!en.exId).length;
+          return `${n} exerc.${ns ? ` · ${ns} slot${ns>1?'s':''}` : ''}`; })()}</span>
       </button>`).join('');
     plans += `<div style="height:1px;background:${BD};margin:14px 0"></div>`;
   }
@@ -3463,11 +3470,11 @@ function buildPlans() {
         }).join('')}`;
 }
 
-function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planRestEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(''); }
+function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planRestEdit=null; _planNoteEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; _peMode='ex'; showPlanEditor(''); }
 // _planExs holds ENTRY objects since schema 5 — deep-copied, because a
 // shallow spread would alias each entry's perGym/prescription objects and
 // let editor tinkering mutate the stored plan before Salvar.
-function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=JSON.parse(JSON.stringify(p.exercises||[])); _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planRestEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; showPlanEditor(p.name); }
+function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=JSON.parse(JSON.stringify(p.exercises||[])); _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planRestEdit=null; _planNoteEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; _peMode='ex'; showPlanEditor(p.name); }
 
 function showPlanEditor(name) {
   showModal(`
@@ -3479,6 +3486,10 @@ function showPlanEditor(name) {
     <div id="plan-ex-list"></div>
     <div style="height:1px;background:${BD};margin:10px 0 12px"></div>
     <label style="font-size:12px;color:${DM};margin-bottom:8px;display:block">Adicionar ao plano</label>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button id="pe-mode-ex" onclick="peSetMode('ex')" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_peMode==='ex'?'#0a2e2e':BG3};color:${_peMode==='ex'?'#4dd0c4':DM}">Exercícios</button>
+      <button id="pe-mode-slot" onclick="peSetMode('slot')" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${_peMode==='slot'?'#0a2e2e':BG3};color:${_peMode==='slot'?'#4dd0c4':DM}">🎯 Slots de movimento</button>
+    </div>
     <div id="pe-filter-bar">${filterBarHTML(_peFMove,false,false,_peFMuscle,_peFPattern)}</div>
     <div style="display:flex;gap:8px;margin-bottom:8px">
       <input id="pe-search" type="text" placeholder="Buscar exercício..."
@@ -3519,9 +3530,39 @@ function peBuildFilterBar() {
   );
 }
 
+// Switches the add-list between exercises and movement slots; restyles the
+// tabs in place (the editor modal must not be rebuilt — it holds inputs).
+function peSetMode(m) {
+  _peMode = m;
+  const ex = document.getElementById('pe-mode-ex'), sl = document.getElementById('pe-mode-slot');
+  if (ex) { ex.style.background=_peMode==='ex'?'#0a2e2e':BG3; ex.style.color=_peMode==='ex'?'#4dd0c4':DM; }
+  if (sl) { sl.style.background=_peMode==='slot'?'#0a2e2e':BG3; sl.style.color=_peMode==='slot'?'#4dd0c4':DM; }
+  peRefreshList();
+}
+
 function peRefreshList() {
   const c = document.getElementById('pe-ex-list');
   if (!c) return;
+  if (_peMode === 'slot') {
+    // Movement slots: the vocabulary filtered by the same search box
+    // (bilingual, via movementMatchesSearch) and muscle chips —
+    // compound/pattern filters don't apply to movements. Zero-variant
+    // movements stay LISTED here, unlike the mid-session browse: a plan
+    // may promise a movement before the library has a variant for it;
+    // resolution day offers whatever exists by then.
+    const ms = movementsWithCounts()
+      .filter(m => (!_peFMuscle || m.muscle === _peFMuscle) && movementMatchesSearch(m, _peSearch))
+      .sort((a,b) => a.pt.localeCompare(b.pt, 'pt'));
+    c.innerHTML = `<div style="font-size:11px;color:${DM};margin-bottom:8px">Um slot guarda só o movimento — a variação é escolhida na hora do treino, na academia em que você estiver.</div>`
+      + (ms.length ? ms.map(m => `
+      <button onclick="addSlotToPlan('${m.slug}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
+        <span style="flex:1;font-weight:500;font-size:13px;text-align:left">🎯 ${esc(m.pt)}</span>
+        <span style="flex-shrink:0;font-size:11px;color:${DM}">${m.count} variaç${m.count===1?'ão':'ões'}</span>
+        <span style="color:${DM};font-size:12px">+</span>
+      </button>`).join('') : `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum movimento encontrado.</div>`);
+    c.scrollTop = 0;
+    return;
+  }
   const filtered = applyFilters(D.exercises, _peFMove, _peSearch, _peAlpha, false, _peFMuscle, _peFPattern);
   if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
   c.innerHTML = filtered.map(ex => `
@@ -3556,6 +3597,14 @@ function refreshPlanExList() {
             style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:7px 4px;text-align:center;outline:none;box-sizing:border-box">
         </div>`).join('')}
       </div>` : '';
+    // Prescription note (E3, owner-approved v1: one free-text field) —
+    // inline expansion, same pattern and reason as the rest row above.
+    const noteRow = _planNoteEdit === en.eid ? `
+      <div style="padding:4px 0 10px 24px">
+        <input type="text" value="${esc(en.prescription?.note || '')}" placeholder="Ex.: pegada aberta, 3s excêntrica"
+          onchange="setPlanNote('${en.eid}', this.value)"
+          style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
+      </div>` : '';
     return `<div style="border-bottom:.5px solid ${BD}">
       <div style="display:flex;align-items:center;gap:6px;padding:7px 0">
         <div style="display:flex;flex-direction:column;gap:2px">
@@ -3568,15 +3617,28 @@ function refreshPlanExList() {
              ${mv ? musclePill(mv.muscle, mv.pattern) : ''}`
           : `<span style="flex:1;font-size:14px">${esc(ex?ex.name:'(removido)')}</span>
              ${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}`}
+        <button onclick="togglePlanNoteEdit('${en.eid}')" title="Observação neste plano" style="background:none;border:none;color:${en.prescription?.note||_planNoteEdit===en.eid?'#4dd0c4':DM};font-size:13px;cursor:pointer;padding:4px">📝</button>
         <button onclick="togglePlanRestEdit('${en.eid}')" title="Descanso neste plano" style="background:none;border:none;color:${hasRest||_planRestEdit===en.eid?'#6fcf97':DM};font-size:14px;cursor:pointer;padding:4px">⏱</button>
         <button onclick="rmPlanEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px">×</button>
       </div>
       ${restRow}
+      ${noteRow}
     </div>`;
   }).join('');
 }
 
 function togglePlanRestEdit(eid) { _planRestEdit = _planRestEdit === eid ? null : eid; refreshPlanExList(); }
+function togglePlanNoteEdit(eid) { _planNoteEdit = _planNoteEdit === eid ? null : eid; refreshPlanExList(); }
+
+// The prescription note lives ON the entry — a plan-specific instruction
+// ("what to do in THIS plan"), unlike a machine note (a fact about the
+// apparatus, which lives on the machine). Trimmed and capped like every
+// other free-text field that rides the sync payload.
+function setPlanNote(eid, v) {
+  const en = _planExs.find(x => x.eid === eid); if (!en) return;
+  const note = (v||'').trim().slice(0, 200);
+  if (note) en.prescription = { note }; else delete en.prescription;
+}
 
 // onchange from the inline rest inputs — keys by ENTRY id (schema 5); keeps
 // only valid entries so a cleared field genuinely means "back to
