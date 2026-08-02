@@ -109,6 +109,11 @@
     get nudgeDone() { return _machineNudgeDone; }, set nudgeDone(v) { _machineNudgeDone = v; },
     get varEquip() { return _newVarEquip; }, set varEquip(v) { _newVarEquip = v; },
     SCHEMA_VERSION, MOVEMENTS, MOVEMENT_PATTERNS, SEED_CLASSIFICATION,
+    // Provenance (schema 6). Top-level const/function declarations aren't
+    // window properties, so the bridge is the only way the suite can reach
+    // them — the same reason everything else above is listed here.
+    ORIGIN_GLOBAL, ORIGIN_USER, ORIGIN_SHARED, originOf, isGlobalEx,
+    isKnownGlobalId, newUserExId, normalizeExerciseOrigin, normalizeExerciseDef,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -393,7 +398,7 @@
   // ── gym profiles (M0) ──────────────────────────────────────────────────────
   g('gym profiles (M0)');
   {
-    t('SCHEMA_VERSION at 5 (plan-entries era)', T.SCHEMA_VERSION === 5);
+    t('SCHEMA_VERSION at 6 (exercise-provenance era)', T.SCHEMA_VERSION === 6);
 
     // availability semantics — absent/empty = everywhere, null gym = no filtering
     t('no gym selected → everything available', T.availableAtGym({ gyms: ['g9'] }, null) === true);
@@ -2619,6 +2624,80 @@
     W.closeModal();
     t('UI close removes the modal synchronously', !W.document.getElementById('bt-probe2'));
     T.historyGuard = false;                            // back to the embedded default for any later modal tests
+  }
+
+  // ── exercise provenance (schema 6) ────────────────────────────────────────
+  // The library is three tiers sharing ONE shape: global (curated catalog),
+  // user (created here) and shared (arrived in someone else's plan), with
+  // `origin` the only field that differs. These checks pin the invariant at
+  // every point an exercise can enter the library, because a wrong origin is
+  // invisible in the UI but decides what ⟳ Nomes is allowed to overwrite.
+  g('exercise provenance');
+  {
+    const seeded = T.D.exercises.find(e => e.id === 'bench-press');
+    t('library.json seeding stamps origin: global', seeded && seeded.origin === T.ORIGIN_GLOBAL, seeded && seeded.origin);
+    t('every seeded exercise is global', T.D.exercises.every(e => e.origin === T.ORIGIN_GLOBAL));
+
+    // id namespace — user exercises can never collide with a catalog slug
+    const nid = T.newUserExId();
+    t('newUserExId() lives in the u_ namespace', /^u_/.test(nid));
+    t('a catalog slug is recognised as global', T.isKnownGlobalId('bench-press') === true);
+    t('a u_ id is never a catalog id', T.isKnownGlobalId(nid) === false);
+
+    // creation paths
+    const before = T.D.exercises.length;
+    W.openNewEx();
+    W.document.getElementById('ex-name').value = 'Prov Teste Novo';
+    W.saveNewEx();
+    const made = T.D.exercises.find(e => e.name === 'Prov Teste Novo');
+    t('saveNewEx() creates origin: user with a u_ id', made && made.origin === T.ORIGIN_USER && /^u_/.test(made.id),
+       made && `${made.origin}/${made.id}`);
+    t('…and actually added one exercise', T.D.exercises.length === before + 1);
+
+    // normalizeExerciseDef: the sender's claim is a HINT, never authority
+    const invented = T.normalizeExerciseDef({ id: 'u_someoneelse', name: 'Invenção alheia',
+      mainMuscle: 'chest', movementPattern: 'press', origin: 'global' }, T.ORIGIN_SHARED);
+    t('an unknown id + shared hint lands shared', invented.origin === T.ORIGIN_SHARED, invented.origin);
+    t("…and a sender's origin:'global' claim is ignored", invented.origin !== T.ORIGIN_GLOBAL);
+    const official = T.normalizeExerciseDef({ id: 'bench-press', name: 'Supino reto',
+      mainMuscle: 'chest', movementPattern: 'press' }, T.ORIGIN_SHARED);
+    t('a known catalog id in a share resolves to global', official.origin === T.ORIGIN_GLOBAL, official.origin);
+    const withSender = T.normalizeExerciseDef({ id: 'u_x1', name: 'Rosca da Ana',
+      mainMuscle: 'biceps', movementPattern: 'curl', sharedFrom: 'ana@example.com' }, T.ORIGIN_SHARED);
+    t('sharedFrom is carried on a shared exercise', withSender.sharedFrom === 'ana@example.com');
+    t('sharedFrom is dropped when the exercise is not shared', !official.sharedFrom);
+    const idless = T.normalizeExerciseDef({ name: 'Sem id' }, T.ORIGIN_SHARED);
+    t('an id-less definition gets a u_ id, never a bare uid', /^u_/.test(idless.id), idless.id);
+
+    // ⟳ Nomes must never touch anything but the catalog
+    const userEx = T.D.exercises.find(e => e.name === 'Prov Teste Novo');
+    const fakeSeedMap = { 'bench-press': { ...seeded, name: 'Supino RENOMEADO' } };
+    fakeSeedMap[userEx.id] = { ...userEx, name: 'NÃO DEVE ACONTECER' };
+    const chg = W.seedRefreshChanges(fakeSeedMap);
+    const allTouched = [...chg.renames, ...chg.contentOnly].map(c => c.ex.id);
+    t('seed refresh offers the global rename', allTouched.includes('bench-press'));
+    t('seed refresh never offers a user exercise, even if the map names its id',
+       !allTouched.includes(userEx.id), allTouched.join(','));
+
+    // the defensive normalizer (a v5 device racing a push)
+    userEx.origin = undefined;
+    W.normalizeExerciseOrigin();
+    t('normalizeExerciseOrigin() repairs an origin-less user exercise', userEx.origin === T.ORIGIN_USER);
+    const seeded2 = T.D.exercises.find(e => e.id === 'bench-press');
+    seeded2.origin = undefined;
+    W.normalizeExerciseOrigin();
+    t('…and derives global for a known catalog id', seeded2.origin === T.ORIGIN_GLOBAL);
+    t('originOf() falls back sanely for a null-ish record', T.originOf({ id: 'zzz' }) === T.ORIGIN_USER);
+    t('isGlobalEx() reads through the fallback', T.isGlobalEx({ id: 'bench-press' }) === true);
+
+    // the share payload must not leak origin — the receiver always re-derives
+    const p = { id: 'provplan', name: 'Prov', exercises: [{ eid: 'e1', exId: 'bench-press' }], rests: {} };
+    const payload = W.buildPlanPayload(p);
+    t('share payload carries no origin field', payload.exercises.every(e => !('origin' in e)));
+
+    // cleanup so later assertions (and the persisted clean state) are unaffected
+    T.D.exercises = T.D.exercises.filter(e => e.name !== 'Prov Teste Novo');
+    W.closeModal();
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

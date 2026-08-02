@@ -93,13 +93,16 @@ async function seedStarterLibrary() {
     const r = await fetch('library.json', { cache: 'no-store' });
     if (!r.ok) throw new Error('fetch failed: ' + r.status);
     const data = await r.json();
-    D.exercises = (data.exercises || []).map(e => ({...e, updatedAt:Date.now()}));
+    // Everything in library.json IS the curated catalog, by definition —
+    // stamped here rather than shipped in the file so the generator's
+    // schema stays about the exercise, not about how it was delivered.
+    D.exercises = (data.exercises || []).map(e => ({...e, origin: ORIGIN_GLOBAL, updatedAt:Date.now()}));
     // library.json ships fully classified, so this is normally a no-op —
     // but calling it here too (not just from loadData()/mergeRemote()/
     // applyData()) means a future entry added to library.json without the
     // new fields still degrades safely instead of relying entirely on the
     // seed file always being complete.
-    backfillExerciseClassification(); backfillPlanEntries();
+    backfillExerciseClassification(); backfillPlanEntries(); normalizeExerciseOrigin();
     _libSeedError = false;
     await persist();
   } catch(e) {
@@ -301,6 +304,56 @@ function backfillExerciseClassification() {
     ex.movementPattern  = seed ? seed[1] : 'undefined';
     ex.accessoryMuscles = seed ? [...seed[2]] : [];
   });
+}
+
+// ── Exercise provenance (schema 6) ───────────────────────────────────────────
+//
+// Every exercise says where it came from. The three tiers are deliberately
+// ONE SHAPE: an exercise is an exercise, and `origin` is the only field that
+// differs between them. Any field added or removed later applies to all
+// three alike — there is no global-only field and no user-only field (a user
+// may write their own cues; a catalog entry may lack them). That rule is
+// what keeps the planned ADOPTION flow — moving a user's own exercise onto
+// an official one that ships later, without losing their history — a plain
+// reference repoint (mergeExercises, section 13) instead of a shape
+// migration.
+//
+// Stored, never derived. Deriving "is it global?" from library.json
+// membership breaks three ways: it can't tell `user` from `shared` at all,
+// it degrades offline, and it silently reclassifies a user's own exercise
+// the day the catalog happens to ship the same lift.
+const ORIGIN_GLOBAL = 'global';   // curated catalog: library.json seed or ⟳ Catálogo
+const ORIGIN_USER   = 'user';     // created here, by this user
+const ORIGIN_SHARED = 'shared';   // arrived inside someone else's shared plan
+const ORIGINS = [ORIGIN_GLOBAL, ORIGIN_USER, ORIGIN_SHARED];
+
+// The offline authority for "this id belongs to the curated catalog".
+// SEED_CLASSIFICATION is baked into this file, so the answer is synchronous
+// and works with no network — which matters because plan import must decide
+// an origin even on a plane. Its blind spot is honest and one-directional:
+// a catalog entry published AFTER this build shipped isn't in the table, so
+// a shared plan carrying it lands `shared` rather than `global`. That errs
+// toward NOT claiming official status we can't verify, and the adoption
+// flow is exactly the thing that later corrects it.
+const isKnownGlobalId = id => typeof id === 'string' && !!SEED_CLASSIFICATION[id];
+
+// Display/logic accessor with a derived fallback. The fallback is a repair
+// path for malformed data, NOT the mechanism: after schema 6 every exercise
+// is stamped at the point it enters, and normalizeExerciseOrigin() below
+// keeps it that way. Reading through this helper means a stray origin-less
+// record renders as something sane instead of "undefined".
+const originOf = ex => (ex && ORIGINS.includes(ex.origin)) ? ex.origin
+  : (ex && isKnownGlobalId(ex.id) ? ORIGIN_GLOBAL : ORIGIN_USER);
+const isGlobalEx = ex => originOf(ex) === ORIGIN_GLOBAL;
+
+// Belt and braces for one narrow race. The schema guard freezes a v5 device
+// the moment it READS v6 data — but a v5 device that pushes before it ever
+// reads can land origin-less exercises in the merge. This stamps them on
+// arrival, using the same derived rule as originOf(). No updatedAt bump:
+// same rule as every other backfill — normalization is not a user edit and
+// must never outrank a genuine remote change in the per-item LWW merge.
+function normalizeExerciseOrigin() {
+  D.exercises.forEach(ex => { if (!ORIGINS.includes(ex.origin)) ex.origin = originOf(ex); });
 }
 
 // ── Plan-entry backfill (E3, schema 5) ───────────────────────────────────────
@@ -548,6 +601,16 @@ let _newGyms = [];
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 const uid     = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+// Ids for USER-CREATED exercises live in their own `u_` namespace (schema 6).
+// Global catalog ids are hand-authored slugs from the vault ('bench-press'),
+// so the prefix makes a collision between the two impossible by
+// construction. That matters specifically because plan sharing preserves
+// the SENDER's ids: without the namespace, an exercise someone invented
+// could one day carry the same id as a real catalog entry, and "is this the
+// official one?" would have no honest answer — which is exactly the question
+// the planned adoption flow has to ask. Exercise ids only; everything else
+// (sessions, plans, machines) keeps plain uid().
+const newUserExId = () => 'u_' + uid();
 // LOCAL date, deliberately NOT toISOString() (which is UTC): in any timezone
 // west of UTC — e.g. Brazil, UTC-3 — the UTC date rolls over at 21:00 local,
 // so an evening workout logged after that got stamped with TOMORROW's date.
@@ -668,7 +731,13 @@ function sanitizeRest(r) {
 //     by ids nothing references anymore, so v4 devices freeze until
 //     reloaded. backfillPlanEntries() (section 2) upgrades v4 data on
 //     every hydration path.
-const SCHEMA_VERSION = 5;
+//   v6 (2026-08-02): exercise PROVENANCE — every exercise carries
+//     `origin` ('global' | 'user' | 'shared'), and user-created ids gain a
+//     `u_` prefix. A v5 device knows neither, so it would push origin-less
+//     exercises into an origin-aware library; the guard freezes it as soon
+//     as it sees v6 data. normalizeExerciseOrigin() (section 2) closes the
+//     narrow race where a v5 device pushes before ever reading v6.
+const SCHEMA_VERSION = 6;
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -1281,7 +1350,7 @@ function mergeRemote(remote) {
     // A remote device that hasn't loaded this classification feature yet
     // could push exercises with no mainMuscle at all — backfill after every
     // merge, not just on local load, so that never leaves a gap.
-    backfillExerciseClassification(); backfillPlanEntries();
+    backfillExerciseClassification(); backfillPlanEntries(); normalizeExerciseOrigin();
   }
 
   if (remote.plans?.plans) {
@@ -1403,7 +1472,7 @@ async function loadData() {
     // Backfills any exercise saved before muscle-group classification
     // existed — see backfillExerciseClassification() (section 2). A no-op
     // once every exercise has been through it once.
-    backfillExerciseClassification(); backfillPlanEntries();
+    backfillExerciseClassification(); backfillPlanEntries(); normalizeExerciseOrigin();
     // Same idea for sessions saved before the set-metadata strip existed —
     // see scrubSessionSetMetadata() (section 2). Also a no-op once clean.
     scrubSessionSetMetadata();
@@ -2060,6 +2129,20 @@ const compPill = c => c === true
   : c === false
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1810;color:#d4a96a">Isolado</span>`
   : `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1a1a1a;color:${DM}">?</span>`;
+
+// Provenance marker (schema 6). Deliberately EMPTY for the curated catalog:
+// after the library rework the overwhelming majority of entries are global,
+// so badging those would put a pill on nearly every row and say nothing.
+// Marking the exceptions is quieter and carries the actual information —
+// "this one isn't from the catalog, nobody reviewed it".
+const originPill = ex => {
+  const o = originOf(ex);
+  if (o === ORIGIN_GLOBAL) return '';
+  const label = o === ORIGIN_SHARED
+    ? (ex.sharedFrom ? `De ${esc(ex.sharedFrom)}` : 'Compartilhado')
+    : 'Minha';
+  return `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#241a2e;color:#c9a6e0">${label}</span>`;
+};
 
 // Combines mainMuscle + movementPattern into one pill ("Peito · Supino")
 // rather than two separate ones — see MOVEMENT_PATTERNS (section 2) for why
@@ -3010,6 +3093,7 @@ function libExRow(ex) {
         ${ex.regime?regimePill(ex.regime):''}
         ${compPill(ex.compound!=null?ex.compound:null)}
         ${musclePill(ex.mainMuscle, ex.movementPattern)}
+        ${originPill(ex)}
       </div>
     </div>
     ${Bs(BG3,TX,'Editar',`openEditEx('${ex.id}')`,';padding:6px 10px;font-size:12px')}
@@ -3094,7 +3178,7 @@ function openExerciseDetail(exId) {
     ${ex.name_en && nameKey(ex.name_en) !== nameKey(ex.name)
       ? `<div style="font-size:12px;color:${DM};margin-bottom:8px">${esc(ex.name_en)}</div>` : '<div style="height:6px"></div>'}
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
-      ${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${musclePill(ex.mainMuscle,ex.movementPattern)}
+      ${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${musclePill(ex.mainMuscle,ex.movementPattern)}${originPill(ex)}
       ${ex.movement ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${TX}">${esc(MOVEMENTS[ex.movement]?.pt || ex.movement)}</span>` : ''}
       ${ex.equipment ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${DM}">${esc(EQUIPMENT_LABELS[ex.equipment] || ex.equipment)}</span>` : ''}
     </div>
@@ -3289,6 +3373,13 @@ let _seedRefreshMap = null;
 function seedRefreshChanges(map) {
   const renames = [], contentOnly = [];
   D.exercises.forEach(ex => {
+    // Since schema 6 the "don't touch the user's own exercises" promise is
+    // an ENFORCED invariant rather than an emergent one. It used to rest
+    // entirely on the id lookup below missing — i.e. on user ids being
+    // random enough never to collide with a catalog slug. Now origin says
+    // so outright, which also covers a `shared` exercise whose sender
+    // happened to build it on a catalog id.
+    if (!isGlobalEx(ex)) return;
     const s = map[ex.id]; if (!s) return;
     const differs = SEED_REFRESH_FIELDS.some(f => JSON.stringify(s[f] ?? null) !== JSON.stringify(ex[f] ?? null));
     if (!differs) return;
@@ -3484,7 +3575,7 @@ function addCatalogExercise(catalogId) {
   // Same hardening every foreign definition gets (normalizeExerciseDef,
   // section 14) — the catalog is admin-curated, but "trusted author" is not
   // a reason to skip validation that costs nothing.
-  D.exercises.push(normalizeExerciseDef(row.data));
+  D.exercises.push(normalizeExerciseDef(row.data, ORIGIN_GLOBAL));
   persist();
   renderCatalogList(); // entry disappears from the offer list
   render();            // library list behind the modal updates too
@@ -3876,7 +3967,19 @@ function importPlanFile(input) {
 //     same key for every `D.exercises.find(e => e.id === ...)` in the app.
 // Caller remains responsible for name-presence filtering and for deciding
 // whether a matching local exercise should be reused instead.
-function normalizeExerciseDef(imp) {
+// `originHint` is what the CALLER knows about where this definition came
+// from — ORIGIN_GLOBAL for a ⟳ Catálogo row, ORIGIN_SHARED for a plan
+// import. It is a hint and not authority: a shared definition claiming
+// `origin:'global'` is just another untrusted field, so a hint of SHARED is
+// only honoured when the id isn't a known catalog id. That single rule
+// covers both real cases — a friend sharing a plan built on official
+// exercises (those resolve to `global`, they simply haven't been pulled
+// yet) and a friend sharing something they invented (`shared`).
+function normalizeExerciseDef(imp, originHint) {
+  const origin = (originHint === ORIGIN_GLOBAL || isKnownGlobalId(imp.id)) ? ORIGIN_GLOBAL
+    : (originHint === ORIGIN_SHARED ? ORIGIN_SHARED : ORIGIN_USER);
+  const sharedFrom = (origin === ORIGIN_SHARED && typeof imp.sharedFrom === 'string' && imp.sharedFrom.trim())
+    ? imp.sharedFrom.trim().slice(0, 120) : null;
   const type     = imp.type==='strength' ? 'strength' : 'hypertrophy';
   const regime   = (imp.regime==='assisted'||imp.regime==='bodyweight') ? imp.regime : 'weighted';
   const compound = imp.compound===true || imp.compound===false ? imp.compound : null;
@@ -3911,7 +4014,11 @@ function normalizeExerciseDef(imp) {
     && MOVEMENTS[imp.movement].muscle === mainMuscle
     && MOVEMENTS[imp.movement].pattern === movementPattern) ? imp.movement : null;
 
-  return { id: imp.id || uid(), name: imp.name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles,
+  // An id-less definition is one this device is inventing storage for, so
+  // it gets a user-namespaced id — never a bare uid() that could later
+  // collide with a catalog slug.
+  return { id: imp.id || newUserExId(), name: imp.name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles,
+    origin, ...(sharedFrom ? { sharedFrom } : {}),
     ...(movement ? { movement } : {}), ...(name_en ? { name_en } : {}), ...(aliases.length ? { aliases } : {}),
     ...(equipment ? { equipment } : {}), ...(cues_pt.length ? { cues_pt } : {}), ...(cues_en.length ? { cues_en } : {}),
     ...(errors_pt.length ? { errors_pt } : {}), ...(errors_en.length ? { errors_en } : {}),
@@ -3927,7 +4034,13 @@ function normalizeExerciseDef(imp) {
 // id). Only when neither matches is a new library entry added, using the
 // sender's own id — keeping a second import of the same plan idempotent
 // against the exercise list rather than creating duplicates.
-function applyImportedPlan(data) {
+// `sharedFrom` is the sender's identity when we actually know it — the
+// in-app share path has it from the share row, where RLS pins from_email to
+// the sender's JWT so it can't be spoofed. A plan arriving as a FILE (over
+// WhatsApp, say) has no verifiable sender, so it stays null: better an
+// unattributed "compartilhado comigo" than a name anyone could type into a
+// JSON file.
+function applyImportedPlan(data, sharedFrom) {
   // sender exId → resolved local exId, for remapping the plan-level rests
   // map below (its keys are the SENDER's ids, which may resolve to
   // different local ids via the name-match fallback).
@@ -3949,7 +4062,10 @@ function applyImportedPlan(data) {
       // instead of importing a duplicate with a split history.
       let local = (imp.id && D.exercises.find(e => e.id === imp.id)) || findByName(imp.name);
       if (!local) {
-        local = normalizeExerciseDef(imp);
+        // Anything genuinely new from someone else's plan is SHARED unless
+        // its id is a catalog id we recognise — in which case it really is
+        // official and the receiver simply hasn't pulled it yet.
+        local = normalizeExerciseDef({ ...imp, sharedFrom }, ORIGIN_SHARED);
         D.exercises.push(local);
       }
       if (imp.id) idMap[imp.id] = local.id;
@@ -4041,7 +4157,7 @@ async function importShare(id) {
     alert('Plano recebido em formato inválido.');
     return;
   }
-  applyImportedPlan(data);                 // persists + renders
+  applyImportedPlan(data, s.from_email);   // persists + renders
   _receivedShares = _receivedShares.filter(x => x.id !== id);
   markShareClaimed(id);                    // fire-and-forget; row stays server-side with claimed_at set
   render();
@@ -4405,7 +4521,7 @@ function saveNewEx() {
   const clash = findByName(name);
   if (clash && !confirm(`Já existe "${clash.name}" na biblioteca.\n\nCriar outro com o mesmo nome? Isso divide o histórico e as sugestões entre os dois.`)) return;
   const rest = readModalRest();
-  D.exercises.push({ id:uid(), name, type:_newType, compound:_newCompound, regime:_newRegime,
+  D.exercises.push({ id:newUserExId(), name, type:_newType, compound:_newCompound, regime:_newRegime, origin:ORIGIN_USER,
     mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
     gyms:[..._newGyms], ...(_newEquip ? { equipment:_newEquip } : {}), ...(rest ? { rest } : {}), updatedAt:Date.now() });
   persist(); closeModal(); render();
@@ -4824,7 +4940,7 @@ function createVariant(slug) {
   if (clash) { pickEx(clash.id); return; }
   const sib = D.exercises.find(e => e.movement === slug);
   const ex = {
-    id: uid(), name, type: _newType,
+    id: newUserExId(), name, type: _newType, origin: ORIGIN_USER,
     compound: sib ? sib.compound : null,
     regime: sib ? (sib.regime||'weighted') : 'weighted',
     mainMuscle: m.muscle, movementPattern: m.pattern, movement: slug,
@@ -4944,13 +5060,16 @@ function createAndAdd() {
     alert(`"${existing.name}" já existe na biblioteca — adicionei o exercício existente, para não dividir seu histórico.`);
     return;
   }
-  const id   = uid();
+  const id   = newUserExId();
   // mainMuscle/movementPattern default to 'undefined' here, same as the
   // hardcoded compound/regime just above — this quick-create path only
   // exposes Type (see setNewType()); a proper classification still needs a
   // follow-up Library edit, exactly like fixing a mis-tagged regime already
-  // does today.
-  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', mainMuscle:'undefined', movementPattern:'undefined', accessoryMuscles:[], updatedAt:Date.now() });
+  // does today. NOTE this is the one path that can still mint an
+  // unclassified exercise, and an 'undefined' mainMuscle earns NO credit in
+  // weeklyMuscleVolume() — a permanent hole in the volume chart until it's
+  // edited. Closing that is a separate, already-planned change.
+  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', origin:ORIGIN_USER, mainMuscle:'undefined', movementPattern:'undefined', accessoryMuscles:[], updatedAt:Date.now() });
   if (S) { const o={exId:id,exName:name,type:_newType,compound:true,regime:'weighted',rest:seedRestFor(id,S.planId),sets:[]}; o.sets=buildSetsFromMemory(o); S.exercises.push(o); }
   persist(); closeModal(); render();
 }
@@ -6676,7 +6795,7 @@ function applyData(p) {
   D.lastModified = p.lastModified || 0;
   // An older backup predates muscle-group classification entirely — same
   // backfill loadData() runs on its own local-cache load.
-  backfillExerciseClassification(); backfillPlanEntries();
+  backfillExerciseClassification(); backfillPlanEntries(); normalizeExerciseOrigin();
   // And the same for set scaffolding in sessions saved before the
   // saveSession() metadata strip — see scrubSessionSetMetadata() (section 2).
   scrubSessionSetMetadata();
