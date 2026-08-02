@@ -2183,6 +2183,49 @@
     T.D.plans = keepPlans; T.D.sessions = keepSessions; T.S = null; T.nudgeDone = false; W.render();
   }
 
+  // ── picker regroup: multi-muscle browse (owner direction) ──────────────────
+  g('picker regroup: multi-muscle browse');
+  {
+    const keepEx = JSON.parse(JSON.stringify(T.D.exercises));
+    const slug = T.D.exercises.find(e => e.id === 'machine-low-row').movement;
+    const anchor = T.MOVEMENTS[slug];
+    T.D.exercises.push(
+      { id: 'mm-var', name: 'Var multi', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: anchor.muscle, movementPattern: anchor.pattern, accessoryMuscles: ['biceps'], movement: slug, updatedAt: 1 },
+      { id: 'loose-1', name: 'Coisa avulsa X', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'forearms', movementPattern: 'other', accessoryMuscles: ['biceps'], updatedAt: 1 });
+
+    t('movementDisplayMuscles = anchor first + variant accessories, deduped, no undefined',
+      (() => { const d = W.movementDisplayMuscles(slug); return d[0] === anchor.muscle && d.includes('biceps') && !d.includes('undefined') && new Set(d).size === d.length; })());
+
+    W.startFree(); T.TAB = 'log';
+    W.openAddEx();
+    W.eval("_aFMuscle = null; _aSearch = '';"); W.aRefreshList();
+    let h = W.document.getElementById('a-list').innerHTML;
+    t('unfiltered browse groups by anchor and surfaces the avulsos section',
+      h.includes(`openPickMovement('${slug}')`) && h.includes('Sem movimento (avulsos)') && h.includes('Coisa avulsa X'));
+
+    W.eval("_aFMuscle = 'biceps';"); W.aRefreshList();
+    h = W.document.getElementById('a-list').innerHTML;
+    t('an accessory-muscle chip surfaces the movement under "Também envolvem"',
+      h.includes('Também envolvem') && h.includes(`openPickMovement('${slug}')`));
+    t('avulsos honor the chip through main OR accessory', h.includes('Coisa avulsa X'));
+
+    W.eval(`_aFMuscle = ${JSON.stringify(anchor.muscle)};`); W.aRefreshList();
+    h = W.document.getElementById('a-list').innerHTML;
+    const alsoIdx = h.indexOf('Também envolvem');
+    t('on its anchor chip the movement lists in the main section, not "também"',
+      h.includes(`openPickMovement('${slug}')`) && (alsoIdx === -1 || h.indexOf(`openPickMovement('${slug}')`) < alsoIdx));
+
+    W.eval(`_aFMuscle = 'biceps'; _aSearch = ${JSON.stringify(anchor.pt)};`);
+    W.eval(`_aSearch = ${JSON.stringify(T.MOVEMENTS[slug].pt)};`); W.aRefreshList();
+    h = W.document.getElementById('a-list').innerHTML;
+    t('search under an involvement chip still finds the movement', h.includes(`openPickMovement('${slug}')`));
+
+    W.eval("_aFMuscle = null; _aSearch = '';");
+    W.closeModal();
+    const cfmP = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfmP;
+    T.D.exercises = keepEx; T.S = null; W.render();
+  }
+
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
   g('warm-up floors & assisted ramp');
   {

@@ -4439,6 +4439,27 @@ function movementMatchesSearch(m, q) {
   return [m.pt, m.en, ...(m.aliases||[])].some(h => h && nameKey(h).includes(k));
 }
 
+// The muscles a movement is VISIBLE under in browse: its category anchor
+// plus every group its variants credit as accessories — "movements that
+// involve more than one muscle group can show up at more than one muscle
+// group filter" (owner direction at the selector-regroup round). Derived
+// at runtime from the already-curated per-exercise accessoryMuscles, so it
+// grows with every promotion and covers user-created variants with zero
+// extra authoring. The ANCHOR stays unique and untouched — it's identity
+// (generator containment rule, resolution ladder, progression semantics);
+// this list is browse visibility only.
+function movementDisplayMuscles(slug) {
+  const m = MOVEMENTS[slug]; if (!m) return [];
+  const list = [m.muscle];
+  D.exercises.forEach(e => {
+    if (e.movement !== slug) return;
+    (e.accessoryMuscles||[]).forEach(a => {
+      if (a !== 'undefined' && MUSCLE_GROUPS[a] && !list.includes(a)) list.push(a);
+    });
+  });
+  return list;
+}
+
 // One exercise row — used by the variant view and the direct search results.
 // This picker only opens mid-session, so S exists: with a gym context,
 // exercises unavailable there get dimmed + badged but stay pickable (the
@@ -4458,13 +4479,16 @@ function aExRow(ex) {
     </div>`;
 }
 
-function aMovementRow(m) {
+// showAnchor: in an "também envolvem" section the movement lives under a
+// muscle that isn't its own — the small anchor label says where it's from.
+function aMovementRow(m, showAnchor) {
   return `
     <button onclick="openPickMovement('${m.slug}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
       <span style="flex:1;min-width:0;text-align:left">
         <span style="font-weight:600;font-size:14px;display:block">${esc(m.pt)}</span>
         ${nameKey(m.en) !== nameKey(m.pt) ? `<span style="font-size:11px;color:${DM}">${esc(m.en)}</span>` : ''}
       </span>
+      ${showAnchor ? `<span style="flex-shrink:0;display:inline-flex;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;background:${BG3};border:1px solid ${BD};color:${DM}">${esc(MUSCLE_GROUPS[m.muscle]||m.muscle)}</span>` : ''}
       <span style="flex-shrink:0;font-size:11px;color:${DM}">${m.count} ${m.count===1?'variação':'variações'}</span>
       <span style="color:${DM};font-size:12px">→</span>
     </button>`;
@@ -4477,29 +4501,58 @@ function aRefreshList() {
   if (_aMovement && MOVEMENTS[_aMovement]) { c.innerHTML = aVariantViewHTML(_aMovement); c.scrollTop = 0; return; }
 
   const q = _aSearch.trim();
-  const movements = movementsWithCounts()
-    .filter(m => m.count > 0 && (!_aFMuscle || m.muscle === _aFMuscle) && (!q || movementMatchesSearch(m, q)));
+  // Muscle-chip membership is DISPLAY membership (anchor + accessory-derived
+  // — see movementDisplayMuscles), not anchor-only: a row works under every
+  // group it involves. The anchor keeps ordering the unfiltered browse.
+  const all = movementsWithCounts()
+    .filter(m => m.count > 0 && (!q || movementMatchesSearch(m, q)));
   // Movements group by muscle in MUSCLE_GROUPS' own declaration order —
   // the same order every other muscle-grouped list in the app uses.
   const order = Object.keys(MUSCLE_GROUPS);
-  movements.sort((a,b) => (order.indexOf(a.muscle)-order.indexOf(b.muscle)) || a.pt.localeCompare(b.pt,'pt'));
+  all.sort((a,b) => (order.indexOf(a.muscle)-order.indexOf(b.muscle)) || a.pt.localeCompare(b.pt,'pt'));
+  const movements = all.filter(m => !_aFMuscle || movementDisplayMuscles(m.slug).includes(_aFMuscle));
+  // Movement-less exercises (the avulsos) must still be reachable in browse
+  // — "grouping ALL the exercises we have" includes surfacing the ungrouped
+  // ones instead of hiding them behind search. Muscle chips filter them by
+  // main OR accessory, the same involvement rule movements get.
+  const loose = D.exercises.filter(e => !e.movement
+    && (!_aFMuscle || e.mainMuscle === _aFMuscle || (e.accessoryMuscles||[]).includes(_aFMuscle)))
+    .sort((a,b) => a.name.localeCompare(b.name,'pt'));
+  const looseSection = loose.length ? aSectionHeader('Sem movimento (avulsos)') + loose.map(aExRow).join('') : '';
 
   if (!q) {
     // Browse: movement rows under muscle headers. Direct exercise rows are
-    // deliberately absent here — that flat wall of 48+ entries is exactly
-    // what the redesign removes; search still reaches any exercise directly.
-    let html = '', lastMuscle = null;
-    movements.forEach(m => {
-      if (m.muscle !== lastMuscle) { html += aSectionHeader(MUSCLE_GROUPS[m.muscle]||m.muscle); lastMuscle = m.muscle; }
-      html += aMovementRow(m);
-    });
+    // deliberately absent here (the flat 50-entry wall is what the redesign
+    // removed) — EXCEPT the avulsos, which have no movement to live under.
+    let html = '';
+    if (!_aFMuscle) {
+      let lastMuscle = null;
+      movements.forEach(m => {
+        if (m.muscle !== lastMuscle) { html += aSectionHeader(MUSCLE_GROUPS[m.muscle]||m.muscle); lastMuscle = m.muscle; }
+        html += aMovementRow(m);
+      });
+    } else {
+      // One muscle selected: its own movements first, then the ones that
+      // merely INVOLVE it (anchored elsewhere — the small label says where),
+      // so "Bíceps" surfaces both the curls and the rows/pulldowns.
+      const label = MUSCLE_GROUPS[_aFMuscle] || _aFMuscle;
+      const anchored = movements.filter(m => m.muscle === _aFMuscle);
+      const also     = movements.filter(m => m.muscle !== _aFMuscle);
+      html += anchored.map(m => aMovementRow(m)).join('');
+      if (also.length) html += aSectionHeader(`Também envolvem ${label}`) + also.map(m => aMovementRow(m, true)).join('');
+    }
+    html += looseSection;
     c.innerHTML = html || `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum movimento aqui ainda.</div>`;
   } else {
     // Search: movements first (the intended navigation), then direct
     // exercise hits (the fast path when you know the exact variant name).
-    const exs = applyFilters(D.exercises, null, q, false, false, _aFMuscle, null);
+    // The exercise hits use the same involvement rule as everything else in
+    // this picker (main OR accessory) — deliberately local, not a change to
+    // the shared applyFilters(), whose other callers stay main-muscle-only.
+    const exs = applyFilters(D.exercises, null, q, false, false, null, null)
+      .filter(e => !_aFMuscle || e.mainMuscle === _aFMuscle || (e.accessoryMuscles||[]).includes(_aFMuscle));
     c.innerHTML =
-      (movements.length ? aSectionHeader('Movimentos') + movements.map(aMovementRow).join('') : '') +
+      (movements.length ? aSectionHeader('Movimentos') + movements.map(m => aMovementRow(m, _aFMuscle && m.muscle !== _aFMuscle)).join('') : '') +
       (exs.length ? aSectionHeader('Exercícios') + exs.map(aExRow).join('') : '') +
       (!movements.length && !exs.length ? `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nada encontrado — crie uma variação dentro de um movimento, ou um exercício avulso abaixo.</div>` : '');
   }
