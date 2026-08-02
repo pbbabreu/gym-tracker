@@ -790,6 +790,123 @@
       "accessoryMuscles": []
     },
     {
+      "id": "barbell-wrist-curl",
+      "name": "Rosca de punho com barra",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "forearms",
+      "movementPattern": "curl",
+      "movement": "wrist-curl",
+      "name_en": "Palms-up barbell wrist curl",
+      "aliases": [
+        "wrist curl",
+        "palms-up barbell wrist curl",
+        "rosca de punho",
+        "flexao de punho com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-wrist-curl",
+      "name": "Rosca de punho com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "forearms",
+      "movementPattern": "curl",
+      "movement": "wrist-curl",
+      "name_en": "Palms-up dumbbell wrist curl",
+      "aliases": [
+        "dumbbell wrist curl",
+        "palms-up dumbbell wrist curl",
+        "rosca de punho com halter"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "cable-wrist-curl",
+      "name": "Rosca de punho no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "forearms",
+      "movementPattern": "curl",
+      "movement": "wrist-curl",
+      "name_en": "Cable wrist curl",
+      "aliases": [
+        "cable wrist curl",
+        "rosca de punho na polia",
+        "flexao de punho no cabo"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "barbell-reverse-wrist-curl",
+      "name": "Rosca de punho invertida com barra",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "forearms",
+      "movementPattern": "extension",
+      "movement": "reverse-wrist-curl",
+      "name_en": "Palms-down barbell wrist curl",
+      "aliases": [
+        "reverse wrist curl",
+        "palms-down wrist curl",
+        "rosca de punho invertida",
+        "extensao de punho com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-reverse-wrist-curl",
+      "name": "Rosca de punho invertida com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "forearms",
+      "movementPattern": "extension",
+      "movement": "reverse-wrist-curl",
+      "name_en": "Palms-down dumbbell wrist curl",
+      "aliases": [
+        "reverse dumbbell wrist curl",
+        "palms-down dumbbell wrist curl",
+        "extensao de punho com halter"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "finger-curl",
+      "name": "Rosca de dedos",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "forearms",
+      "movementPattern": "other",
+      "movement": "finger-curl",
+      "name_en": "Finger curls",
+      "aliases": [
+        "finger curls",
+        "rosca de dedos",
+        "pegada",
+        "grip"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
       "id": "leg-extension",
       "name": "Cadeira extensora",
       "type": "hypertrophy",
