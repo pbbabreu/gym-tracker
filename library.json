@@ -907,6 +907,383 @@
       "accessoryMuscles": []
     },
     {
+      "id": "plank",
+      "name": "Prancha",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "anti_extension",
+      "movement": "plank",
+      "name_en": "Plank",
+      "aliases": [
+        "plank",
+        "prancha",
+        "prancha frontal",
+        "prancha isometrica"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "barbell-ab-rollout",
+      "name": "Rollout com barra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "anti_extension",
+      "movement": "ab-rollout",
+      "accessoryMuscles": [
+        "back",
+        "shoulders"
+      ],
+      "name_en": "Barbell ab rollout",
+      "aliases": [
+        "barbell ab rollout",
+        "rollout com barra",
+        "rollout"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "ab-wheel-rollout",
+      "name": "Rollout com roda",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "anti_extension",
+      "movement": "ab-rollout",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Ab wheel rollout",
+      "aliases": [
+        "ab roller",
+        "ab wheel",
+        "roda abdominal",
+        "rollout com roda"
+      ],
+      "equipment": "other",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "crunch",
+      "name": "Abdominal",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "crunch",
+      "name_en": "Crunch",
+      "aliases": [
+        "crunch",
+        "crunches",
+        "abdominal no solo"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "sit-up",
+      "name": "Abdominal completo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "sit-up",
+      "name_en": "Sit-up",
+      "aliases": [
+        "sit-up",
+        "situp",
+        "abdominal completo",
+        "remador"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "decline-crunch",
+      "name": "Abdominal declinado",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "crunch",
+      "name_en": "Decline crunch",
+      "aliases": [
+        "decline crunch",
+        "abdominal declinado",
+        "abdominal no banco declinado"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "reverse-crunch",
+      "name": "Abdominal invertido",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "reverse-crunch",
+      "name_en": "Reverse crunch",
+      "aliases": [
+        "reverse crunch",
+        "abdominal invertido"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "ab-crunch-machine",
+      "name": "Abdominal na máquina",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "crunch",
+      "name_en": "Ab crunch machine",
+      "aliases": [
+        "ab crunch machine",
+        "abdominal na maquina",
+        "maquina de abdominal"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "cable-crunch",
+      "name": "Abdominal na polia",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "crunch",
+      "name_en": "Cable crunch",
+      "aliases": [
+        "cable crunch",
+        "abdominal na polia",
+        "abdominal na corda"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "oblique-crunch",
+      "name": "Abdominal oblíquo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "oblique-crunch",
+      "name_en": "Oblique crunch",
+      "aliases": [
+        "oblique crunch",
+        "abdominal obliquo",
+        "abdominal cruzado"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "parallel-bar-leg-raise",
+      "name": "Elevação de pernas nas paralelas",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "leg-raise",
+      "name_en": "Parallel bar leg raise",
+      "aliases": [
+        "knee raise on parallel bars",
+        "cadeira do capitao",
+        "elevacao de pernas nas paralelas"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "lying-leg-raise",
+      "name": "Elevação de pernas no banco",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "leg-raise",
+      "name_en": "Lying leg raise",
+      "aliases": [
+        "lying leg raise",
+        "flat bench leg raise",
+        "elevacao de pernas deitado"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "hanging-leg-raise",
+      "name": "Elevação de pernas suspenso",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "flexion",
+      "movement": "leg-raise",
+      "name_en": "Hanging leg raise",
+      "aliases": [
+        "hanging leg raise",
+        "elevacao de pernas na barra",
+        "elevacao de joelhos suspenso"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-side-bend",
+      "name": "Flexão lateral com halter",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "other",
+      "movement": "side-bend",
+      "name_en": "Dumbbell side bend",
+      "aliases": [
+        "dumbbell side bend",
+        "flexao lateral com halter",
+        "inclinacao lateral"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "pallof-press",
+      "name": "Pallof press",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "other",
+      "movement": "pallof-press",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Pallof press",
+      "aliases": [
+        "pallof press",
+        "anti-rotacao",
+        "anti rotation press"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "side-plank",
+      "name": "Prancha lateral",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "other",
+      "movement": "side-plank",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Side plank",
+      "aliases": [
+        "side plank",
+        "side bridge",
+        "prancha lateral"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "cable-wood-chop",
+      "name": "Lenhador na polia",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "rotation",
+      "movement": "wood-chop",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Cable wood chop",
+      "aliases": [
+        "wood chop",
+        "lenhador",
+        "chop na polia",
+        "diagonal na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "cable-russian-twist",
+      "name": "Rotação de tronco na polia",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "abs",
+      "movementPattern": "rotation",
+      "movement": "torso-rotation",
+      "name_en": "Cable russian twist",
+      "aliases": [
+        "cable russian twist",
+        "rotacao de tronco na polia",
+        "twist na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "russian-twist",
+      "name": "Russian twist",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "abs",
+      "movementPattern": "rotation",
+      "movement": "torso-rotation",
+      "accessoryMuscles": [
+        "back"
+      ],
+      "name_en": "Russian twist",
+      "aliases": [
+        "russian twist",
+        "giro russo",
+        "rotacao de tronco sentado"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
       "id": "leg-extension",
       "name": "Cadeira extensora",
       "type": "hypertrophy",
