@@ -30,11 +30,14 @@
   suite is the project's memory of what must never break again. Coverage
   spans the whole app: sync integrity (per-item LWW merge, tombstones,
   schema guard, both drivers behind one interface), data hygiene (strip/
-  scrub, snapshots), the progression engine (profiles, warm-up ramps,
-  graduation/stall, estimate prefill), gym profiles + swap ranking, the
-  rest-timer cascade + plan reconciliation, sharing (send/receive/claim,
-  catalog, import hardening), focus mode, and the analytics
-  (progress/regimes, weekly volume).
+  scrub, snapshots, duplicates, seed refresh), the progression engine
+  (profiles, warm-up ramps + floors, graduation/stall, estimate prefill),
+  gym profiles + swap ranking, equipment instances (calibrated vs
+  descriptive, machine manager, plate-input modes), plans as entry objects
+  (movement slots, resolution + lembrar + ★, prescription notes,
+  reconciliation), the family/movement browse, the rest-timer cascade,
+  sharing (send/receive/claim, catalog, import hardening), focus mode, and
+  the analytics (progress/regimes/per-machine series, weekly volume).
   ══════════════════════════════════════════════════════════════════════════
 -->
 <style>
@@ -2313,6 +2316,13 @@
       b2.type === 'strength' && b2.favorite === true && eq(b2.rest, { ww: 90 }) && eq(b2.gyms, ['gx']));
     t('user-created exercises are never touched',
       JSON.stringify(T.D.exercises.find(e => e.id === 'my-own-x')) === myExSnap);
+    // Live-session blocks follow the rename (a live session isn't history
+    // yet — the machine-rename rule); re-apply against a planted session.
+    bench.name = 'Bench press'; bench.updatedAt = 1;
+    T.S = { date: '2026-08-01', planId: null, planName: null, gymId: null, exercises: [{ exId: 'bench-press', exName: 'Bench press', type: 'hypertrophy', regime: 'weighted', sets: [] }] };
+    W.applySeedRefresh();
+    t('live-session blocks follow the refresh rename', T.S.exercises[0].exName === seedName);
+    T.S = null;
     const again = W.seedRefreshChanges(W.eval('_seedRefreshMap'));
     t('a second pass finds nothing left on that exercise (idempotent)',
       !again.renames.concat(again.contentOnly).some(c => c.ex.id === 'bench-press'));

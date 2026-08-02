@@ -3339,6 +3339,15 @@ function applySeedRefresh() {
     });
     ex.updatedAt = Date.now(); // LWW: the refresh must win on every other device
   });
+  // Live-session blocks follow the rename immediately — a live session
+  // isn't history yet, and its save should snapshot the CURRENT name (the
+  // same rule machine renames follow). Saved history keeps its exName
+  // snapshots untouched, as always.
+  (S?.exercises||[]).forEach(x => {
+    if (x.slot || !_seedRefreshMap[x.exId]) return;
+    const lib = D.exercises.find(e => e.id === x.exId);
+    if (lib) x.exName = lib.name;
+  });
   persist(); closeModal(); render();
 }
 
@@ -4762,7 +4771,7 @@ function aVariantViewHTML(slug) {
   vars.forEach(e => { const k = e.equipment && EQUIPMENT_LABELS[e.equipment] ? e.equipment : '_none'; (byEquip[k] = byEquip[k]||[]).push(e); });
   const groups = [...Object.keys(EQUIPMENT_LABELS).filter(k => byEquip[k]), ...(byEquip._none ? ['_none'] : [])];
   return `
-    <button onclick="closePickMovement()" style="background:none;border:none;color:${DM};font-size:13px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">← Movimentos</button>
+    <button onclick="closePickMovement()" style="background:none;border:none;color:${DM};font-size:13px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">← ${_aFamily ? esc(_aFamily[_aFamily.length-1]) : 'Movimentos'}</button>
     <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px">
       <span style="font-size:16px;font-weight:700">${esc(m.pt)}</span>
       <span style="font-size:11px;color:${DM}">${esc(MUSCLE_GROUPS[m.muscle]||'')}</span>
