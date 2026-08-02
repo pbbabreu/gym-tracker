@@ -362,6 +362,15 @@ function backfillExerciseClassification() {
 // membership breaks three ways: it can't tell `user` from `shared` at all,
 // it degrades offline, and it silently reclassifies a user's own exercise
 // the day the catalog happens to ship the same lift.
+// Set MEASUREMENT (see the full rationale beside fmtSecs in section 4):
+// 'time' means this exercise is counted in SECONDS rather than reps.
+// Declared here, with the other record-shape vocabulary, because the
+// exercise-modal state below initialises from TRACK_REPS -- keeping these
+// further down put that initialiser in their temporal dead zone.
+const TRACK_TIME = 'time', TRACK_REPS = 'reps';
+const trackingOf = ex => (ex && ex.tracking === TRACK_TIME) ? TRACK_TIME : TRACK_REPS;
+const isTimed    = ex => trackingOf(ex) === TRACK_TIME;
+
 const ORIGIN_GLOBAL = 'global';   // curated catalog: library.json seed or ⟳ Catálogo
 const ORIGIN_USER   = 'user';     // created here, by this user
 const ORIGIN_SHARED = 'shared';   // arrived inside someone else's shared plan
@@ -587,6 +596,11 @@ let _newCompoundTouched = false;
 // an untouched edit writes an unknown (future) class back verbatim instead
 // of silently stripping it.
 let _newEquip = null;
+// Set-measurement mode for the exercise modal ('reps' | 'time'). Two-state,
+// never null: 'reps' is the DEFAULT rather than an absence, so the stored
+// field is omitted entirely for rep exercises while the toggle always shows
+// one side selected. See trackingOf() for what 'time' switches off.
+let _newTracking = TRACK_REPS;
 // Classification working state — see MUSCLE_GROUPS/MOVEMENT_PATTERNS
 // (section 2). Unlike _newCompound, these are mandatory-with-an-escape-
 // valve rather than nullable, so no _touched flag is needed: every save
@@ -674,6 +688,36 @@ const round   = (v,step) => Math.round(v/step)*step;
 // per-set display, and getRecentWorkHistory's inclusion filter.
 const hasKg   = s => s.kg   !== '' && s.kg   != null;
 const hasReps = s => s.reps !== '' && s.reps != null;
+
+// ── Time-based sets (`tracking`) ─────────────────────────────────────────────
+//
+// Some exercises are measured in SECONDS, not repetitions: planks, dead
+// hangs, any isometric hold. `tracking` is an EXERCISE-level property
+// ('reps' | 'time', absent = 'reps') because it never varies set to set —
+// a plank is always timed, a bench press never is. Sets keep the number in
+// `s.reps`, which is really "the count dimension of a set"; `tracking` says
+// what that number MEANS. Storing seconds there rather than in a new field
+// is deliberate: every consumer (history, memory, the volume tally, the
+// chips) already treats it as a plain number, so nothing has to learn a
+// second shape, and no stored session needs migrating.
+//
+// What time-based DOES change is the rep-arithmetic, all of which is
+// meaningless on seconds and is switched off exactly the way `bodyweight`
+// already switches off weight-arithmetic:
+//   * graduation / stall  — "hit 12 reps to earn more load" has no meaning
+//     for a 45-second hold. See computeSuggestion().
+//   * estimated 1RM       — Epley on seconds is nonsense. See exerciseProgress().
+//   * volume-load (kg×reps) — kg×seconds is not volume-load. See the
+//     Histórico session tally.
+// Set COUNT still counts everywhere (isCountedWork is untouched), so a
+// timed exercise contributes to weekly muscle volume like any other.
+//
+// Real progression for holds — longer hold, then added load, and isometric
+// training regimes generally — is deliberately future work; see Backlog.
+// m:ss, the same shape the rest timer uses (fmtRest) so a duration reads
+// identically wherever it appears in the app.
+const fmtSecs = v => (v === '' || v == null || isNaN(Number(v))) ? '–'
+  : `${Math.floor(Number(v) / 60)}:${String(Math.round(Number(v) % 60)).padStart(2, '0')}`;
 
 // "Can this exercise be done at this gym?" — an absent/EMPTY gyms list on
 // the exercise means available EVERYWHERE (the zero-config default), and no
@@ -1794,6 +1838,13 @@ function computeSuggestion(exId, type, regime, profile, instanceId=null) {
 
   const isAsst = regime === 'assisted';
   const isBW   = regime === 'bodyweight';
+  // A timed exercise stores SECONDS in s.reps, so every rep-range test below
+  // ("did they hit repHigh?") would be comparing a duration against a rep
+  // count. Opt out of graduation entirely — the same shape as the bodyweight
+  // opt-out further down, and for the same reason: the progression axis this
+  // engine knows how to nudge doesn't exist here. Load/duration progression
+  // for holds is future work (see Backlog: isometric regimes).
+  const isTime = isTimed(D.exercises.find(e => e.id === exId));
 
   // Assisted: less counterweight = harder, so the WORKING weight (the one
   // that was actually challenging) is the SMALLEST kg logged in a session,
@@ -1826,15 +1877,21 @@ function computeSuggestion(exId, type, regime, profile, instanceId=null) {
   // stable "aim for more reps" cue. (Revisit if weighted-bodyweight
   // variants — vest/added load as a real progression axis — are ever
   // tracked; see the project Log.)
-  const graduated = !isBW && graduatedAt(last);
+  const graduated = !isBW && !isTime && graduatedAt(last);
 
   const suggestedKg = (graduated && workingKg != null) ? bumpWeight(workingKg, isAsst) : workingKg;
-  const repsTarget   = graduated ? profile.repLow : profile.repHigh;
+  // A timed exercise has no rep target to aim at — repHigh is a rep count.
+  // null keeps the "aim for N" cue off the block rather than printing a
+  // number that means nothing for a hold.
+  const repsTarget   = isTime ? null : (graduated ? profile.repLow : profile.repHigh);
 
   // Stall streak — consecutive most-recent sessions that did NOT graduate.
   // 0 if the last session graduated (no stall, they just progressed).
+  // Timed exercises are excluded for the same reason as bodyweight: a
+  // "you've stalled, add load" nudge needs a progression rule, and holds
+  // don't have one in this version.
   let stallStreak = 0;
-  if (!isBW) {
+  if (!isBW && !isTime) {
     for (const sets of history) {
       if (graduatedAt(sets)) break;
       stallStreak++;
@@ -1992,7 +2049,14 @@ function actualLoad(set, regime) {
   return hasKg(set) ? Number(set.kg) : null;
 }
 
-function volEx(sets, regime) {
+// Volume-load (kg × reps) for one exercise's sets. `timed` exercises are
+// excluded outright rather than computed: their count dimension is SECONDS,
+// and kg × seconds is not volume-load — summing it would silently inflate a
+// session's total with a number in the wrong unit. The sets still count
+// toward per-muscle SET volume (weeklyMuscleVolume, which counts sets, not
+// load); it's only this kg-weighted tally that has no meaning for a hold.
+function volEx(sets, regime, timed) {
+  if (timed) return 0;
   return (sets||[])
     .filter(isCountedWork)
     .reduce((a,s) => {
@@ -2091,7 +2155,10 @@ function exerciseProgress(exId, cap = 24, regime = null, instance = null) {
     } else {
       if (!kgVals.length) return;
       p.metric = Math.max(...kgVals);
-      const e1s = sets
+      // Epley estimates a 1RM from kg × REPS. On a timed exercise s.reps
+      // holds seconds, so feeding it here would print a confident, wholly
+      // fictional 1RM for a 60-second hold. Skipped, not approximated.
+      const e1s = isTimed(lib) ? [] : sets
         .filter(s => hasKg(s) && hasReps(s) && Number(s.reps) > 0)
         .map(s => epley1RM(Number(s.kg), Number(s.reps)));
       if (e1s.length) p.e1rm = Math.max(...e1s);
@@ -2662,6 +2729,10 @@ function buildExBlock(ex, i) {
   if (ex.slot) return buildSlotBlock(ex, i);
   const isS  = ex.type==='strength', isH=ex.type==='hypertrophy';
   const isW  = ex.regime==='weighted', isAs=ex.regime==='assisted', isBW=ex.regime==='bodyweight';
+  // Time-based (planks, dead hangs, any hold): the count column is SECONDS.
+  // Read from the block's own snapshot so an in-progress session keeps
+  // rendering correctly even if the library entry changes underneath it.
+  const isTm = isTimed(ex);
   const isFirst = i===0, isLast=i===S.exercises.length-1;
   const bw = currentBW();
 
@@ -2728,7 +2799,7 @@ function buildExBlock(ex, i) {
     <div style="display:grid;grid-template-columns:${gridCols};gap:6px;margin-bottom:6px">
       <span></span>
       <span style="font-size:11px;color:${DM};text-align:center">Tipo</span>
-      <span style="font-size:11px;color:${DM};text-align:center">Reps</span>
+      <span style="font-size:11px;color:${DM};text-align:center">${isTm ? 'Segundos' : 'Reps'}</span>
       <span style="font-size:11px;color:${DM};text-align:center">${kgHeader}</span>
       ${plateMode ? `<span style="font-size:11px;color:${DM};text-align:center">Total</span>` : ''}
       <span></span>
@@ -2739,8 +2810,13 @@ function buildExBlock(ex, i) {
   // so they only ever show reps. In a plate mode the kg shown is CONVERTED
   // to the block's input units — a chip must read in the same currency the
   // field expects, or "▲ 8 × 100" over a per-side column would mislead.
-  const fmtPair = (r,k) => isBW ? `${r??'–'} reps`
-    : `${r??'–'} × ${k==null?'–':dispKg(k)} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
+  // A timed row's count is a DURATION, so it reads "1:00" — the same m:ss
+  // the rest timer uses — instead of a rep count. Bodyweight rows carry no
+  // meaningful kg, so they show the count alone; that covers the common
+  // plank / dead-hang case, while a weighted hold still shows "1:00 × 20kg".
+  const cntLbl = r => isTm ? fmtSecs(r) : `${r ?? '–'} reps`;
+  const fmtPair = (r,k) => isBW ? cntLbl(r)
+    : `${isTm ? fmtSecs(r) : (r ?? '–')} × ${k==null?'–':dispKg(k)} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
 
   const setRows = ex.sets.map((s,j) => {
     const isWork = s.intent === 'work';
@@ -2945,7 +3021,10 @@ function buildHistory() {
 
   const sorted = [...D.sessions].sort((a,b) => b.date.localeCompare(a.date));
   return bkp + `<div style="font-size:18px;font-weight:700;margin-bottom:16px">Histórico</div>` + sorted.map(s => {
-    const v  = s.exercises.reduce((a,ex) => a + volEx(ex.sets, ex.regime), 0);
+    // `ex.tracking` is snapshotted on the session entry (like type/regime),
+    // so a timed exercise stays excluded from the volume-load total even
+    // after its library entry is deleted or retracked.
+    const v  = s.exercises.reduce((a,ex) => a + volEx(ex.sets, ex.regime, isTimed(ex)), 0);
     // isCountedWork, not a bare intent==='work' check — an explicitly-
     // unchecked set shouldn't inflate the displayed series count when the
     // volume total on the same line already excludes it via volEx().
@@ -2968,7 +3047,7 @@ function buildHistory() {
             : `${hasKg(set)?set.kg:'–'} kg`;
           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid ${BD};font-size:14px">
             <span style="background:${set.intent==='work'?CG:'#555'};color:#fff;padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700;min-width:34px;text-align:center">${lbl}</span>
-            <span>${set.reps||'–'} reps × ${kgLbl}</span>
+            <span>${isTimed(ex) ? `${fmtSecs(set.reps)} × ${kgLbl}` : `${set.reps||'–'} reps × ${kgLbl}`}</span>
           </div>`;
         }).join('');
         return `<div style="margin-bottom:14px">
@@ -3407,7 +3486,7 @@ function renderCatalogList() {
 // A rename that collides with a user-created copy of the same exercise
 // becomes a visible duplicate, and the existing duplicates banner + merge
 // tool are the designed cleanup for that.
-const SEED_REFRESH_FIELDS = ['name','name_en','aliases','equipment','cues_pt','cues_en','errors_pt','errors_en','stretchEmphasis','movement','mainMuscle','movementPattern','accessoryMuscles'];
+const SEED_REFRESH_FIELDS = ['name','name_en','aliases','equipment','cues_pt','cues_en','errors_pt','errors_en','stretchEmphasis','tracking','movement','mainMuscle','movementPattern','accessoryMuscles'];
 let _seedRefreshMap = null;
 
 function seedRefreshChanges(map) {
@@ -4045,6 +4124,12 @@ function normalizeExerciseDef(imp, originHint) {
   const aliases    = strList(imp.aliases), cues_pt = strList(imp.cues_pt), cues_en = strList(imp.cues_en);
   const errors_pt  = strList(imp.errors_pt), errors_en = strList(imp.errors_en);
   const stretchEmphasis = imp.stretchEmphasis === true;
+  // Only the literal 'time' is honoured; anything else (absent, garbage, a
+  // future value this build doesn't know) falls back to rep tracking, which
+  // is the safe default — a hold mis-imported as reps merely looks odd,
+  // whereas a rep exercise mis-imported as timed would silently suppress
+  // its graduation and 1RM.
+  const tracking = imp.tracking === TRACK_TIME ? TRACK_TIME : null;
   // A movement slug only survives if this app's shipped vocabulary knows it
   // AND its category anchor matches the (already-normalized) classification —
   // a mismatched pair means either a corrupted file or a newer vocabulary
@@ -4062,7 +4147,8 @@ function normalizeExerciseDef(imp, originHint) {
     ...(movement ? { movement } : {}), ...(name_en ? { name_en } : {}), ...(aliases.length ? { aliases } : {}),
     ...(equipment ? { equipment } : {}), ...(cues_pt.length ? { cues_pt } : {}), ...(cues_en.length ? { cues_en } : {}),
     ...(errors_pt.length ? { errors_pt } : {}), ...(errors_en.length ? { errors_en } : {}),
-    ...(stretchEmphasis ? { stretchEmphasis } : {}), ...(rest ? { rest } : {}), updatedAt: Date.now() };
+    ...(stretchEmphasis ? { stretchEmphasis } : {}), ...(tracking ? { tracking } : {}),
+    ...(rest ? { rest } : {}), updatedAt: Date.now() };
 }
 
 // Merges an imported plan's exercises into the local library and creates a
@@ -4392,6 +4478,12 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
         `<button id="exq-${k}" onclick="exF('equip','${k}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newEquip===k?'#0a2e2e':BG3};color:${_newEquip===k?'#4dd0c4':DM}">${label}</button>`
       ).join('')}
     </div>
+    <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Medição das séries</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Exercícios de sustentação (prancha, barra estática) são medidos em tempo. A coluna passa a ser em segundos e a progressão por repetições fica desligada.</div>
+    <div style="display:flex;gap:6px;margin-bottom:20px">
+      <button id="ex-tk-reps" onclick="exF('tracking','${TRACK_REPS}')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newTracking===TRACK_TIME?BG3:CG};color:${_newTracking===TRACK_TIME?DM:TX}">Repetições</button>
+      <button id="ex-tk-time" onclick="exF('tracking','${TRACK_TIME}')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newTracking===TRACK_TIME?'#0a2e2e':BG3};color:${_newTracking===TRACK_TIME?'#4dd0c4':DM}">Tempo (seg)</button>
+    </div>
     <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Grupo muscular principal</label>
     <select id="ex-muscle" onchange="exF('muscle', this.value)"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:14px;box-sizing:border-box">
@@ -4489,6 +4581,15 @@ function exF(field, val) {
       const el = document.getElementById('exq-'+k);
       if (el) { el.style.background = _newEquip===k?'#0a2e2e':BG3; el.style.color = _newEquip===k?'#4dd0c4':DM; }
     });
+  } else if (field === 'tracking') {
+    // Two-state, never null: an exercise is either counted in reps or in
+    // seconds, and 'reps' IS the default rather than an absence — which is
+    // why the stored field is omitted for reps (see saveNewEx/saveEditEx)
+    // while the toggle always shows one side selected.
+    _newTracking = val === TRACK_TIME ? TRACK_TIME : TRACK_REPS;
+    const r = document.getElementById('ex-tk-reps'), t = document.getElementById('ex-tk-time');
+    if (r) { r.style.background = _newTracking===TRACK_TIME?BG3:CG;      r.style.color = _newTracking===TRACK_TIME?DM:TX; }
+    if (t) { t.style.background = _newTracking===TRACK_TIME?'#0a2e2e':BG3; t.style.color = _newTracking===TRACK_TIME?'#4dd0c4':DM; }
   }
 }
 
@@ -4503,7 +4604,7 @@ function readModalRest() {
 function openNewEx()  {
   _newType='hypertrophy'; _newCompound=true; _newRegime='weighted';
   _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[]; _newGyms=[];
-  _newEquip=null;
+  _newEquip=null; _newTracking=TRACK_REPS;
   _newRest={ wuwu:'', wuw:'', ww:'' };
   showModal(exModalBody('Novo exercício','','saveNewEx()'));
 }
@@ -4531,6 +4632,7 @@ function openEditEx(id) {
   // unknown class just highlights no chip, and an untouched save writes it
   // back unchanged (see _newEquip's declaration for the future-class case).
   _newEquip = ex.equipment || null;
+  _newTracking = trackingOf(ex);
   _newRest = { wuwu: ex.rest?.wuwu ?? '', wuw: ex.rest?.wuw ?? '', ww: ex.rest?.ww ?? '' };
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
@@ -4563,7 +4665,8 @@ function saveNewEx() {
   const rest = readModalRest();
   D.exercises.push({ id:newUserExId(), name, type:_newType, compound:_newCompound, regime:_newRegime, origin:ORIGIN_USER,
     mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
-    gyms:[..._newGyms], ...(_newEquip ? { equipment:_newEquip } : {}), ...(rest ? { rest } : {}), updatedAt:Date.now() });
+    gyms:[..._newGyms], ...(_newEquip ? { equipment:_newEquip } : {}),
+    ...(_newTracking===TRACK_TIME ? { tracking:TRACK_TIME } : {}), ...(rest ? { rest } : {}), updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -4591,6 +4694,15 @@ function saveEditEx() {
     // barbell releases its instance-filtered history into the shared pool —
     // the honest meaning of the correction, not a hazard).
     if (_newEquip) ex.equipment = _newEquip; else delete ex.equipment;
+    // Set measurement. Flipping this on an exercise WITH history is safe by
+    // construction for the same reason the equipment flip is: nothing stored
+    // is rewritten. The numbers in s.reps stay exactly as logged — what
+    // changes is how they're READ from here on (a column header, m:ss
+    // formatting, and whether rep-arithmetic runs). Flipping a rep exercise
+    // to time therefore reinterprets its past reps as seconds, which is the
+    // honest meaning of the correction rather than a hazard — the same
+    // trade the equipment-class flip already makes.
+    if (_newTracking === TRACK_TIME) ex.tracking = TRACK_TIME; else delete ex.tracking;
     const rest = readModalRest();
     if (rest) ex.rest = rest; else delete ex.rest; // all-blank inputs mean "back to inheriting"
     ex.updatedAt=Date.now();
@@ -5053,7 +5165,11 @@ function addPickedEx(exId) {
   // Rest seeding includes the followed plan's override even for an exercise
   // added mid-session — if the plan prescribes timings for it, they apply
   // regardless of when it joined the session.
-  const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, rest: seedRestFor(exId, S.planId), sets:[] };
+  // `tracking` is snapshotted onto the block exactly like type/compound/
+  // regime: the session must keep rendering (and tallying) correctly even
+  // if the library entry is later retracked or deleted. Written only when
+  // timed, so rep-based blocks stay byte-identical to before.
+  const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}), rest: seedRestFor(exId, S.planId), sets:[] };
   // Auto-attach the machine used last time (at this gym, when known) BEFORE
   // building the set rows — the suggestion math prefers same-machine
   // history, so the attachment has to exist when it runs.
@@ -5089,7 +5205,8 @@ function createAndAdd() {
   if (existing) {
     if (S) {
       const o = { exId: existing.id, exName: existing.name, type: _newType, compound: existing.compound,
-                  regime: existing.regime || 'weighted', rest: seedRestFor(existing.id, S.planId), sets: [] };
+                  regime: existing.regime || 'weighted', ...(isTimed(existing) ? { tracking: TRACK_TIME } : {}),
+                  rest: seedRestFor(existing.id, S.planId), sets: [] };
       const lim = lastInstanceFor(existing.id, S.gymId);
       if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
       seedLoadPrefs(o, lim);
@@ -5171,6 +5288,7 @@ function startPlan(id) {
       // _planNote is the entry's prescription, live-display only — both are
       // stripped at save alongside _sug.
       const o  = { exId, exName:ex?ex.name:'(removido)', type:(lm?lm.type:ex?.type)||'hypertrophy', compound:ex?.compound, regime:(lm?lm.regime:ex?.regime)||'weighted',
+                   ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}),
                    rest: seedRestFor(exId, p.id, en.eid), sets:[], _planEid:en.eid,
                    ...(en.prescription?.note ? { _planNote: en.prescription.note } : {}) };
       // Same last-used-machine default the picker path applies — before
@@ -5806,6 +5924,7 @@ function resolveSlotTo(i, exId) {
   const ex = D.exercises.find(e => e.id === exId); if (!ex) return;
   const lm = lastModesFor(exId);
   const o = { exId, exName: ex.name, type:(lm?lm.type:ex.type)||'hypertrophy', compound:ex.compound, regime:(lm?lm.regime:ex.regime)||'weighted',
+    ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}),
     rest: seedRestFor(exId, S.planId, ph._planEid), sets: [],
     fromMovement: ph.movement,
     ...(ph._planEid ? { _planEid: ph._planEid } : {}),
@@ -6568,7 +6687,7 @@ function doSwapEx(i, newId) {
   const old = S.exercises[i];
   const hasData = (old.sets||[]).some(s => hasReps(s) || hasKg(s));
   if (hasData && !confirm(`Substituir "${old.exName}" por "${ne.name}"?\n\nAs séries já preenchidas serão descartadas.`)) return;
-  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound, regime: ne.regime||'weighted', rest: seedRestFor(ne.id, S.planId), sets: [] };
+  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound, regime: ne.regime||'weighted', ...(isTimed(ne) ? { tracking: TRACK_TIME } : {}), rest: seedRestFor(ne.id, S.planId), sets: [] };
   o.sets = buildSetsFromMemory(o);
   S.exercises[i] = o;
   closeModal();

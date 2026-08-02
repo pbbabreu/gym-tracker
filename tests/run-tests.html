@@ -114,6 +114,11 @@
     // them — the same reason everything else above is listed here.
     ORIGIN_GLOBAL, ORIGIN_USER, ORIGIN_SHARED, originOf, isGlobalEx,
     isKnownGlobalId, newUserExId, normalizeExerciseOrigin, normalizeExerciseDef,
+    // Time-based sets: seconds live in s.reps and the exercise's tracking
+    // field says what that number means. NOTE - no backticks in this block:
+    // the whole bridge is a template literal, so a backtick here silently
+    // terminates it and the entire suite stops parsing.
+    TRACK_TIME, TRACK_REPS, trackingOf, isTimed, fmtSecs, volEx, computeSuggestion, profileFor,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -2698,6 +2703,57 @@
     // cleanup so later assertions (and the persisted clean state) are unaffected
     T.D.exercises = T.D.exercises.filter(e => e.name !== 'Prov Teste Novo');
     W.closeModal();
+  }
+
+
+  // -- time-based sets (`tracking`) ------------------------------------------
+  // Seconds are stored in s.reps and the EXERCISE says what that number means.
+  // These checks pin the two halves that matter: the number renders as a
+  // duration, and every piece of rep-arithmetic (graduation, stall, e1RM,
+  // volume-load) is switched OFF -- because each of those would otherwise
+  // produce a confident, wrong number for a 60-second hold.
+  g('time-based sets');
+  {
+    const plank = T.D.exercises.find(e => e.id === 'plank');
+    t('the plank ships tracking: time', plank && plank.tracking === T.TRACK_TIME, plank && plank.tracking);
+    t('isTimed() reads it', T.isTimed(plank) === true);
+    t('a normal exercise is rep-tracked by default',
+       T.trackingOf(T.D.exercises.find(e => e.id === 'bench-press')) === T.TRACK_REPS);
+    t('trackingOf() ignores a bogus value', T.trackingOf({ tracking: 'banana' }) === T.TRACK_REPS);
+
+    // duration formatting, same m:ss the rest timer uses
+    t('fmtSecs 60 -> 1:00', T.fmtSecs(60) === '1:00');
+    t('fmtSecs 45 -> 0:45', T.fmtSecs(45) === '0:45');
+    t('fmtSecs 90 -> 1:30', T.fmtSecs(90) === '1:30');
+    t('fmtSecs handles blank', T.fmtSecs('') === '-'.replace('-', '\u2013'));
+
+    // volume-load: kg x seconds is not volume-load, so a timed block adds 0
+    const sets = [{ intent: 'work', reps: 60, kg: 10 }, { intent: 'work', reps: 45, kg: 10 }];
+    t('volEx counts kg x reps for a rep exercise', T.volEx(sets, 'weighted', false) === 60 * 10 + 45 * 10);
+    t('volEx returns 0 for a timed exercise', T.volEx(sets, 'weighted', true) === 0);
+
+    // graduation / stall / e1RM must not fire on seconds
+    const prof = T.profileFor('hypertrophy', 'weighted');
+    const mkSess = (id, reps) => ({ id, date: '2026-07-0' + id, exercises: [
+      { exId: 'plank', exName: 'Prancha', type: 'hypertrophy', regime: 'weighted', tracking: 'time',
+        sets: Array.from({ length: prof.targetWorkSets }, () => ({ intent: 'work', reps, kg: 10 })) } ] });
+    const keepSess = T.D.sessions;
+    T.D.sessions = [mkSess(1, 99), mkSess(2, 99), mkSess(3, 99)];
+    const sug = T.computeSuggestion('plank', 'hypertrophy', 'weighted', prof);
+    t('a timed exercise never graduates, however long the hold', sug && sug.graduated === false,
+       sug && JSON.stringify({ g: sug.graduated, r: sug.repsTarget }));
+    t('...and shows no rep target', sug && sug.repsTarget === null);
+    t('...and never accrues a stall streak', sug && sug.stallStreak === 0);
+    // the same history on a rep-tracked exercise DOES graduate -- proving the
+    // opt-out above is the tracking flag doing it, not the fixture being inert
+    T.D.sessions = T.D.sessions.map(x => ({ ...x, exercises: x.exercises.map(e =>
+      ({ ...e, exId: 'bench-press', tracking: undefined })) }));
+    const sug2 = T.computeSuggestion('bench-press', 'hypertrophy', 'weighted', prof);
+    t('control: identical history on a rep exercise DOES graduate', sug2 && sug2.graduated === true,
+       sug2 && JSON.stringify({ g: sug2.graduated }));
+    // e1RM is skipped for timed
+    T.D.sessions = [mkSess(1, 60)];
+    T.D.sessions = keepSess;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

@@ -35,7 +35,12 @@ DEFAULT_VAULT = REPO.parent.parent / "Projects Vault" / "Gym Tracker"
 # discipline the owner chose -- see the vault's movement-first design note.
 REQUIRED = ["id", "name", "type", "compound", "regime", "mainMuscle", "movementPattern", "movement"]
 OPTIONAL = ["accessoryMuscles", "name_en", "aliases", "equipment",
-            "cues_pt", "cues_en", "errors_pt", "errors_en", "stretchEmphasis", "rest"]
+            "cues_pt", "cues_en", "errors_pt", "errors_en", "stretchEmphasis",
+            # `tracking: time` marks an exercise measured in SECONDS rather than
+            # repetitions (planks, dead hangs, any isometric hold). Absent means
+            # 'reps', which is why it is emitted only when set -- see the app's
+            # trackingOf() for what switches off when it is 'time'.
+            "tracking", "rest"]
 # Vault-only bookkeeping -- deliberately never shipped to the app.
 VAULT_ONLY = {"status", "source", "sourceId"}
 

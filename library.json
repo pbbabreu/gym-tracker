@@ -924,6 +924,7 @@
       ],
       "equipment": "bodyweight",
       "stretchEmphasis": false,
+      "tracking": "time",
       "accessoryMuscles": []
     },
     {
@@ -1219,7 +1220,8 @@
         "prancha lateral"
       ],
       "equipment": "bodyweight",
-      "stretchEmphasis": false
+      "stretchEmphasis": false,
+      "tracking": "time"
     },
     {
       "id": "cable-wood-chop",
