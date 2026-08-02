@@ -753,6 +753,7 @@
         "francês"
       ],
       "equipment": "cable",
+      "stretchEmphasis": true,
       "accessoryMuscles": []
     },
     {
@@ -876,6 +877,7 @@
         "standing leg curl"
       ],
       "equipment": "machine",
+      "stretchEmphasis": false,
       "accessoryMuscles": []
     },
     {
@@ -1043,6 +1045,7 @@
         "gêmeos"
       ],
       "equipment": "machine",
+      "stretchEmphasis": true,
       "accessoryMuscles": []
     },
     {
@@ -1060,6 +1063,7 @@
         "sóleo"
       ],
       "equipment": "machine",
+      "stretchEmphasis": false,
       "accessoryMuscles": []
     }
   ]
