@@ -164,7 +164,29 @@ def load_movements(mov_dir, muscles, patterns):
         elif pattern not in patterns.get(muscle, set()):
             errors.append(f"{rel}: pattern '{pattern}' does not belong to '{muscle}' "
                           f"(valid: {sorted(patterns.get(muscle, []))})")
+        # Optional browse FAMILY (E5): a display-only tree, 'Nome' or
+        # 'Pai / Filho', max two levels. Families may span categories and
+        # muscles freely -- unlike the anchor above, they carry no data
+        # semantics (slots/history/ladder never see them), which is exactly
+        # why the depth and casing rules here are the only validation needed.
+        fam_raw = fm.get("family")
+        if fam_raw is not None:
+            parts = [p.strip() for p in str(fam_raw).split("/")]
+            if not (1 <= len(parts) <= 2) or any(not p for p in parts):
+                errors.append(f"{rel}: family '{fam_raw}' must be 'Nome' or 'Pai / Filho' (max 2 levels)")
+                fm.pop("family", None)
+            else:
+                fm["family"] = parts
         movements[slug] = fm
+    # Family labels are grouping KEYS in the app -- two spellings differing
+    # only by case/whitespace would silently split one family into two rows.
+    canon = {}
+    for slug, fm in movements.items():
+        for label in (fm.get("family") or []):
+            key = label.casefold()
+            if key in canon and canon[key] != label:
+                errors.append(f"family label '{label}' vs '{canon[key]}': same family, different spelling -- unify")
+            canon.setdefault(key, label)
     return movements, errors
 
 
@@ -284,8 +306,10 @@ def build_movements_js(movements, muscles):
     for fm in ordered:
         aliases = ",".join(f"'{j(a)}'" for a in (fm.get("aliases") or []))
         key = f"'{fm['id']}':".ljust(width)
+        fam = fm.get("family")
+        fam_js = (" family:[" + ",".join(f"'{j(x)}'" for x in fam) + "],") if fam else ""
         lines.append(f"  {key}{{ pt:'{j(fm['name'])}', en:'{j(fm['name_en'])}', "
-                     f"muscle:'{fm['mainMuscle']}', pattern:'{fm['movementPattern']}', aliases:[{aliases}] }},")
+                     f"muscle:'{fm['mainMuscle']}', pattern:'{fm['movementPattern']}',{fam_js} aliases:[{aliases}] }},")
     return "const MOVEMENTS = {\n" + "\n".join(lines) + "\n};\n"
 
 

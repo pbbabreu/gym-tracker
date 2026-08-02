@@ -172,48 +172,48 @@ const MOVEMENT_PATTERNS = {
 // yet keeps working (the slug is stored, the label falls back to the
 // pattern's) and self-heals on the next app deploy.
 const MOVEMENTS = {
-  'fly':                        { pt:'Crucifixo', en:'Chest fly', muscle:'chest', pattern:'fly', aliases:['voador','peck deck','fly'] },
-  'low-to-high-fly':            { pt:'Crucifixo baixo-alto', en:'Low-to-high fly', muscle:'chest', pattern:'fly', aliases:['voador','fly','crossover'] },
-  'chest-dip':                  { pt:'Mergulho (peito)', en:'Chest dip', muscle:'chest', pattern:'press', aliases:['dip','paralelas','mergulho'] },
-  'incline-press':              { pt:'Supino inclinado', en:'Incline press', muscle:'chest', pattern:'press', aliases:['supino','incline'] },
-  'bench-press':                { pt:'Supino reto', en:'Flat bench press', muscle:'chest', pattern:'press', aliases:['supino','bench'] },
+  'fly':                        { pt:'Crucifixo', en:'Chest fly', muscle:'chest', pattern:'fly', family:['Crucifixo'], aliases:['voador','peck deck','fly'] },
+  'low-to-high-fly':            { pt:'Crucifixo baixo-alto', en:'Low-to-high fly', muscle:'chest', pattern:'fly', family:['Crucifixo'], aliases:['voador','fly','crossover'] },
+  'chest-dip':                  { pt:'Mergulho (peito)', en:'Chest dip', muscle:'chest', pattern:'press', family:['Mergulho'], aliases:['dip','paralelas','mergulho'] },
+  'incline-press':              { pt:'Supino inclinado', en:'Incline press', muscle:'chest', pattern:'press', family:['Supino'], aliases:['supino','incline'] },
+  'bench-press':                { pt:'Supino reto', en:'Flat bench press', muscle:'chest', pattern:'press', family:['Supino'], aliases:['supino','bench'] },
   'back-extension':             { pt:'Extensão lombar', en:'Back extension', muscle:'back', pattern:'extension', aliases:['lombar','hiperextensão'] },
-  'narrow-sumo-deadlift':       { pt:'Terra sumô fechado', en:'Narrow sumo deadlift', muscle:'back', pattern:'hinge', aliases:['terra','sumo','deadlift','levantamento terra'] },
+  'narrow-sumo-deadlift':       { pt:'Terra sumô fechado', en:'Narrow sumo deadlift', muscle:'back', pattern:'hinge', family:['Terra','Sumô'], aliases:['terra','sumo','deadlift','levantamento terra'] },
   'scapular-pull-up':           { pt:'Retração escapular na barra', en:'Scapular pull-up', muscle:'back', pattern:'other', aliases:['escapular','scapular'] },
   'pull-up':                    { pt:'Barra fixa', en:'Pull-up', muscle:'back', pattern:'pulldown', aliases:['pullup','chin','barra'] },
   'lat-pulldown':               { pt:'Puxada', en:'Lat pulldown', muscle:'back', pattern:'pulldown', aliases:['pulldown','puxador','pull down'] },
-  'chest-supported-high-row':   { pt:'Remada alta apoiada', en:'Chest-supported high row', muscle:'back', pattern:'row', aliases:['remada','row'] },
-  'low-row':                    { pt:'Remada baixa', en:'Low row', muscle:'back', pattern:'row', aliases:['remada','row'] },
-  'bent-over-row':              { pt:'Remada curvada', en:'Bent-over row', muscle:'back', pattern:'row', aliases:['remada','row'] },
+  'chest-supported-high-row':   { pt:'Remada alta apoiada', en:'Chest-supported high row', muscle:'back', pattern:'row', family:['Remada'], aliases:['remada','row'] },
+  'low-row':                    { pt:'Remada baixa', en:'Low row', muscle:'back', pattern:'row', family:['Remada'], aliases:['remada','row'] },
+  'bent-over-row':              { pt:'Remada curvada', en:'Bent-over row', muscle:'back', pattern:'row', family:['Remada'], aliases:['remada','row'] },
   'halo':                       { pt:'Halo', en:'Halo', muscle:'shoulders', pattern:'other', aliases:[] },
   'shoulder-press':             { pt:'Desenvolvimento', en:'Overhead press', muscle:'shoulders', pattern:'press', aliases:['ombro','militar','press'] },
-  'crucifix-swing':             { pt:'Crucifixo balanço', en:'Crucifix swing', muscle:'shoulders', pattern:'raise', aliases:['crucifix'] },
+  'crucifix-swing':             { pt:'Crucifixo balanço', en:'Crucifix swing', muscle:'shoulders', pattern:'raise', family:['Crucifixo'], aliases:['crucifix'] },
   'lateral-raise':              { pt:'Elevação lateral', en:'Lateral raise', muscle:'shoulders', pattern:'raise', aliases:['lateral','elevação'] },
   'hammer-curl-lateral-raise':  { pt:'Rosca martelo + elevação', en:'Hammer curl lateral raise', muscle:'shoulders', pattern:'raise', aliases:['combo'] },
   'face-pull':                  { pt:'Face pull', en:'Face pull', muscle:'shoulders', pattern:'rear_delt', aliases:['puxada para o rosto','posterior'] },
-  'preacher-curl':              { pt:'Rosca Scott', en:'Preacher curl', muscle:'biceps', pattern:'curl', aliases:['rosca','scott','banco'] },
-  'incline-curl':               { pt:'Rosca inclinada', en:'Incline curl', muscle:'biceps', pattern:'curl', aliases:['rosca','45'] },
-  'reverse-curl':               { pt:'Rosca invertida', en:'Reverse curl', muscle:'biceps', pattern:'curl', aliases:['rosca','invertida'] },
-  'hammer-curl':                { pt:'Rosca martelo', en:'Hammer curl', muscle:'biceps', pattern:'curl', aliases:['rosca','martelo'] },
-  'triceps-dip':                { pt:'Mergulho (tríceps)', en:'Triceps dip', muscle:'triceps', pattern:'dip', aliases:['dip','paralelas','mergulho'] },
+  'preacher-curl':              { pt:'Rosca Scott', en:'Preacher curl', muscle:'biceps', pattern:'curl', family:['Rosca'], aliases:['rosca','scott','banco'] },
+  'incline-curl':               { pt:'Rosca inclinada', en:'Incline curl', muscle:'biceps', pattern:'curl', family:['Rosca'], aliases:['rosca','45'] },
+  'reverse-curl':               { pt:'Rosca invertida', en:'Reverse curl', muscle:'biceps', pattern:'curl', family:['Rosca'], aliases:['rosca','invertida'] },
+  'hammer-curl':                { pt:'Rosca martelo', en:'Hammer curl', muscle:'biceps', pattern:'curl', family:['Rosca'], aliases:['rosca','martelo'] },
+  'triceps-dip':                { pt:'Mergulho (tríceps)', en:'Triceps dip', muscle:'triceps', pattern:'dip', family:['Mergulho'], aliases:['dip','paralelas','mergulho'] },
   'triceps-kickback':           { pt:'Coice de tríceps', en:'Triceps kickback', muscle:'triceps', pattern:'extension', aliases:['kickback','coice'] },
   'triceps-extension':          { pt:'Extensão de tríceps', en:'Triceps extension', muscle:'triceps', pattern:'extension', aliases:['tríceps','extensão'] },
   'overhead-triceps-extension': { pt:'Tríceps francês', en:'Overhead triceps extension', muscle:'triceps', pattern:'extension', aliases:['francês','overhead','testa'] },
   'triceps-pushdown':           { pt:'Tríceps pulley', en:'Triceps pushdown', muscle:'triceps', pattern:'pushdown', aliases:['pulley','corda','pushdown'] },
   'leg-extension':              { pt:'Cadeira extensora', en:'Leg extension', muscle:'quads', pattern:'extension', aliases:['extensora'] },
-  'bulgarian-split-squat':      { pt:'Agachamento búlgaro', en:'Bulgarian split squat', muscle:'quads', pattern:'lunge', aliases:['búlgaro','afundo'] },
-  'zercher-squat':              { pt:'Agachamento Zercher', en:'Zercher squat', muscle:'quads', pattern:'squat', aliases:['agachamento','zercher'] },
-  'v-squat':                    { pt:'V-squat', en:'V-squat', muscle:'quads', pattern:'squat', aliases:['agachamento','máquina'] },
-  'standing-leg-curl':          { pt:'Flexora em pé', en:'Standing leg curl', muscle:'hamstrings', pattern:'curl', aliases:['flexora'] },
-  'seated-leg-curl':            { pt:'Flexora sentada', en:'Seated leg curl', muscle:'hamstrings', pattern:'curl', aliases:['flexora','mesa flexora'] },
-  'stiff-leg-deadlift':         { pt:'Levantamento terra stiff', en:'Stiff-leg deadlift', muscle:'hamstrings', pattern:'hinge', aliases:['stiff','terra','romeno'] },
+  'bulgarian-split-squat':      { pt:'Agachamento búlgaro', en:'Bulgarian split squat', muscle:'quads', pattern:'lunge', family:['Agachamento'], aliases:['búlgaro','afundo'] },
+  'zercher-squat':              { pt:'Agachamento Zercher', en:'Zercher squat', muscle:'quads', pattern:'squat', family:['Agachamento'], aliases:['agachamento','zercher'] },
+  'v-squat':                    { pt:'V-squat', en:'V-squat', muscle:'quads', pattern:'squat', family:['Agachamento'], aliases:['agachamento','máquina'] },
+  'standing-leg-curl':          { pt:'Flexora em pé', en:'Standing leg curl', muscle:'hamstrings', pattern:'curl', family:['Flexora'], aliases:['flexora'] },
+  'seated-leg-curl':            { pt:'Flexora sentada', en:'Seated leg curl', muscle:'hamstrings', pattern:'curl', family:['Flexora'], aliases:['flexora','mesa flexora'] },
+  'stiff-leg-deadlift':         { pt:'Levantamento terra stiff', en:'Stiff-leg deadlift', muscle:'hamstrings', pattern:'hinge', family:['Terra'], aliases:['stiff','terra','romeno'] },
   'hip-abduction':              { pt:'Abdução de quadril', en:'Hip abduction', muscle:'glutes', pattern:'abduction', aliases:['abdução','abdutora'] },
   'kettlebell-swing':           { pt:'Swing', en:'Kettlebell swing', muscle:'glutes', pattern:'hinge', aliases:['kettlebell','swing'] },
-  'wide-sumo-deadlift':         { pt:'Terra sumô aberto', en:'Wide sumo deadlift', muscle:'glutes', pattern:'hinge', aliases:['terra','sumo','deadlift','levantamento terra'] },
+  'wide-sumo-deadlift':         { pt:'Terra sumô aberto', en:'Wide sumo deadlift', muscle:'glutes', pattern:'hinge', family:['Terra','Sumô'], aliases:['terra','sumo','deadlift','levantamento terra'] },
   'hip-thrust':                 { pt:'Elevação de quadril', en:'Hip thrust', muscle:'glutes', pattern:'hip_thrust', aliases:['hip thrust','ponte'] },
   'hip-adduction':              { pt:'Adução de quadril', en:'Hip adduction', muscle:'adductors', pattern:'adduction', aliases:['adução','adutora'] },
-  'standing-calf-raise':        { pt:'Panturrilha em pé', en:'Standing calf raise', muscle:'calves', pattern:'raise', aliases:['panturrilha','gêmeos'] },
-  'seated-calf-raise':          { pt:'Panturrilha sentada', en:'Seated calf raise', muscle:'calves', pattern:'raise', aliases:['panturrilha','sóleo'] },
+  'standing-calf-raise':        { pt:'Panturrilha em pé', en:'Standing calf raise', muscle:'calves', pattern:'raise', family:['Panturrilha'], aliases:['panturrilha','gêmeos'] },
+  'seated-calf-raise':          { pt:'Panturrilha sentada', en:'Seated calf raise', muscle:'calves', pattern:'raise', family:['Panturrilha'], aliases:['panturrilha','sóleo'] },
 };
 
 // Best-effort mainMuscle/movementPattern/accessoryMuscles for the 44
@@ -454,6 +454,10 @@ let _libFMuscle = null, _libFPattern = null;
 // the variant form inherited the sibling's class invisibly, offering no way
 // to create the same movement on different equipment).
 let _aSearch = '', _aFMuscle = null, _aMovement = null, _newVarEquip = null;
+// Browse-family drill state (E5): _aFamily is the open family PATH (1–2
+// labels, e.g. ['Terra'] or ['Terra','Sumô']); _aSeeAll flattens the open
+// family's whole subtree into one movement list ("Ver todos").
+let _aFamily = null, _aSeeAll = false;
 
 // Machine-editor working state (E2 remainder A) — just the gym chips, which
 // need in-place restyling on toggle like every other chip row; the editor's
@@ -4369,7 +4373,7 @@ function delEx(id) { D.tombstones.exercises[id]=Date.now(); D.exercises=D.exerci
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function openAddEx() {
-  _aSearch=''; _aFMuscle=null; _aMovement=null; _newType='strength';
+  _aSearch=''; _aFMuscle=null; _aMovement=null; _aFamily=null; _aSeeAll=false; _newType='strength';
   showAddEx();
 }
 
@@ -4417,7 +4421,7 @@ function aBindMuscleRow() {
     .map(([k,label]) => `<button data-mk="${k}" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;background:${_aFMuscle===k?'#0a2e2e':BG3};color:${_aFMuscle===k?TX:DM}">${label}</button>`).join('');
   c.querySelectorAll('[data-mk]').forEach(btn => btn.addEventListener('click', function() {
     _aFMuscle = _aFMuscle === this.dataset.mk ? null : this.dataset.mk;
-    _aMovement = null;
+    _aMovement = null; _aFamily = null; _aSeeAll = false;
     aBindMuscleRow(); aRefreshList();
   }));
 }
@@ -4496,6 +4500,79 @@ function aMovementRow(m, showAnchor) {
 
 const aSectionHeader = t => `<div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:10px 0 6px">${t}</div>`;
 
+// ── Browse families (E5) ─────────────────────────────────────────────────────
+// The third grouping level, DISPLAY-ONLY (the owner's "better criteria"):
+// exercise = what you track, movement = what you plan, family = what you
+// browse and say. Families come from the generated MOVEMENTS entries
+// (`family: ['Terra','Sumô']`, authored one line per vault note), may span
+// categories and muscles freely — legal precisely because nothing but the
+// browse reads them — and nest at most two levels deep (generator-enforced).
+
+// A family's home muscle for the unfiltered browse: the most common member
+// anchor, ties broken by MUSCLE_GROUPS order. Display-only and imperfect by
+// design — the involvement chips are how a family is actually found.
+function familyHomeMuscle(movs) {
+  const tally = {};
+  movs.forEach(m => { tally[m.muscle] = (tally[m.muscle]||0)+1; });
+  let best = null;
+  Object.keys(MUSCLE_GROUPS).forEach(k => { if (tally[k] && (!best || tally[k] > tally[best])) best = k; });
+  return best || movs[0]?.muscle;
+}
+
+// One family row — same shape as a movement row, with member/variant counts.
+// showAnchor mirrors aMovementRow's: in a "também envolvem" section the
+// label says where the family mostly lives.
+function aFamilyRow(path, movs, showAnchor) {
+  const label = path[path.length-1];
+  const vars = movs.reduce((a,m) => a + m.count, 0);
+  return `
+    <button onclick="openPickFamily('${esc(path.join(' / '))}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
+      <span style="flex:1;min-width:0;text-align:left">
+        <span style="font-weight:600;font-size:14px;display:block">${esc(label)}</span>
+        <span style="font-size:11px;color:${DM}">${movs.length} movimentos</span>
+      </span>
+      ${showAnchor ? `<span style="flex-shrink:0;display:inline-flex;padding:2px 8px;border-radius:99px;font-size:10px;font-weight:700;background:${BG3};border:1px solid ${BD};color:${DM}">${esc(MUSCLE_GROUPS[familyHomeMuscle(movs)]||'')}</span>` : ''}
+      <span style="flex-shrink:0;font-size:11px;color:${DM}">${vars} ${vars===1?'variação':'variações'}</span>
+      <span style="color:${DM};font-size:12px">→</span>
+    </button>`;
+}
+
+function openPickFamily(key) { _aFamily = key.split(' / '); _aSeeAll = false; _aMovement = null; aRefreshList(); }
+// Back pops ONE level: subfamily → parent family → root.
+function aCloseFamily() {
+  if (_aSeeAll) { _aSeeAll = false; }
+  else if (_aFamily && _aFamily.length === 2) { _aFamily = [_aFamily[0]]; }
+  else { _aFamily = null; }
+  aRefreshList();
+}
+function aSeeAllFamily() { _aSeeAll = true; aRefreshList(); }
+
+// The open family's view: direct movements + subfamily rows + "Ver todos"
+// (the owner's ask: one tap to flatten the whole subtree into a list).
+// `movements` arrives already count- and involvement-filtered, so a family
+// opened under a muscle chip shows only the members that belong there.
+function aFamilyViewHTML(movements) {
+  const path = _aFamily;
+  const inFam = movements.filter(m => m.family && m.family[0] === path[0]
+    && (path.length < 2 || m.family[1] === path[1]));
+  const flat = _aSeeAll || path.length === 2;
+  let rows;
+  if (flat) rows = inFam.map(m => aMovementRow(m)).join('');
+  else {
+    const direct = inFam.filter(m => m.family.length === 1);
+    const subs = {};
+    inFam.filter(m => m.family.length === 2).forEach(m => { (subs[m.family[1]] ||= []).push(m); });
+    rows = direct.map(m => aMovementRow(m)).join('')
+      + Object.entries(subs).sort((a,b) => a[0].localeCompare(b[0],'pt'))
+          .map(([sub, movs]) => aFamilyRow([path[0], sub], movs)).join('')
+      + (Object.keys(subs).length ? Bs(BG3,TX,`Ver todos (${inFam.length})`,'aSeeAllFamily()',';width:100%;justify-content:center;margin-top:2px') : '');
+  }
+  return `
+    <button onclick="aCloseFamily()" style="background:none;border:none;color:${DM};font-size:13px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">← ${path.length === 2 || _aSeeAll ? esc(path[0]) : 'Movimentos'}</button>
+    <div style="font-size:16px;font-weight:700;margin-bottom:8px">${esc(path.join(' — '))}</div>
+    ${rows || `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum movimento aqui${_aFMuscle ? ' neste grupo muscular' : ''}.</div>`}`;
+}
+
 function aRefreshList() {
   const c = document.getElementById('a-list'); if(!c)return;
   if (_aMovement && MOVEMENTS[_aMovement]) { c.innerHTML = aVariantViewHTML(_aMovement); c.scrollTop = 0; return; }
@@ -4504,8 +4581,11 @@ function aRefreshList() {
   // Muscle-chip membership is DISPLAY membership (anchor + accessory-derived
   // — see movementDisplayMuscles), not anchor-only: a row works under every
   // group it involves. The anchor keeps ordering the unfiltered browse.
+  // Search also matches FAMILY labels ("terra" surfaces every Terra
+  // movement) — local to this picker, like the involvement rule.
   const all = movementsWithCounts()
-    .filter(m => m.count > 0 && (!q || movementMatchesSearch(m, q)));
+    .filter(m => m.count > 0 && (!q || movementMatchesSearch(m, q)
+      || (m.family||[]).some(l => nameKey(l).includes(nameKey(q)))));
   // Movements group by muscle in MUSCLE_GROUPS' own declaration order —
   // the same order every other muscle-grouped list in the app uses.
   const order = Object.keys(MUSCLE_GROUPS);
@@ -4520,26 +4600,43 @@ function aRefreshList() {
     .sort((a,b) => a.name.localeCompare(b.name,'pt'));
   const looseSection = loose.length ? aSectionHeader('Sem movimento (avulsos)') + loose.map(aExRow).join('') : '';
 
+  // An open family renders its own view (drill/see-all) over the already
+  // count-, search- and involvement-filtered movement set.
+  if (_aFamily) { c.innerHTML = aFamilyViewHTML(movements); c.scrollTop = 0; return; }
+
   if (!q) {
-    // Browse: movement rows under muscle headers. Direct exercise rows are
-    // deliberately absent here (the flat 50-entry wall is what the redesign
-    // removed) — EXCEPT the avulsos, which have no movement to live under.
+    // Browse: ONE row per unit under muscle headers — a unit is either a
+    // standalone movement or a whole FAMILY (E5). A family whose visible
+    // membership is a single movement collapses to that movement's own row:
+    // no tap tax for a group of one. Direct exercise rows stay deliberately
+    // absent (the flat 50-entry wall is what the redesign removed) — except
+    // the avulsos, which have no movement to live under.
+    const famGroups = {}, standalone = [];
+    movements.forEach(m => { if (m.family) (famGroups[m.family[0]] ||= []).push(m); else standalone.push(m); });
+    const units = [
+      ...standalone.map(m => ({ f:null, m, muscle:m.muscle, anchors:[m.muscle], sort:m.pt })),
+      ...Object.entries(famGroups).map(([label, movs]) => movs.length === 1
+        ? ({ f:null, m:movs[0], muscle:movs[0].muscle, anchors:[movs[0].muscle], sort:movs[0].pt })
+        : ({ f:label, movs, muscle:familyHomeMuscle(movs), anchors:[...new Set(movs.map(x=>x.muscle))], sort:label }))
+    ];
+    units.sort((a,b) => (order.indexOf(a.muscle)-order.indexOf(b.muscle)) || a.sort.localeCompare(b.sort,'pt'));
+    const row = (u, showAnchor) => u.f ? aFamilyRow([u.f], u.movs, showAnchor) : aMovementRow(u.m, showAnchor);
     let html = '';
     if (!_aFMuscle) {
       let lastMuscle = null;
-      movements.forEach(m => {
-        if (m.muscle !== lastMuscle) { html += aSectionHeader(MUSCLE_GROUPS[m.muscle]||m.muscle); lastMuscle = m.muscle; }
-        html += aMovementRow(m);
+      units.forEach(u => {
+        if (u.muscle !== lastMuscle) { html += aSectionHeader(MUSCLE_GROUPS[u.muscle]||u.muscle); lastMuscle = u.muscle; }
+        html += row(u, false);
       });
     } else {
-      // One muscle selected: its own movements first, then the ones that
-      // merely INVOLVE it (anchored elsewhere — the small label says where),
-      // so "Bíceps" surfaces both the curls and the rows/pulldowns.
+      // One muscle selected: units ANCHORED there first (for a family: any
+      // member anchors it), then the ones that merely INVOLVE it — so
+      // "Bíceps" surfaces the curls and the Remada/Puxada families alike.
       const label = MUSCLE_GROUPS[_aFMuscle] || _aFMuscle;
-      const anchored = movements.filter(m => m.muscle === _aFMuscle);
-      const also     = movements.filter(m => m.muscle !== _aFMuscle);
-      html += anchored.map(m => aMovementRow(m)).join('');
-      if (also.length) html += aSectionHeader(`Também envolvem ${label}`) + also.map(m => aMovementRow(m, true)).join('');
+      const anchored = units.filter(u => u.anchors.includes(_aFMuscle));
+      const also     = units.filter(u => !u.anchors.includes(_aFMuscle));
+      html += anchored.map(u => row(u, false)).join('');
+      if (also.length) html += aSectionHeader(`Também envolvem ${label}`) + also.map(u => row(u, true)).join('');
     }
     html += looseSection;
     c.innerHTML = html || `<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum movimento aqui ainda.</div>`;

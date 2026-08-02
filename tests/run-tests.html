@@ -2198,22 +2198,24 @@
 
     W.startFree(); T.TAB = 'log';
     W.openAddEx();
+    // low-row lives inside the Remada FAMILY since E5 — the browse shows the
+    // family row; the movement row appears one level down (the family view).
     W.eval("_aFMuscle = null; _aSearch = '';"); W.aRefreshList();
     let h = W.document.getElementById('a-list').innerHTML;
     t('unfiltered browse groups by anchor and surfaces the avulsos section',
-      h.includes(`openPickMovement('${slug}')`) && h.includes('Sem movimento (avulsos)') && h.includes('Coisa avulsa X'));
+      h.includes(`openPickFamily('Remada')`) && h.includes('Sem movimento (avulsos)') && h.includes('Coisa avulsa X'));
 
     W.eval("_aFMuscle = 'biceps';"); W.aRefreshList();
     h = W.document.getElementById('a-list').innerHTML;
-    t('an accessory-muscle chip surfaces the movement under "Também envolvem"',
-      h.includes('Também envolvem') && h.includes(`openPickMovement('${slug}')`));
+    t('an accessory-muscle chip surfaces the family under "Também envolvem"',
+      h.includes('Também envolvem') && h.includes(`openPickFamily('Remada')`));
     t('avulsos honor the chip through main OR accessory', h.includes('Coisa avulsa X'));
 
     W.eval(`_aFMuscle = ${JSON.stringify(anchor.muscle)};`); W.aRefreshList();
     h = W.document.getElementById('a-list').innerHTML;
     const alsoIdx = h.indexOf('Também envolvem');
-    t('on its anchor chip the movement lists in the main section, not "também"',
-      h.includes(`openPickMovement('${slug}')`) && (alsoIdx === -1 || h.indexOf(`openPickMovement('${slug}')`) < alsoIdx));
+    t('on its anchor chip the family lists in the main section, not "também"',
+      h.includes(`openPickFamily('Remada')`) && (alsoIdx === -1 || h.indexOf(`openPickFamily('Remada')`) < alsoIdx));
 
     W.eval(`_aFMuscle = 'biceps'; _aSearch = ${JSON.stringify(anchor.pt)};`);
     W.eval(`_aSearch = ${JSON.stringify(T.MOVEMENTS[slug].pt)};`); W.aRefreshList();
@@ -2224,6 +2226,66 @@
     W.closeModal();
     const cfmP = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfmP;
     T.D.exercises = keepEx; T.S = null; W.render();
+  }
+
+  // ── browse families (E5: exercise=track, movement=plan, family=browse) ─────
+  g('browse families (E5)');
+  {
+    const keepEx2 = JSON.parse(JSON.stringify(T.D.exercises));
+    const supSlug = T.D.exercises.find(e => e.id === 'bench-press').movement;
+    const sumos = Object.keys(T.MOVEMENTS).filter(k => (T.MOVEMENTS[k].family||[])[1] === 'Sumô');
+    t('generated MOVEMENTS carry family paths (flat and nested)',
+      eq(T.MOVEMENTS[supSlug].family, ['Supino']) && sumos.length === 2
+      && eq(T.MOVEMENTS['wide-sumo-deadlift'].family, ['Terra','Sumô']));
+
+    W.startFree(); T.TAB = 'log';
+    W.openAddEx();
+    W.eval("_aFMuscle = null; _aSearch = ''; _aFamily = null; _aSeeAll = false;"); W.aRefreshList();
+    let h = W.document.getElementById('a-list').innerHTML;
+    t('root browse shows ONE family row, not its member movements',
+      h.includes(`openPickFamily('Supino')`) && !h.includes(`openPickMovement('${supSlug}')`));
+
+    W.openPickFamily('Supino');
+    h = W.document.getElementById('a-list').innerHTML;
+    t('the family view lists the member movements', h.includes(`openPickMovement('${supSlug}')`));
+    W.aCloseFamily();
+    t('back returns to the root browse', W.eval('_aFamily') === null
+      && W.document.getElementById('a-list').innerHTML.includes(`openPickFamily('Supino')`));
+
+    W.openPickFamily('Terra');
+    h = W.document.getElementById('a-list').innerHTML;
+    t('a nested family shows its subfamily row + Ver todos',
+      h.includes(`openPickFamily('Terra / Sumô')`) && h.includes('Ver todos'));
+    W.aSeeAllFamily();
+    h = W.document.getElementById('a-list').innerHTML;
+    t('Ver todos flattens the whole subtree into movement rows',
+      sumos.every(s => h.includes(`openPickMovement('${s}')`)));
+
+    // A family whose visible membership is one movement collapses to the
+    // bare movement row — no tap tax for a group of one.
+    W.eval("MOVEMENTS['fam-test-solo'] = { pt:'Solo Teste', en:'Solo Test', muscle:'chest', pattern:'press', family:['FamTeste'], aliases:[] };");
+    T.D.exercises.push({ id: 'fam-solo-ex', name: 'Solo Teste máquina', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press', accessoryMuscles: [], movement: 'fam-test-solo', updatedAt: 1 });
+    W.eval("_aFamily = null; _aSeeAll = false; _aSearch = '';"); W.aRefreshList();
+    h = W.document.getElementById('a-list').innerHTML;
+    t('a single-member family collapses to the movement row',
+      h.includes(`openPickMovement('fam-test-solo')`) && !h.includes(`openPickFamily('FamTeste')`));
+
+    // Involvement chips work at family level: Remada anchors Costas but its
+    // members credit biceps — the family row shows under Também envolvem.
+    W.eval("_aFMuscle = 'biceps';"); W.aRefreshList();
+    h = W.document.getElementById('a-list').innerHTML;
+    t('a family surfaces under an involvement chip ("Também envolvem")',
+      h.includes('Também envolvem') && h.includes(`openPickFamily('Remada')`));
+
+    W.eval("_aFMuscle = null; _aSearch = 'terra';"); W.aRefreshList();
+    h = W.document.getElementById('a-list').innerHTML;
+    t('search matches family labels and surfaces the members',
+      sumos.every(s => h.includes(`openPickMovement('${s}')`)));
+
+    W.eval("delete MOVEMENTS['fam-test-solo']; _aSearch = ''; _aFamily = null; _aSeeAll = false;");
+    W.closeModal();
+    const cfmF = W.confirm; W.confirm = () => true; W.cancelSession(); W.confirm = cfmF;
+    T.D.exercises = keepEx2; T.S = null; W.render();
   }
 
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
