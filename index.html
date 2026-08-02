@@ -2931,6 +2931,7 @@ function buildLibrary() {
         <div id="lib-count" style="font-size:13px;color:${DM};margin-top:2px">${total} exercício${total!==1?'s':''}${countNote}</div>
       </div>
       <div style="display:flex;gap:8px;flex-shrink:0">
+        ${Bs(BG3,TX,'⟳ Nomes','openSeedRefresh()')}
         ${sb && sbSession ? Bs(BG3,TX,'⟳ Catálogo','openCatalogUpdate()') : ''}
         ${Bs(CG,TX,'+ Novo','openNewEx()')}
       </div>
@@ -3258,6 +3259,87 @@ function renderCatalogList() {
       </div>
       ${Bs(CG,TX,'+ Adicionar',`addCatalogExercise('${esc(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
     </div>`).join('');
+}
+
+// ── Seed refresh — "Atualizar do catálogo" (the Backlog's deliberate action) ─
+//
+// An existing install seeds ONCE and never picks up curated library changes
+// on its own — the PT-BR rename reached only fresh installs, so an older
+// device keeps showing "Bench press" where a fresh one says "Supino reto"
+// (the owner hit exactly this registering their first real session). This
+// is the deliberate, confirmed re-sync: exercises whose STABLE SLUG ID
+// matches the shipped library.json are updated to the current curated
+// identity — name, bilingual layer, cues/errors, equipment, movement,
+// classification — with an updatedAt bump so the fix propagates to every
+// other device through the normal LWW merge (strictly better than the
+// per-device factory reset for this purpose: history, plans and machines
+// are untouched because ids never change).
+//
+// Deliberately untouched: user-created exercises (id unknown to the seed)
+// and the user-owned fields on seeded ones — type/regime/compound (the
+// "Modo padrão" trio), rest timings, gym tags, ★ favorite. A user's RENAME
+// of a seeded exercise IS overwritten — which is exactly why this is a
+// button with a confirm listing every rename, not a background migration.
+// A rename that collides with a user-created copy of the same exercise
+// becomes a visible duplicate, and the existing duplicates banner + merge
+// tool are the designed cleanup for that.
+const SEED_REFRESH_FIELDS = ['name','name_en','aliases','equipment','cues_pt','cues_en','errors_pt','errors_en','stretchEmphasis','movement','mainMuscle','movementPattern','accessoryMuscles'];
+let _seedRefreshMap = null;
+
+function seedRefreshChanges(map) {
+  const renames = [], contentOnly = [];
+  D.exercises.forEach(ex => {
+    const s = map[ex.id]; if (!s) return;
+    const differs = SEED_REFRESH_FIELDS.some(f => JSON.stringify(s[f] ?? null) !== JSON.stringify(ex[f] ?? null));
+    if (!differs) return;
+    ((s.name && s.name !== ex.name) ? renames : contentOnly).push({ ex, s });
+  });
+  return { renames, contentOnly };
+}
+
+async function openSeedRefresh() {
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Atualizar do catálogo</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Sincroniza os exercícios padrão desta biblioteca com a versão atual do catálogo — nomes (PT-BR), dicas, classificação e movimento. Ids não mudam: histórico, planos e máquinas ficam intactos. Exercícios criados por você nunca são tocados.</div>
+    <div id="sr-body" style="font-size:13px;color:${DM}">Carregando…</div>
+    ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
+  let seed;
+  // Same no-store fetch as the one-time seeding — a plain fetch would be
+  // answered from the service-worker cache and could diff against a stale
+  // catalog copy.
+  try { seed = await (await fetch('library.json', { cache: 'no-store' })).json(); }
+  catch (e) { const b = document.getElementById('sr-body'); if (b) b.textContent = 'Não foi possível carregar o catálogo — verifique a conexão.'; return; }
+  const map = {};
+  (seed.exercises || []).forEach(x => { if (x.id) map[x.id] = x; });
+  _seedRefreshMap = map;
+  const body = document.getElementById('sr-body');
+  if (!body) return; // modal closed while fetching
+  const { renames, contentOnly } = seedRefreshChanges(map);
+  if (!renames.length && !contentOnly.length) { body.innerHTML = `<span style="color:#6fcf97">Biblioteca em dia com o catálogo ✓</span>`; return; }
+  const shown = renames.slice(0, 30);
+  body.innerHTML = `
+    ${renames.length ? `<div style="font-size:12px;font-weight:700;color:${TX};margin-bottom:6px">${renames.length} nome${renames.length===1?'':'s'} ser${renames.length===1?'á':'ão'} atualizado${renames.length===1?'':'s'}:</div>`
+      + shown.map(({ ex, s }) => `<div style="font-size:12px;margin-bottom:3px"><span style="color:${DM}">${esc(ex.name)}</span> → <strong>${esc(s.name)}</strong></div>`).join('')
+      + (renames.length > shown.length ? `<div style="font-size:11px;color:${DM}">… e mais ${renames.length - shown.length}</div>` : '') : ''}
+    ${contentOnly.length ? `<div style="font-size:12px;color:${DM};margin-top:8px">+ conteúdo atualizado em ${contentOnly.length} exercício${contentOnly.length===1?'':'s'} (dicas, classificação, movimento).</div>` : ''}
+    <div style="font-size:11px;color:#e6c84a;margin-top:10px">Substitui edições suas nesses campos, nesses exercícios. Modo padrão, descansos, academias e ★ não são tocados.</div>
+    ${B(CG,TX,'Atualizar','applySeedRefresh()',';margin-top:12px;margin-bottom:0')}`;
+}
+
+function applySeedRefresh() {
+  if (!_seedRefreshMap) return;
+  const { renames, contentOnly } = seedRefreshChanges(_seedRefreshMap);
+  [...renames, ...contentOnly].forEach(({ ex, s }) => {
+    SEED_REFRESH_FIELDS.forEach(f => {
+      const v = s[f];
+      // Absent in the seed = the curated truth dropped the field — clear the
+      // stale local copy too (an alias list that no longer exists, say).
+      if (v === undefined) delete ex[f];
+      else ex[f] = JSON.parse(JSON.stringify(v));
+    });
+    ex.updatedAt = Date.now(); // LWW: the refresh must win on every other device
+  });
+  persist(); closeModal(); render();
 }
 
 // ── Duplicate detection & merge ───────────────────────────────────────────────

@@ -2288,6 +2288,39 @@
     T.D.exercises = keepEx2; T.S = null; W.render();
   }
 
+  // ── seed refresh: "Atualizar do catálogo" ──────────────────────────────────
+  g('seed refresh (Atualizar do catálogo)');
+  {
+    const keepEx3 = JSON.parse(JSON.stringify(T.D.exercises));
+    // Simulate the pre-rename install the feature exists for: stale English
+    // name, missing content layer — plus user-owned fields that must survive.
+    const bench = T.D.exercises.find(e => e.id === 'bench-press');
+    const seedName = bench.name; // the CURRENT curated PT name (suite boots from the real seed)
+    bench.name = 'Bench press'; delete bench.cues_pt; delete bench.movement; delete bench.name_en;
+    bench.type = 'strength'; bench.favorite = true; bench.rest = { ww: 90 }; bench.gyms = ['gx'];
+    bench.updatedAt = 1;
+    T.D.exercises.push({ id: 'my-own-x', name: 'Invenção minha', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press', accessoryMuscles: [], updatedAt: 1 });
+    const myExSnap = JSON.stringify(T.D.exercises.find(e => e.id === 'my-own-x'));
+
+    await W.openSeedRefresh();
+    const srBody = W.document.getElementById('sr-body').innerHTML;
+    t('refresh modal lists the rename old → new', srBody.includes('Bench press') && srBody.includes(seedName));
+    W.applySeedRefresh();
+    const b2 = T.D.exercises.find(e => e.id === 'bench-press');
+    t('seeded exercise re-synced to the curated identity with an LWW bump',
+      b2.name === seedName && !!b2.movement && !!b2.name_en && b2.updatedAt > 1);
+    t('user-owned fields survive (modo padrão, rest, gyms, ★)',
+      b2.type === 'strength' && b2.favorite === true && eq(b2.rest, { ww: 90 }) && eq(b2.gyms, ['gx']));
+    t('user-created exercises are never touched',
+      JSON.stringify(T.D.exercises.find(e => e.id === 'my-own-x')) === myExSnap);
+    const again = W.seedRefreshChanges(W.eval('_seedRefreshMap'));
+    t('a second pass finds nothing left on that exercise (idempotent)',
+      !again.renames.concat(again.contentOnly).some(c => c.ex.id === 'bench-press'));
+
+    W.eval('_seedRefreshMap = null'); W.closeModal();
+    T.D.exercises = keepEx3; W.render();
+  }
+
   // ── warm-up floors & assisted effective-load ramp (2026-07-30 bug reports) ─
   g('warm-up floors & assisted ramp');
   {
