@@ -1522,6 +1522,27 @@
       "stretchEmphasis": false
     },
     {
+      "id": "barbell-preacher-curl",
+      "name": "Rosca Scott com barra",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "preacher-curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Barbell preacher curl",
+      "aliases": [
+        "preacher curl",
+        "rosca scott com barra",
+        "banco scott"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "single-arm-preacher-curl",
       "name": "Rosca Scott unilateral",
       "type": "hypertrophy",
@@ -1539,6 +1560,131 @@
       "accessoryMuscles": []
     },
     {
+      "id": "alternating-dumbbell-curl",
+      "name": "Rosca alternada",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Alternating dumbbell curl",
+      "aliases": [
+        "dumbbell alternate bicep curl",
+        "rosca alternada"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "concentration-curl",
+      "name": "Rosca concentrada",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "concentration-curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Concentration curl",
+      "aliases": [
+        "concentration curls",
+        "rosca concentrada",
+        "concentrada"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "barbell-curl",
+      "name": "Rosca direta com barra",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Barbell curl",
+      "aliases": [
+        "barbell curl",
+        "rosca direta com barra",
+        "rosca direta",
+        "rosca com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "dumbbell-curl",
+      "name": "Rosca direta com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Dumbbell curl",
+      "aliases": [
+        "dumbbell bicep curl",
+        "rosca direta com halteres",
+        "rosca com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "ez-bar-curl",
+      "name": "Rosca direta na barra W",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "EZ-bar curl",
+      "aliases": [
+        "ez bar curl",
+        "rosca na barra w",
+        "rosca w"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "alternating-incline-curl",
+      "name": "Rosca inclinada alternada",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "incline-curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Alternating incline dumbbell curl",
+      "aliases": [
+        "alternate incline dumbbell curl",
+        "rosca inclinada alternada"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "incline-deficit-curl",
       "name": "Rosca inclinada com déficit",
       "type": "hypertrophy",
@@ -1554,6 +1700,27 @@
       ],
       "equipment": "dumbbell",
       "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-reverse-curl",
+      "name": "Rosca invertida com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "reverse-curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Dumbbell reverse curl",
+      "aliases": [
+        "standing dumbbell reverse curl",
+        "rosca invertida com halteres",
+        "rosca pronada"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
     },
     {
       "id": "reverse-grip-ez-bar-curl",
@@ -1594,6 +1761,50 @@
       "equipment": "dumbbell"
     },
     {
+      "id": "cable-hammer-curl",
+      "name": "Rosca martelo no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "biceps",
+      "movementPattern": "curl",
+      "movement": "hammer-curl",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Cable hammer curl",
+      "aliases": [
+        "cable hammer curls rope",
+        "rosca martelo no cabo",
+        "martelo na corda"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "parallel-bar-dip",
+      "name": "Mergulho nas paralelas",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "triceps",
+      "movementPattern": "dip",
+      "movement": "triceps-dip",
+      "accessoryMuscles": [
+        "chest",
+        "shoulders"
+      ],
+      "name_en": "Triceps dip",
+      "aliases": [
+        "dips triceps version",
+        "mergulho nas paralelas",
+        "paralelas",
+        "dip"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
       "id": "dip-gravitron-upright",
       "name": "Mergulho no gravitron (tríceps)",
       "type": "strength",
@@ -1615,6 +1826,25 @@
       "equipment": "machine"
     },
     {
+      "id": "dumbbell-triceps-kickback",
+      "name": "Coice de tríceps com halter",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "extension",
+      "movement": "triceps-kickback",
+      "name_en": "Dumbbell triceps kickback",
+      "aliases": [
+        "tricep dumbbell kickback",
+        "coice de triceps com halter",
+        "coice"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
       "id": "cable-triceps-kickback",
       "name": "Coice de tríceps no cabo",
       "type": "hypertrophy",
@@ -1629,6 +1859,24 @@
         "triceps kickback"
       ],
       "equipment": "cable",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "barbell-overhead-triceps-extension",
+      "name": "Tríceps francês com barra",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "extension",
+      "movement": "overhead-triceps-extension",
+      "name_en": "Standing overhead barbell triceps extension",
+      "aliases": [
+        "standing overhead barbell triceps extension",
+        "triceps frances com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false,
       "accessoryMuscles": []
     },
     {
@@ -1650,6 +1898,25 @@
       "accessoryMuscles": []
     },
     {
+      "id": "seated-dumbbell-triceps-extension",
+      "name": "Tríceps francês sentado com halter",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "extension",
+      "movement": "overhead-triceps-extension",
+      "name_en": "Seated dumbbell triceps press",
+      "aliases": [
+        "seated triceps press",
+        "triceps frances com halter",
+        "triceps sentado"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
       "id": "machine-triceps",
       "name": "Tríceps máquina",
       "type": "hypertrophy",
@@ -1666,6 +1933,65 @@
       "accessoryMuscles": []
     },
     {
+      "id": "ez-bar-skullcrusher",
+      "name": "Tríceps testa com barra W",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "extension",
+      "movement": "skullcrusher",
+      "name_en": "EZ-bar skullcrusher",
+      "aliases": [
+        "ez bar skullcrusher",
+        "triceps testa com barra w",
+        "testa com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-skullcrusher",
+      "name": "Tríceps testa com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "extension",
+      "movement": "skullcrusher",
+      "name_en": "Lying dumbbell triceps extension",
+      "aliases": [
+        "lying dumbbell tricep extension",
+        "triceps testa com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "close-grip-bench-press",
+      "name": "Supino fechado",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "other",
+      "movement": "close-grip-bench-press",
+      "accessoryMuscles": [
+        "chest",
+        "shoulders"
+      ],
+      "name_en": "Close-grip bench press",
+      "aliases": [
+        "close grip bench press",
+        "supino fechado",
+        "supino pegada fechada"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "rope-cable-triceps-extension",
       "name": "Tríceps corda",
       "type": "hypertrophy",
@@ -1680,6 +2006,44 @@
         "pulley corda"
       ],
       "equipment": "cable",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "v-bar-triceps-pushdown",
+      "name": "Tríceps pulley barra V",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "pushdown",
+      "movement": "triceps-pushdown",
+      "name_en": "V-bar triceps pushdown",
+      "aliases": [
+        "triceps pushdown v-bar",
+        "triceps pulley barra v",
+        "triceps na barra"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "reverse-grip-triceps-pushdown",
+      "name": "Tríceps pulley invertido",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "triceps",
+      "movementPattern": "pushdown",
+      "movement": "triceps-pushdown",
+      "name_en": "Reverse-grip triceps pushdown",
+      "aliases": [
+        "reverse grip triceps pushdown",
+        "triceps pulley invertido",
+        "triceps supinado"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
       "accessoryMuscles": []
     },
     {

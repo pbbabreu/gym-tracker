@@ -280,7 +280,13 @@
     t('muscle filter returns only that muscle', biceps.length > 0 && biceps.every(e => e.mainMuscle === 'biceps'));
     t('muscle filter count matches manual count', biceps.length === all.filter(e => e.mainMuscle === 'biceps').length);
     const dipTri = W.applyFilters(all, null, 'dip', false, false, 'triceps', null);
-    t('muscle+search isolates the upright dip variant', dipTri.length === 1 && dipTri[0].id === 'dip-gravitron-upright');
+    // The POINT is that the muscle chip separates the triceps dips from the
+    // chest one, not that there is exactly one of each -- promoting the
+    // bodyweight parallel-bar dip made the triceps side two.
+    t('muscle+search isolates the triceps dips from the chest one',
+      dipTri.length >= 1 && dipTri.every(e => e.mainMuscle === 'triceps')
+      && dipTri.some(e => e.id === 'dip-gravitron-upright')
+      && !dipTri.some(e => e.id === 'dip-gravitron'));
     const dipChest = W.applyFilters(all, null, 'dip', false, false, 'chest', null);
     t('muscle+search isolates the leaning dip variant', dipChest.length === 1 && dipChest[0].id === 'dip-gravitron');
     t('pattern without muscle is ignored', W.applyFilters(all, null, '', false, false, null, 'curl').length === all.length);
@@ -460,7 +466,11 @@
       // incline flyes were promoted; asserting 0 was pinning the catalog's
       // size, not the ranking. Assert the SHAPE instead.
       && tiers.sameMuscle.every(e => e.mainMuscle === 'chest' && e.movementPattern !== 'press')
-      && tiers.others.every(e => e.id === 'incline-deficit-curl') && tiers.others.length >= 1);
+      // `others` collects matches from OTHER muscles. Pinning it to one id
+      // broke as soon as a second incline curl was promoted; what matters
+      // is that nothing chest lands here (those belong to the tiers above).
+      && tiers.others.every(e => e.mainMuscle !== 'chest')
+      && tiers.others.some(e => e.id === 'incline-deficit-curl'));
     // gym filter removes unavailable-there suggestions entirely
     const inclineEx = T.D.exercises.find(e => e.id === 'incline-press-machine');
     inclineEx.gyms = ['somewhere-else'];
