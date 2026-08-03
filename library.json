@@ -496,6 +496,31 @@
       "equipment": "bodyweight"
     },
     {
+      "id": "deadlift",
+      "name": "Levantamento terra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "hinge",
+      "movement": "deadlift",
+      "accessoryMuscles": [
+        "hamstrings",
+        "glutes",
+        "quads",
+        "forearms"
+      ],
+      "name_en": "Barbell deadlift",
+      "aliases": [
+        "barbell deadlift",
+        "deadlift",
+        "levantamento terra",
+        "terra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "narrow-stance-sumo-deadlift",
       "name": "Terra sumô fechado",
       "type": "strength",
@@ -517,6 +542,88 @@
       "equipment": "barbell"
     },
     {
+      "id": "barbell-shrug",
+      "name": "Encolhimento com barra",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "other",
+      "movement": "shrug",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Barbell shrug",
+      "aliases": [
+        "barbell shrug",
+        "encolhimento com barra",
+        "encolhimento"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "dumbbell-shrug",
+      "name": "Encolhimento com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "other",
+      "movement": "shrug",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Dumbbell shrug",
+      "aliases": [
+        "dumbbell shrug",
+        "encolhimento com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "machine-shrug",
+      "name": "Encolhimento na máquina",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "other",
+      "movement": "shrug",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Leverage shrug",
+      "aliases": [
+        "leverage shrug",
+        "encolhimento na maquina"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "cable-shrug",
+      "name": "Encolhimento no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "other",
+      "movement": "shrug",
+      "accessoryMuscles": [
+        "forearms"
+      ],
+      "name_en": "Cable shrug",
+      "aliases": [
+        "cable shrugs",
+        "encolhimento no cabo",
+        "encolhimento na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
       "id": "scapular-pull-up",
       "name": "Retração escapular na barra",
       "type": "hypertrophy",
@@ -532,6 +639,28 @@
       ],
       "equipment": "bodyweight",
       "accessoryMuscles": []
+    },
+    {
+      "id": "pull-up",
+      "name": "Barra fixa",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "movement": "pull-up",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Pull-up",
+      "aliases": [
+        "pullups",
+        "pull up",
+        "barra fixa",
+        "barra"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
     },
     {
       "id": "assisted-pull-up-gravitron",
@@ -551,6 +680,29 @@
         "barra assistida"
       ],
       "equipment": "machine"
+    },
+    {
+      "id": "chin-up",
+      "name": "Barra fixa supinada",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "movement": "pull-up",
+      "accessoryMuscles": [
+        "biceps",
+        "forearms"
+      ],
+      "name_en": "Chin-up",
+      "aliases": [
+        "chin up",
+        "chin-up",
+        "barra fixa supinada",
+        "barra supinada"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
     },
     {
       "id": "wide-grip-lat-pulldown",
@@ -589,6 +741,25 @@
         "pegada neutra aberta"
       ],
       "equipment": "cable"
+    },
+    {
+      "id": "straight-arm-pulldown",
+      "name": "Puxada com braço estendido",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "pulldown",
+      "movement": "straight-arm-pulldown",
+      "name_en": "Straight-arm pulldown",
+      "aliases": [
+        "straight-arm pulldown",
+        "pulldown com braco estendido",
+        "pullover na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
     },
     {
       "id": "v-bar-lat-pulldown",
@@ -765,6 +936,27 @@
       "equipment": "machine"
     },
     {
+      "id": "machine-high-row",
+      "name": "Remada alta na máquina",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "chest-supported-high-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Leverage high row",
+      "aliases": [
+        "leverage high row",
+        "remada alta na maquina",
+        "high row"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
+    },
+    {
       "id": "machine-low-row",
       "name": "Remada baixa máquina",
       "type": "hypertrophy",
@@ -802,6 +994,27 @@
       "equipment": "cable"
     },
     {
+      "id": "t-bar-row",
+      "name": "Remada cavalinho",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "t-bar-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "T-bar row",
+      "aliases": [
+        "t-bar row",
+        "remada cavalinho",
+        "remada t"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "bent-over-barbell-row",
       "name": "Remada curvada com barra",
       "type": "strength",
@@ -818,6 +1031,89 @@
         "bent over row"
       ],
       "equipment": "barbell"
+    },
+    {
+      "id": "bent-over-dumbbell-row",
+      "name": "Remada curvada com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "bent-over-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Bent-over dumbbell row",
+      "aliases": [
+        "bent over dumbbell row",
+        "remada curvada com halteres",
+        "remada com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "reverse-grip-bent-over-row",
+      "name": "Remada curvada supinada",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "bent-over-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Reverse-grip bent-over row",
+      "aliases": [
+        "reverse grip bent over rows",
+        "remada curvada supinada",
+        "remada supinada"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "one-arm-dumbbell-row",
+      "name": "Remada unilateral com halter",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "bent-over-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "One-arm dumbbell row",
+      "aliases": [
+        "one arm dumbbell row",
+        "remada unilateral",
+        "remada serrote"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "one-arm-cable-row",
+      "name": "Remada unilateral no cabo",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "back",
+      "movementPattern": "row",
+      "movement": "low-row",
+      "accessoryMuscles": [
+        "biceps"
+      ],
+      "name_en": "Seated one-arm cable row",
+      "aliases": [
+        "seated one arm cable row",
+        "remada unilateral no cabo"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
     },
     {
       "id": "strict-halos",
