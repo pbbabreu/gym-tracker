@@ -2580,6 +2580,94 @@
       "equipment": "dumbbell"
     },
     {
+      "id": "walking-lunge",
+      "name": "Avanço caminhando",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "lunge",
+      "movement": "lunge",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Walking lunge",
+      "aliases": [
+        "barbell walking lunge",
+        "avanco caminhando",
+        "afundo caminhando"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "barbell-lunge",
+      "name": "Avanço com barra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "lunge",
+      "movement": "lunge",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Barbell lunge",
+      "aliases": [
+        "barbell lunge",
+        "avanco com barra",
+        "afundo com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "dumbbell-lunge",
+      "name": "Avanço com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "lunge",
+      "movement": "lunge",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Dumbbell lunge",
+      "aliases": [
+        "dumbbell lunges",
+        "avanco com halteres",
+        "afundo com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "dumbbell-step-up",
+      "name": "Subida no banco com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "lunge",
+      "movement": "step-up",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Dumbbell step-up",
+      "aliases": [
+        "dumbbell step ups",
+        "subida no banco com halteres",
+        "step up com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "zercher-squat",
       "name": "Agachamento Zercher",
       "type": "strength",
@@ -2597,6 +2685,184 @@
         "zercher squat"
       ],
       "equipment": "barbell"
+    },
+    {
+      "id": "wide-stance-squat",
+      "name": "Agachamento aberto",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "squat",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings",
+        "back"
+      ],
+      "name_en": "Wide-stance barbell squat",
+      "aliases": [
+        "wide stance barbell squat",
+        "agachamento aberto",
+        "agachamento sumo"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "dumbbell-squat",
+      "name": "Agachamento com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "squat",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Dumbbell squat",
+      "aliases": [
+        "dumbbell squat",
+        "agachamento com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "front-squat",
+      "name": "Agachamento frontal",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "front-squat",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Front barbell squat",
+      "aliases": [
+        "front barbell squat",
+        "agachamento frontal",
+        "front squat"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "machine-hack-squat",
+      "name": "Agachamento hack na máquina",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "hack-squat",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Hack squat machine",
+      "aliases": [
+        "hack squat",
+        "agachamento hack",
+        "hack na maquina"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "back-squat",
+      "name": "Agachamento livre",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "squat",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings",
+        "back"
+      ],
+      "name_en": "Barbell back squat",
+      "aliases": [
+        "barbell squat",
+        "back squat",
+        "agachamento livre",
+        "agachamento com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "bodyweight-squat",
+      "name": "Agachamento livre sem carga",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "squat",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Bodyweight squat",
+      "aliases": [
+        "bodyweight squat",
+        "agachamento sem carga",
+        "agachamento livre corporal"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "leg-press",
+      "name": "Leg press",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "leg-press",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Leg press",
+      "aliases": [
+        "leg press",
+        "leg",
+        "prensa"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "narrow-leg-press",
+      "name": "Leg press pegada fechada",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "quads",
+      "movementPattern": "squat",
+      "movement": "leg-press",
+      "accessoryMuscles": [
+        "glutes",
+        "hamstrings"
+      ],
+      "name_en": "Narrow-stance leg press",
+      "aliases": [
+        "narrow stance leg press",
+        "leg press fechado",
+        "leg press pes juntos"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
     },
     {
       "id": "v-squat-front-facing",
