@@ -119,6 +119,8 @@
     // the whole bridge is a template literal, so a backtick here silently
     // terminates it and the entire suite stops parsing.
     TRACK_TIME, TRACK_REPS, trackingOf, isTimed, fmtSecs, volEx, computeSuggestion, profileFor,
+    // Catalog delivery: the library arrives on its own and needs no account.
+    syncGlobalLibrary, deletedCatalogEntries, restoreDeletedExercise, mergeCollection,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -655,16 +657,32 @@
     t('normalizeExerciseDef coerces every enum', norm.type === 'hypertrophy' && norm.regime === 'weighted' && norm.compound === null && norm.mainMuscle === 'undefined' && norm.movementPattern === 'undefined' && eq(norm.accessoryMuscles, ['biceps']));
     t('normalizeExerciseDef backfills a missing id', !!W.normalizeExerciseDef({ name: 'NoId' }).id);
 
-    // catalogNewEntries — the tombstone rule is the important half
+    // syncGlobalLibrary — the curated library is DELIVERED, not opted into.
+    // The tombstone rule is the important half: a deliberate deletion must
+    // survive every future load, or auto-delivery would nag forever.
     const cat = [
-      { id: 'bench-press', data: { id: 'bench-press', name: 'Bench press' } },       // already in library
-      { id: 'brand-new-move', data: { id: 'brand-new-move', name: 'Novo Movimento', type: 'hypertrophy' } },
-      { id: 'deleted-once', data: { id: 'deleted-once', name: 'Excluído' } },
-      { id: 'broken-row', data: {} },                                                 // malformed
+      { id: 'bench-press', name: 'Bench press' },                    // already in library
+      { id: 'brand-new-move', name: 'Novo Movimento', type: 'hypertrophy' },
+      { id: 'deleted-once', name: 'Excluído' },
+      { name: 'no id at all' },                                      // malformed
     ];
     T.D.tombstones.exercises['deleted-once'] = 123;
-    const news = W.catalogNewEntries(cat);
-    t('catalog offers only the genuinely new entry', news.length === 1 && news[0].id === 'brand-new-move');
+    const exBefore = T.D.exercises.length;
+    const addedN = W.syncGlobalLibrary(cat);
+    t('auto-sync adds only the genuinely new entry', addedN === 1 && T.D.exercises.length === exBefore + 1
+       && T.D.exercises.some(e => e.id === 'brand-new-move'));
+    t('auto-sync never resurrects a deleted exercise', !T.D.exercises.some(e => e.id === 'deleted-once'));
+    t('auto-sync skips malformed rows', !T.D.exercises.some(e => e.name === 'no id at all'));
+    const delivered = T.D.exercises.find(e => e.id === 'brand-new-move');
+    // updatedAt 0 is what makes a deletion on ANOTHER device win the merge:
+    // mergeCollection drops a tombstone whose item is newer than the delete.
+    t('delivered rows carry the catalog baseline stamp, not now()', delivered.updatedAt === 0);
+    t('delivered rows are marked global', delivered.origin === T.ORIGIN_GLOBAL);
+    t('auto-sync is idempotent', W.syncGlobalLibrary(cat) === 0);
+    // and prove the merge consequence directly
+    const merged = W.mergeCollection([delivered], [], { 'brand-new-move': 5 }, {});
+    t('a tombstone beats a delivered row in the merge', !merged.items.some(e => e.id === 'brand-new-move'));
+    T.D.exercises = T.D.exercises.filter(e => e.id !== 'brand-new-move');
     delete T.D.tombstones.exercises['deleted-once'];
 
     // fake sb for the sharing queries
@@ -715,12 +733,21 @@
     t('a missing table / failed query never breaks the inbox', T.shares.length === 1 && T.shares[0].id === 'keep-me');
     T.shares = [];
 
-    // catalog add runs the same normalization
-    T.catalogRows = [{ id: 'brand-new-move', data: { id: 'brand-new-move', name: 'Novo Movimento', type: 'weird', regime: 'eccentric' } }];
+    // restoring a deleted exercise: runs the same normalization AND must clear
+    // the tombstone, or the very next merge would delete it straight back.
+    T.catalogRows = [{ id: 'brand-new-move', name: 'Novo Movimento', type: 'weird', regime: 'eccentric' }];
+    T.D.tombstones.exercises['brand-new-move'] = 999;
     const exCount2 = T.D.exercises.length;
-    W.addCatalogExercise('brand-new-move');
+    W.restoreDeletedExercise('brand-new-move');
     const added = T.D.exercises.find(e => e.id === 'brand-new-move');
-    t('catalog add normalizes like any foreign definition', T.D.exercises.length === exCount2 + 1 && added.type === 'hypertrophy' && added.regime === 'weighted');
+    t('restore normalizes like any foreign definition', T.D.exercises.length === exCount2 + 1 && added.type === 'hypertrophy' && added.regime === 'weighted');
+    t('restore clears the tombstone', !('brand-new-move' in T.D.tombstones.exercises));
+    t('a restored exercise is a real user action, not a baseline row', added.updatedAt > 0);
+    // deletedCatalogEntries drives the dialog's list
+    T.D.tombstones.exercises['deleted-two'] = 1;
+    const gone = W.deletedCatalogEntries([{ id: 'deleted-two', name: 'Sumiu' }, { id: 'bench-press', name: 'Bench press' }]);
+    t('restore dialog lists only deleted catalog entries', gone.length === 1 && gone[0].id === 'deleted-two');
+    delete T.D.tombstones.exercises['deleted-two'];
     T.D.exercises = T.D.exercises.filter(e => e.id !== 'brand-new-move');
 
     // OTP verify wiring
@@ -740,9 +767,17 @@
     t('Plans tab renders the inbox with sender + count', plansHtml.includes('Planos recebidos (1)') && plansHtml.includes('irmã@ex.com') && plansHtml.includes('Upper A'));
     t('plan rows offer ✉ when connected', plansHtml.includes('✉'));
     T.shares = [];
-    t('Library header offers the catalog when connected', W.buildLibrary().includes('⟳ Catálogo'));
+    // The library is DELIVERED, so there is no catalog opt-in button any
+    // more. What remains is the restore-deleted dialog, and the product rule
+    // it has to honour is that the library never depends on an account:
+    // logging in buys remote backup and sharing, nothing else.
+    t('no catalog opt-in button remains', !W.buildLibrary().includes('⟳ Catálogo'));
+    t('restore button hidden when nothing was deleted', !W.buildLibrary().includes('↩ Excluídos'));
+    T.D.tombstones.exercises['bench-press'] = Date.now();
+    t('restore button appears once something is deleted', W.buildLibrary().includes('↩ Excluídos'));
     T.sbSession = null;
-    t('...and hides it logged out', !W.buildLibrary().includes('⟳ Catálogo'));
+    t('...and it does NOT require an account', W.buildLibrary().includes('↩ Excluídos'));
+    delete T.D.tombstones.exercises['bench-press'];
 
     T.D.plans = T.D.plans.filter(p => p.id !== 'pp1');
     T.sb = realSb2; T.sbSession = realSession2; T.CFG = realCFG2; T.catalogRows = null;

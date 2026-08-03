@@ -68,7 +68,7 @@ const TX=COLOR.text, DM=COLOR.dim, BD=COLOR.border;
 // ║  reappear because library.json still has it. The SHARED library now
 // ║  exists server-side as the global_exercises catalog (same 44 entries,
 // ║  same slug ids — see supabase/02-sharing.sql): connected users pull new
-// ║  catalog entries opt-in via Biblioteca's ⟳ Catálogo (openCatalogUpdate,
+// ║  the curated catalog arrives automatically (syncGlobalLibrary,
 // ║  section 13), which honors deletions via the tombstone check. The
 // ║  in-app suggestion-and-approval workflow remains deferred to M3;
 // ║  catalog curation is dashboard-only until then.
@@ -96,7 +96,8 @@ async function seedStarterLibrary() {
     // Everything in library.json IS the curated catalog, by definition —
     // stamped here rather than shipped in the file so the generator's
     // schema stays about the exercise, not about how it was delivered.
-    D.exercises = (data.exercises || []).map(e => ({...e, origin: ORIGIN_GLOBAL, updatedAt:Date.now()}));
+    // `updatedAt: 0` is load-bearing, see CATALOG_BASELINE_AT.
+    D.exercises = (data.exercises || []).map(e => ({...e, origin: ORIGIN_GLOBAL, updatedAt: CATALOG_BASELINE_AT}));
     // library.json ships fully classified, so this is normally a no-op —
     // but calling it here too (not just from loadData()/mergeRemote()/
     // applyData()) means a future entry added to library.json without the
@@ -392,7 +393,35 @@ const TRACK_TIME = 'time', TRACK_REPS = 'reps';
 const trackingOf = ex => (ex && ex.tracking === TRACK_TIME) ? TRACK_TIME : TRACK_REPS;
 const isTimed    = ex => trackingOf(ex) === TRACK_TIME;
 
-const ORIGIN_GLOBAL = 'global';   // curated catalog: library.json seed or ⟳ Catálogo
+// ── The curated library is delivered, not opted into ─────────────────────────
+//
+// `library.json` is the catalog. It is served as a static file alongside the
+// app, so **keeping the library current requires no account** — logging in
+// buys remote backup and sharing, nothing else. That is a deliberate product
+// rule (owner, 2026-08-02): someone who only wants to train and export their
+// own data should never be locked out of the exercise library.
+//
+// syncGlobalLibrary() adds catalog entries this install doesn't have yet, on
+// every load. It only ever ADDS:
+//   * updating existing entries stays behind ⟳ Nomes, because that overwrites
+//     fields the user may have edited and so needs a confirm listing them;
+//   * re-adding something the user DELETED stays behind the restore dialog,
+//     because undoing a deliberate deletion is the user's call.
+// Adding an exercise they simply don't have yet destroys nothing, which is
+// what makes it safe to do silently.
+//
+// `updatedAt: 0` on catalog-delivered rows is load-bearing, not laziness.
+// mergeCollection() drops a tombstone when the item is NEWER than the delete
+// ("edited after the delete, so the tombstone is stale"). If a delivered row
+// carried Date.now(), a device that hadn't yet received a deletion would
+// re-add that exercise with a fresher stamp, the merge would throw the
+// tombstone away as stale, and the user's deletion would silently undo
+// itself across devices. At 0, any real user action — edit, delete, anything
+// — outranks the catalog baseline, which is exactly the intended precedence.
+// Same reasoning as the backfills' no-bump rule: this is not a user edit.
+const CATALOG_BASELINE_AT = 0;
+
+const ORIGIN_GLOBAL = 'global';   // curated catalog: library.json (auto-synced) or the restore dialog
 const ORIGIN_USER   = 'user';     // created here, by this user
 const ORIGIN_SHARED = 'shared';   // arrived inside someone else's shared plan
 const ORIGINS = [ORIGIN_GLOBAL, ORIGIN_USER, ORIGIN_SHARED];
@@ -424,6 +453,52 @@ const isGlobalEx = ex => originOf(ex) === ORIGIN_GLOBAL;
 // must never outrank a genuine remote change in the per-item LWW merge.
 function normalizeExerciseOrigin() {
   D.exercises.forEach(ex => { if (!ORIGINS.includes(ex.origin)) ex.origin = originOf(ex); });
+}
+
+// Adds catalog entries this install is missing. Returns how many landed.
+// Pure and synchronous so it can be unit-tested without a network; the fetch
+// lives in refreshGlobalLibrary() below.
+//
+// Two things it deliberately does NOT do: touch an exercise that already
+// exists (that is ⟳ Nomes' job, with its confirm), and resurrect a
+// tombstoned id (that is the restore dialog's job). See CATALOG_BASELINE_AT
+// for why the rows land at updatedAt 0.
+function syncGlobalLibrary(catalog) {
+  const have = new Set(D.exercises.map(e => e.id));
+  let added = 0;
+  (catalog || []).forEach(e => {
+    if (!e || typeof e.id !== 'string' || typeof e.name !== 'string') return;
+    if (have.has(e.id)) return;
+    if (e.id in (D.tombstones.exercises || {})) return;   // deleted on purpose — stays gone
+    D.exercises.push({ ...e, origin: ORIGIN_GLOBAL, updatedAt: CATALOG_BASELINE_AT });
+    have.add(e.id);
+    added++;
+  });
+  return added;
+}
+
+// The delivery half: fetch the catalog and apply it. `cache:'no-store'` for
+// the same reason seedStarterLibrary() uses it — the service worker will
+// otherwise answer with a stale library.json and the app would keep
+// "syncing" to an old catalog forever. Failure is silent by design: offline
+// simply means no new exercises this load, never an error the user must
+// dismiss mid-workout.
+async function refreshGlobalLibrary() {
+  try {
+    const r = await fetch('library.json', { cache: 'no-store' });
+    if (!r.ok) return 0;
+    const data = await r.json();
+    const added = syncGlobalLibrary(data.exercises || []);
+    if (added) { persist(); render(); }
+    return added;
+  } catch (e) { return 0; }
+}
+
+// Catalog entries the user deliberately deleted — the restore dialog's list.
+// Kept as a function rather than cached state so it always reflects the
+// current tombstones, including ones that just arrived via a merge.
+function deletedCatalogEntries(catalog) {
+  return (catalog || []).filter(e => e && e.id && (e.id in (D.tombstones.exercises || {})));
 }
 
 // ── Plan-entry backfill (E3, schema 5) ───────────────────────────────────────
@@ -652,7 +727,7 @@ let _timerCfg = null;
 // background by loadReceivedShares() (on supabase pulls and on entering
 // the Planos tab); rendered as the "Planos recebidos" section there.
 let _receivedShares = [];
-// Catalog rows from the last openCatalogUpdate() fetch — kept so the
+// Catalog rows from the last openDeletedExercises() fetch — kept so the
 // per-entry add buttons can resolve their row without refetching.
 let _catalogRows = null;
 
@@ -1250,28 +1325,6 @@ async function markShareClaimed(id) {
   try { await sb.from('shared_plans').update({ claimed_at: new Date().toISOString() }).eq('id', id); } catch(e) {}
 }
 
-async function fetchCatalog() {
-  if (!sb || !sbSession) return null;
-  try {
-    const { data, error } = await sb.from('global_exercises').select('id,data');
-    if (error) return null;
-    return data || [];
-  } catch(e) { return null; }
-}
-
-// Which catalog entries are genuinely NEW for this library: not already
-// present (by id) and not deliberately deleted here (tombstoned). The
-// tombstone check is the important half — a seeded exercise the user
-// deleted must never be pushed back by the catalog, the same
-// no-ongoing-reconciliation promise seedStarterLibrary() makes.
-function catalogNewEntries(rows) {
-  return (rows||[])
-    .filter(r => r && r.id && r.data && typeof r.data.name === 'string')
-    .filter(r => !D.exercises.some(e => e.id === r.id))
-    .filter(r => !(r.id in D.tombstones.exercises))
-    .map(r => r.data);
-}
-
 // ── Sync queue ──────────────────────────────────────────────────────────────
 //
 // Every push (remoteSave) and pull (remotePull, loadData's background fetch)
@@ -1595,6 +1648,11 @@ async function loadData() {
   // gets seeded from library.json. Runs after the first render so the app
   // is already usable while this fetch is in flight.
   if (!D.exercises.length) await seedStarterLibrary();
+  // Step 2c — an EXISTING install picks up whatever the catalog has gained
+  // since. This is what makes the curated library arrive on its own instead
+  // of having to be opted into entry by entry, and it deliberately runs
+  // BEFORE the login check below: the library must not require an account.
+  else await refreshGlobalLibrary();
 
   // Restore any persisted login BEFORE deciding whether sync can run — the
   // SDK reads its stored session from localStorage asynchronously, and the
@@ -3140,7 +3198,7 @@ function openVolume() {
 // ║  Search updates the results list in-place (no full re-render) to keep focus.
 // ║  Tapping a row's name/pills opens its progress chart (openProgress);
 // ║  ⟳ Catálogo (connected users) offers global-catalog entries this
-// ║  library lacks and never deleted (openCatalogUpdate).
+// ║  library DELETED, offered for restore (openDeletedExercises).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildLibrary() {
@@ -3155,7 +3213,7 @@ function buildLibrary() {
       </div>
       <div style="display:flex;gap:8px;flex-shrink:0">
         ${Bs(BG3,TX,'⟳ Nomes','openSeedRefresh()')}
-        ${sb && sbSession ? Bs(BG3,TX,'⟳ Catálogo','openCatalogUpdate()') : ''}
+        ${Object.keys(D.tombstones.exercises||{}).length ? Bs(BG3,TX,'↩ Excluídos','openDeletedExercises()') : ''}
         ${Bs(CG,TX,'+ Novo','openNewEx()')}
       </div>
     </div>
@@ -3453,36 +3511,69 @@ function libAlphaToggle() { _libAlpha = !_libAlpha; render(); }
 //
 // Opt-in pull from the admin-curated global_exercises table: shows only
 // entries this library doesn't have and never deleted (see
-// catalogNewEntries() in section 5 for the tombstone rule), each one tap
+// syncGlobalLibrary() in section 2 for the tombstone rule), each one tap
 // away from being added. Deliberately NOT automatic reconciliation — the
 // library stays fully personal; the catalog is an offer, not an authority.
-async function openCatalogUpdate() {
+// ── Restore deleted catalog exercises ───────────────────────────────────
+//
+// This dialog used to be "⟳ Catálogo": a per-entry opt-in for every curated
+// exercise the install didn't have. syncGlobalLibrary() now delivers those
+// automatically, so the only thing left worth asking about is the case the
+// auto-sync deliberately refuses to touch — exercises the user DELETED.
+// Undoing a deliberate deletion stays a deliberate act.
+//
+// It reads library.json, not Supabase, so it works **without an account**
+// (the whole point of the delivery change). `_catalogRows` holds the
+// fetched catalog for the duration of the dialog.
+async function openDeletedExercises() {
   showModal(`
-    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Catálogo global</div>
-    <div style="font-size:12px;color:${DM};margin-bottom:12px">Exercícios do catálogo compartilhado que ainda não estão na sua biblioteca. Adicionar é sempre opcional — exercícios que você excluiu não voltam.</div>
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Exercícios excluídos</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:12px">Exercícios do catálogo que você excluiu. Eles não voltam sozinhos — restaure aqui se mudar de ideia.</div>
     <div id="cat-body" style="font-size:13px;color:${DM}">Carregando…</div>
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:14px')}`);
-  const rows = await fetchCatalog();
-  _catalogRows = rows;
+  let catalog = null;
+  try {
+    const r = await fetch('library.json', { cache: 'no-store' });
+    if (r.ok) catalog = (await r.json()).exercises || [];
+  } catch (e) { catalog = null; }
+  _catalogRows = catalog;
   const body = document.getElementById('cat-body');
-  if (!body) return; // modal closed while fetching
-  if (!rows) { body.textContent = 'Não foi possível carregar o catálogo — verifique a conexão.'; return; }
-  renderCatalogList();
+  if (!body) return;                       // modal closed while fetching
+  if (!catalog) { body.textContent = 'Não foi possível carregar o catálogo — verifique a conexão.'; return; }
+  renderDeletedList();
 }
 
-function renderCatalogList() {
+function renderDeletedList() {
   const body = document.getElementById('cat-body');
   if (!body || !_catalogRows) return;
-  const news = catalogNewEntries(_catalogRows);
-  if (!news.length) { body.innerHTML = `<span style="color:#6fcf97">Biblioteca em dia com o catálogo ✓</span>`; return; }
-  body.innerHTML = news.map(d => `
+  const gone = deletedCatalogEntries(_catalogRows);
+  if (!gone.length) { body.innerHTML = `<span style="color:#6fcf97">Você não excluiu nenhum exercício do catálogo ✓</span>`; return; }
+  body.innerHTML = gone.map(d => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:.5px solid ${BD}">
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;font-size:14px;color:${TX};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(d.name)}</div>
         <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${d.regime?regimePill(d.regime):''}${musclePill(d.mainMuscle,d.movementPattern)}</div>
       </div>
-      ${Bs(CG,TX,'+ Adicionar',`addCatalogExercise('${esc(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
+      ${Bs(CG,TX,'↩ Restaurar',`restoreDeletedExercise('${esc(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
     </div>`).join('');
+}
+
+// Restoring CLEARS the tombstone — without that, the next merge would just
+// delete the row again (mergeCollection drops any item whose updatedAt is
+// older than its tombstone). The restored copy is a deliberate user action,
+// so unlike an auto-synced row it carries a real updatedAt and propagates.
+function restoreDeletedExercise(id) {
+  const d = (_catalogRows || []).find(r => r && r.id === id);
+  if (!d) return;
+  delete D.tombstones.exercises[id];
+  if (!D.exercises.some(e => e.id === id)) {
+    // Same hardening every foreign definition gets — "trusted author" is not
+    // a reason to skip validation that costs nothing.
+    D.exercises.push(normalizeExerciseDef(d, ORIGIN_GLOBAL));
+  }
+  persist();
+  renderDeletedList();  // entry disappears from the list
+  render();             // library behind the modal updates too
 }
 
 // ── Seed refresh — "Atualizar do catálogo" (the Backlog's deliberate action) ─
@@ -3707,18 +3798,6 @@ function doMergeGroup(key) {
   const b = document.getElementById('dup-body');
   if (b) b.innerHTML = duplicatesBodyHTML();
   render();
-}
-
-function addCatalogExercise(catalogId) {
-  const row = (_catalogRows||[]).find(r => r.id === catalogId);
-  if (!row || !row.data || typeof row.data.name !== 'string') return;
-  // Same hardening every foreign definition gets (normalizeExerciseDef,
-  // section 14) — the catalog is admin-curated, but "trusted author" is not
-  // a reason to skip validation that costs nothing.
-  D.exercises.push(normalizeExerciseDef(row.data, ORIGIN_GLOBAL));
-  persist();
-  renderCatalogList(); // entry disappears from the offer list
-  render();            // library list behind the modal updates too
 }
 
 
@@ -4088,7 +4167,7 @@ function importPlanFile(input) {
 // Normalizes ONE untrusted exercise definition into a safe library entry.
 // Single-sourced on purpose: the file import (applyImportedPlan), the
 // in-app received share (same function), and the catalog add
-// (addCatalogExercise) all apply EXACTLY this hardening — a fix here fixes
+// (restoreDeletedExercise) all apply EXACTLY this hardening — a fix here fixes
 // every path.
 //   · type/regime/compound outside the app's real enums are coerced to
 //     defaults rather than stored verbatim. Every hand-created exercise is
