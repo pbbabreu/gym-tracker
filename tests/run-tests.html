@@ -125,6 +125,13 @@
     // quick-create classification + per-exercise session notes
     avSetMuscle, createAndAdd, setExNote, TIME_BANDS,
     REGIME_BW_PLUS, actualLoad, setExRegime,
+    // Supersets (E3b). A superset is a VIEW over ordinary exercise entries,
+    // so most of this is pure derivation. Only const-declared helpers strictly
+    // need the bridge (top-level function declarations are already window
+    // properties), but they are all listed to keep the group readable.
+    // NOTE - still no backticks anywhere in this block.
+    isGrouped, roundSetIdxs, soloSetIdxs, roundCountFor, groupCfg, groupIdxsOf,
+    roundCollapsed, groupsKey, entriesKey, sanitizeGroups, sanitizeSecs,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -2934,6 +2941,179 @@
 
     T.D.sessions = keepS;
     T.D.weights = keepW;
+  }
+
+  // ── supersets (E3b) ────────────────────────────────────────────────────────
+  //
+  // The load-bearing claim under test is that a superset is a VIEW: members
+  // stay ordinary entries with their own sets, so progression, volume and
+  // history are untouched and only the rendering, the rests and the grouping
+  // markers are new. Nearly every check below is really a check that some
+  // existing behaviour did NOT change.
+  g('supersets (E3b)');
+  {
+    const keepS = T.S, keepPlans = T.D.plans, keepSess = T.D.sessions;
+    const mk = (n, intents) => ({ exId: 'ss-ex' + n, exName: 'Ex' + n, type: 'hypertrophy', regime: 'weighted',
+      sets: intents.map(x => ({ intent: x, reps: '', kg: '' })) });
+    const newSess = (...exs) => { T.S = { planId: null, planName: null, date: T.today(),
+      gymId: null, gymName: null, exercises: exs }; return T.S; };
+
+    // ── round derivation ─────────────────────────────────────────────────────
+    t('leading warm-ups are solo; the work sets are the rounds',
+       JSON.stringify(T.roundSetIdxs(mk(1, ['warmup','warmup','work','work']))) === '[2,3]');
+    t('...and those warm-ups render in the pre-round section',
+       JSON.stringify(T.soloSetIdxs(mk(1, ['warmup','warmup','work','work']))) === '[0,1]');
+    t('ssWu pulls that member\'s warm-ups into the rounds instead',
+       JSON.stringify(T.roundSetIdxs({ ssWu: true, sets: [{intent:'warmup'},{intent:'work'}] })) === '[0,1]');
+    t('...leaving it nothing in the solo section',
+       JSON.stringify(T.soloSetIdxs({ ssWu: true, sets: [{intent:'warmup'},{intent:'work'}] })) === '[]');
+
+    // Participation is POSITIONAL, not "intent === work". Under the intent
+    // rule, tapping W/WU on a row inside a round would eject that set from
+    // the round and teleport it into the warm-up section — which reads as the
+    // app losing a set.
+    t('a mid-round W->WU toggle keeps the set in its round',
+       JSON.stringify(T.roundSetIdxs(mk(1, ['warmup','work','warmup','work']))) === '[1,2,3]');
+    // Caught by a live probe, not by reasoning: a member whose only sets are
+    // warm-ups was dropping out of every round, defeating the exact case the
+    // mixed-intent support exists for.
+    t('a member with NO work sets still takes part in full',
+       JSON.stringify(T.roundSetIdxs(mk(1, ['warmup','warmup']))) === '[0,1]');
+    t('...and contributes nothing solo', JSON.stringify(T.soloSetIdxs(mk(1, ['warmup','warmup']))) === '[]');
+
+    t('round count is the MAX across members, so unequal counts just work',
+       T.roundCountFor([mk(1,['work','work','work']), mk(2,['work'])]) === 3);
+
+    // ── grouping, rounds and rests on a real session ─────────────────────────
+    newSess(mk(1, ['work','work','work']), mk(2, ['work']), mk(3, ['work','work']));
+    const gid = W.makeSuperset([0,1,2], { between: 15, round: 90 });
+    t('makeSuperset marks every member and mints stable member ids',
+       !!gid && T.S.exercises.every(e => e.ss === gid && !!e.ssMem));
+    t('the session renders as ONE group unit, not three blocks',
+       JSON.stringify(W.sessionUnits().map(u => u.kind)) === '["group"]');
+    const idxs = T.groupIdxsOf(gid);
+    t('round 1 holds all three members', W.roundSets(idxs, 0).length === 3);
+    t('round 3 holds only the member that has a set there', W.roundSets(idxs, 2).length === 1);
+    t('round 4 does not exist', W.roundSets(idxs, 3).length === 0);
+
+    t('gap rests come from the group, not the transition cascade',
+       W.groupGapSecs(gid, 0, T.S.exercises[0].ssMem) === 15 && W.groupGapSecs(gid, 0, 'end') === 90);
+    W.setGapRest(gid, 1, 'end', 30, false);
+    t('a per-gap override beats the group default for THAT round only',
+       W.groupGapSecs(gid, 1, 'end') === 30 && W.groupGapSecs(gid, 0, 'end') === 90);
+    W.setGapRest(gid, 0, 'end', 60, true);
+    t('"apply to all rounds" rewrites the default and clears same-kind overrides',
+       W.groupGapSecs(gid, 0, 'end') === 60 && W.groupGapSecs(gid, 1, 'end') === 60);
+    t('...and leaves the OTHER kind of gap alone', W.groupGapSecs(gid, 0, T.S.exercises[0].ssMem) === 15);
+
+    // ── round completion drives the timer and the fold ───────────────────────
+    T.restTimer = null;
+    W.toggleCompleted(0, 0);
+    t('mid-round check starts the between-exercises rest',
+       T.restTimer && T.restTimer.total === 15, T.restTimer && T.restTimer.total);
+    t('...and the round is not done yet', W.roundIsDone(idxs, 0) === false);
+    W.toggleCompleted(1, 0); W.toggleCompleted(2, 0);
+    t('checking the last member finishes the round', W.roundIsDone(idxs, 0) === true);
+    t('...starts the between-rounds rest', T.restTimer && T.restTimer.total === 60, T.restTimer && T.restTimer.total);
+    t('...folds that round and opens the next',
+       T.roundCollapsed(gid, 0) === true && T.roundCollapsed(gid, 1) === false);
+
+    // ── per-round reorder is a sparse deviation ──────────────────────────────
+    const memC = T.S.exercises[2].ssMem;
+    W.moveInRound(gid, 0, memC, -1);
+    t('reordering one round leaves the others alone',
+       T.groupCfg(gid).roundOrder && !!T.groupCfg(gid).roundOrder[0] && !T.groupCfg(gid).roundOrder[1]);
+    W.applyRoundOrderToAll(gid, 0);
+    t('"apply to all" clears the deviations', !T.groupCfg(gid).roundOrder);
+    t('...and moves the BLOCKS, since the default order IS the array order',
+       T.groupCfg(gid).order.join() === T.groupIdxsOf(gid).map(i => T.S.exercises[i].ssMem).join());
+
+    // ── saving: the whitelist trap ───────────────────────────────────────────
+    T.S.ssCollapsed = { [gid + ':0']: true };
+    T.D.sessions = [];
+    W.doSaveSession('none');
+    const rec = T.D.sessions[T.D.sessions.length - 1];
+    t('the group config reaches history (rec is a whitelist, so it is explicit)', !!rec.groups);
+    t('every member keeps its ss marker (the strip is a blocklist)',
+       rec.exercises.every(e => !!e.ss && !!e.ssMem));
+    t('live-only round-collapse state can NOT leak into history', !('ssCollapsed' in rec));
+    t('the set-metadata strip is unchanged by grouping',
+       rec.exercises.every(e => e.sets.every(s => Object.keys(s).every(k => ['intent','reps','kg','completed'].includes(k)))));
+
+    // ── plan round-trip and drift ────────────────────────────────────────────
+    T.D.plans = [{ id: 'ssplan', name: 'SS', updatedAt: 1,
+      exercises: [
+        { eid: 'e1', exId: T.D.exercises[0].id, ss: 'gp', ssMem: 'e1' },
+        { eid: 'e2', exId: T.D.exercises[1].id, ss: 'gp', ssMem: 'e2' },
+        { eid: 'e3', exId: T.D.exercises[2].id },
+      ],
+      rests: {},
+      groups: { gp: { order: ['e1','e2'], rest: { between: 10, round: 100 } } } }];
+    W.startPlan('ssplan');
+    t('plan grouping carries into the session', T.S.exercises.filter(e => e.ss === 'gp').length === 2);
+    t('...rendering as one group unit plus one ordinary block',
+       JSON.stringify(W.sessionUnits().map(u => u.kind)) === '["group","ex"]');
+    t('...using the plan\'s own gap rests', W.groupGapSecs('gp', 0, 'end') === 100);
+    // The canonical-serialization trap: without entriesKey/groupsKey, an
+    // untouched grouped session stringifies differently from the stored plan
+    // and nags the user to update a plan nothing changed.
+    t('an untouched grouped session reads as NO plan drift', W.sessionPlanDiff() === null);
+    W.ungroupSuperset('gp');
+    const drift = W.sessionPlanDiff();
+    t('dissolving a superset mid-session IS drift, so the save prompt asks about it',
+       !!drift && drift.groupsChanged === true);
+    W.doSaveSession('update');
+    const p2 = T.D.plans.find(p => p.id === 'ssplan');
+    t('"update the plan" removes the group outright, not just its members',
+       !!p2 && !('groups' in p2) && p2.exercises.every(e => !e.ss));
+
+    // ── sharing: grouping travels, forged grouping does not ──────────────────
+    T.D.plans = [{ id: 'shp', name: 'Shared SS', updatedAt: 1,
+      exercises: [
+        { eid: 'a1', exId: T.D.exercises[0].id, ss: 'gs', ssMem: 'a1' },
+        { eid: 'a2', exId: T.D.exercises[1].id, ss: 'gs', ssMem: 'a2', ssWu: true },
+      ], rests: {}, groups: { gs: { order: ['a1','a2'], rest: { between: 5, round: 75 } } } }];
+    const payload = W.buildPlanPayload(T.D.plans[0]);
+    t('a shared plan carries its supersets (training prescription, like rests)',
+       payload.entries.filter(e => e.ss).length === 2 && !!payload.groups);
+    t('...including which members warm up inside the rounds',
+       payload.entries.some(e => e.ssWu === true));
+    W.applyImportedPlan(JSON.parse(JSON.stringify(payload)), null);
+    const imp = T.D.plans[T.D.plans.length - 1];
+    t('an imported plan keeps the grouping and its rests',
+       imp.exercises.filter(e => e.ss).length === 2 && imp.groups && Object.values(imp.groups)[0].rest.round === 75);
+    // A plan file is untrusted input: a group naming members that never
+    // arrived must be rebuilt from what did, not trusted verbatim.
+    const bad = JSON.parse(JSON.stringify(payload));
+    bad.groups = { gEVIL: { order: ['ghost1','ghost2','ghost3'], rest: { between: 1, round: 1 } } };
+    bad.entries.forEach(e => { e.ss = 'gEVIL'; e.ssMem = 'ghost-' + e.eid; });
+    W.applyImportedPlan(bad, null);
+    const imp2 = T.D.plans[T.D.plans.length - 1];
+    t('a forged group order is rebuilt from the entries that actually landed',
+       !imp2.groups || Object.values(imp2.groups).every(gr => gr.order.every(m => imp2.exercises.some(e => e.ssMem === m))));
+
+    // ── sanitizer: canonical order and untrusted values ──────────────────────
+    t('two identical group configs serialize identically whatever the key order',
+       T.groupsKey({ g:{ order:['b','a'], roundOrder:{10:['a'],2:['b']}, rest:{ round:9, between:1, overrides:{'2:end':3,'1:a':4} } } })
+       === T.groupsKey({ g:{ rest:{ overrides:{'1:a':4,'2:end':3}, between:1, round:9 }, roundOrder:{2:['b'],10:['a']}, order:['b','a'] } }));
+    const junk = W.sanitizeGroups({ g:{ order:['a'], rest:{ between:'oops', round:-5, overrides:{ 'bad key':10, '1:a':'x', '2:end':60 } } } });
+    t('garbage in a group config is dropped, valid values kept',
+       !!junk && junk.g.rest && junk.g.rest.between === undefined && junk.g.rest.overrides &&
+       junk.g.rest.overrides['2:end'] === 60 && !('1:a' in junk.g.rest.overrides));
+    t('a group with no members is dropped entirely', W.sanitizeGroups({ g: { rest: { round: 60 } } }) === undefined);
+
+    // ── control: an UNGROUPED session is unchanged by any of this ────────────
+    newSess(mk(7, ['warmup','work','work']), mk(8, ['work']));
+    t('control — ungrouped blocks still render as separate exercise units',
+       JSON.stringify(W.sessionUnits().map(u => u.kind)) === '["ex","ex"]');
+    t('control — an ungrouped exercise is not grouped', !T.isGrouped(T.S.exercises[0]));
+    T.restTimer = null;
+    W.toggleCompleted(0, 0);
+    t('control — an ungrouped row still rests via the per-transition cascade',
+       T.restTimer && T.restTimer.total === W.restDurationFor(T.S.exercises[0], 'warmup', 'work'),
+       T.restTimer && T.restTimer.total);
+
+    T.D.plans = keepPlans; T.D.sessions = keepSess; T.S = keepS;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

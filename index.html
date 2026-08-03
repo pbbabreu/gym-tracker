@@ -485,6 +485,76 @@ const TRACK_TIME = 'time', TRACK_REPS = 'reps';
 const trackingOf = ex => (ex && ex.tracking === TRACK_TIME) ? TRACK_TIME : TRACK_REPS;
 const isTimed    = ex => trackingOf(ex) === TRACK_TIME;
 
+// ── Supersets (E3b) ──────────────────────────────────────────────────────────
+//
+// A superset is a VIEW over N ordinary exercise entries, never a new kind of
+// entry. Every member keeps its own `sets` array exactly as an ungrouped
+// exercise does, so nothing downstream learns a new shape: history,
+// computeSuggestion, graduation, volEx, weeklyMuscleVolume, exerciseProgress,
+// machine attach and the plate modes all read a grouped member exactly as
+// they read a lone one. That is the direct consequence of the owner's framing
+// (2026-08-03): "the superset is mostly a visual tool ... which will track
+// exercises individually for progress". Same move as bw-plus not being isBW
+// and as timed sets living in s.reps -- pick the representation that leaves
+// every consumer unchanged.
+//
+// Two fields on the ENTRY (session block or plan entry), both optional:
+//   ss   -- group id; absent means ungrouped, which is every exercise today
+//   ssWu -- this member's LEADING warm-ups ride the rounds instead of being
+//           done solo beforehand (default absent = grouped warm-ups, the
+//           owner's stated default)
+// The group's own config (member order, rests, per-round deviations) lives in
+// a `groups` map on the session record / plan -- see sanitizeGroups().
+const isGrouped = ex => !!(ex && ex.ss);
+
+// Which of a member's sets take part in the interleaved ROUNDS: everything
+// from its first work set onward. Anything before that -- its leading
+// warm-ups -- is done solo, in the pre-round section, unless ssWu says
+// otherwise.
+//
+// Deliberately positional rather than "sets whose intent is work", and the
+// difference is not cosmetic. Under the intent test, tapping W/WU on a row
+// inside a round would EJECT that set from the round and teleport it up into
+// the warm-up section -- which reads as the app losing a set. Positional
+// keeps every intent toggle exactly where the user pressed it, while still
+// routing genuinely leading warm-ups out of the rounds. It is also fully
+// derived: no stored index that a later-inserted warm-up could invalidate.
+//
+// Mixed intent WITHIN a round is the point, not an edge case (owner: "if the
+// user wants ... one or more of the exercises to be still a WU while another
+// or more of the exercises are in W regimes, it should be possible"). Because
+// intent stays a per-set property, member A can sit on a warm-up while member
+// B works the same round with nothing extra to represent it.
+// A member with NO work sets at all participates in FULL. The solo section
+// exists to hold warm-ups that come BEFORE the work; with no work there is
+// nothing for them to precede, so they are simply that member's sets. Found
+// by a live probe: flipping a one-set member's only row to WU dropped it out
+// of the round entirely, which is the opposite of the requirement this rule
+// exists to serve (a member warming up while a partner works).
+function roundSetIdxs(ex) {
+  const sets = (ex && ex.sets) || [];
+  if (ex && ex.ssWu) return sets.map((_, j) => j);
+  const first = sets.findIndex(s => s.intent === 'work');
+  return first === -1 ? sets.map((_, j) => j) : sets.map((_, j) => j).slice(first);
+}
+
+// The leading warm-ups roundSetIdxs() left out -- rendered per-member in the
+// pre-round section. Empty whenever ssWu is set, and empty when the member
+// has no work sets at all (see above): in both cases nothing is solo.
+function soloSetIdxs(ex) {
+  const sets = (ex && ex.sets) || [];
+  if (ex && ex.ssWu) return [];
+  const first = sets.findIndex(s => s.intent === 'work');
+  return first === -1 ? [] : sets.map((_, j) => j).slice(0, first);
+}
+
+// How many rounds a group has: the MAX participating-set count across its
+// members, so unequal set counts need no special case at all -- a member with
+// three work sets against a partner's four simply does not appear in round 4
+// (owner: "unequal set counts are fine, history will add up the work that was
+// done"). A member is passed in as its entry object, not an index.
+const roundCountFor = members => members.reduce((n, ex) => Math.max(n, roundSetIdxs(ex).length), 0);
+
 // ── The curated library is delivered, not opted into ─────────────────────────
 //
 // `library.json` is the catalog. It is served as a static file alongside the
@@ -767,6 +837,15 @@ let _peFMuscle = null, _peFPattern = null, _peMode = 'ex';
 // expansion instead of a sub-modal: showModal() would replace the plan
 // editor modal and lose its inputs).
 let _planExs = [], _planId = null, _planRests = {}, _planRestEdit = null;
+// Superset groups being edited (E3b), same shape as the stored plan's:
+// { [gid]: { order, roundOrder?, rest } }. _planSsPick holds the eids ticked
+// while assembling one — the plan-editor twin of the session builder's
+// _ssPick, kept separate because both editors can be open in a session.
+// _planNameCache is declared HERE with the rest of the editor's module state,
+// not down beside the function that uses it — a top-level `let` used from an
+// earlier-defined function is exactly the temporal-dead-zone shape that once
+// blanked the whole app (see the TRACK_* constants in section 2).
+let _planGroups = {}, _planSsPick = [], _planSsMode = false, _planNameCache = '';
 // The entry whose prescription-note input is currently expanded inline —
 // same one-at-a-time pattern as _planRestEdit, for the same sub-modal-
 // would-replace-the-editor reason.
@@ -933,6 +1012,92 @@ function sanitizeRest(r) {
   });
   return Object.keys(out).length ? out : undefined;
 }
+
+// One rest duration, same bounds and same 0-is-real rule sanitizeRest()
+// applies per transition key. Shared by the superset group config below.
+function sanitizeSecs(v) {
+  const n = typeof v === 'string' && v.trim() === '' ? NaN : Math.round(Number(v));
+  return (Number.isFinite(n) && n >= 0 && n <= 3600) ? n : undefined;
+}
+
+// Normalizes a superset `groups` map ({ [groupId]: {...} }) from ANY source —
+// the builder, a stored session, an imported plan — and, just as importantly,
+// serializes it CANONICALLY.
+//
+// Canonical key order is load-bearing, not tidiness. sessionPlanDiff()
+// decides "did this workout change the plan?" by comparing JSON.stringify of
+// the derived shape against the stored one (that is exactly why sanitizeRest
+// fixes its own key order). If `groups` serialized in whatever order the
+// object happened to be built in, every untouched grouped session would read
+// as drift and prompt the user to update a plan nothing had changed.
+//
+// Shape, per Design - Supersets (E3b):
+//   order      -- default member order, a list of entry ids
+//   roundOrder -- SPARSE per-round order deviations, { roundIndex: [eid,...] }
+//   rest       -- { between, round, overrides: { 'roundIdx:eid'|'roundIdx:end': secs } }
+// Both deviation maps are sparse over a default, which is one idea used
+// twice: it is what makes "the same timer applies to all gaps of that type
+// but the user can edit them individually" and "reorder this round without
+// affecting the rest" the same mechanism rather than two.
+//
+// Everything unrecognized is dropped — a plan file is untrusted input, the
+// same rule normalizeExerciseDef() applies to shared definitions.
+function sanitizeGroups(g) {
+  if (!g || typeof g !== 'object') return undefined;
+  const out = {};
+  Object.keys(g).sort().forEach(gid => {
+    const src = g[gid];
+    if (!src || typeof src !== 'object') return;
+    const grp = {};
+
+    const order = Array.isArray(src.order) ? src.order.filter(e => typeof e === 'string' && e) : [];
+    if (order.length) grp.order = order;
+
+    // Round indices are stored as object keys, so they come back as strings —
+    // coerce and re-emit sorted NUMERICALLY, or round 10 would sort before
+    // round 2 and two identical configs could stringify differently.
+    if (src.roundOrder && typeof src.roundOrder === 'object') {
+      const ro = {};
+      Object.keys(src.roundOrder)
+        .map(Number).filter(n => Number.isInteger(n) && n >= 0).sort((a, b) => a - b)
+        .forEach(r => {
+          const list = src.roundOrder[r] ?? src.roundOrder[String(r)];
+          const clean = Array.isArray(list) ? list.filter(e => typeof e === 'string' && e) : [];
+          if (clean.length) ro[r] = clean;
+        });
+      if (Object.keys(ro).length) grp.roundOrder = ro;
+    }
+
+    const rest = {};
+    const between = sanitizeSecs(src.rest?.between);
+    const round   = sanitizeSecs(src.rest?.round);
+    if (between != null) rest.between = between;
+    if (round   != null) rest.round   = round;
+    if (src.rest?.overrides && typeof src.rest.overrides === 'object') {
+      const ov = {};
+      Object.keys(src.rest.overrides).sort().forEach(k => {
+        // Gap ids are `${roundIndex}:${memberEid}` or `${roundIndex}:end` —
+        // keyed by MEMBER rather than by position, so reordering a round
+        // carries its overrides along instead of shifting them onto whoever
+        // moved into that slot.
+        if (!/^\d+:(end|[A-Za-z0-9_-]+)$/.test(k)) return;
+        const n = sanitizeSecs(src.rest.overrides[k]);
+        if (n != null) ov[k] = n;
+      });
+      if (Object.keys(ov).length) rest.overrides = ov;
+    }
+    if (Object.keys(rest).length) grp.rest = rest;
+
+    // A group with no members left is dead weight — drop it rather than
+    // storing an empty shell that every reader then has to guard against.
+    if (grp.order) out[gid] = grp;
+  });
+  return Object.keys(out).length ? out : undefined;
+}
+
+// Stable serialization for the drift comparison, mirroring restsKey()'s job
+// for the per-entry rest overrides.
+const groupsKey = g => JSON.stringify(sanitizeGroups(g) || null);
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -2920,8 +3085,9 @@ function buildLogSession() {
     </div>
     ${startNudgeHTML()}
     ${restTimerHTML()}
-    ${S.exercises.map((ex,i) => buildExBlock(ex,i)).join('')}
+    ${sessionUnits().map(u => u.kind === 'group' ? buildGroupBlock(u.gid, u.idxs) : buildExBlock(S.exercises[u.i], u.i)).join('')}
     ${B(BG3,TX,'+ Exercício','openAddEx()')}
+    ${(S.exercises.filter(e => !e.slot && !isGrouped(e)).length >= 2) ? B(BG3,DM,'⛓ Agrupar em superset','openSsBuilder()',';margin-top:-4px') : ''}
     ${B(S.exercises.length?CG:'#333',TX,isEdit?'Salvar alterações':'Salvar treino','saveSession()',';margin-bottom:0')}`;
 }
 
@@ -2966,16 +3132,318 @@ function buildSlotBlock(ex, i) {
     </div>`;
 }
 
-function buildExBlock(ex, i) {
-  if (ex.slot) return buildSlotBlock(ex, i);
-  const isS  = ex.type==='strength', isH=ex.type==='hypertrophy';
-  const isW  = ex.regime==='weighted', isAs=ex.regime==='assisted', isBW=ex.regime==='bodyweight', isBWP=ex.regime===REGIME_BW_PLUS;
+// ── Superset rendering (E3b) ─────────────────────────────────────────────────
+//
+// The session's flat exercise list walked into RENDER UNITS: a run of
+// contiguous blocks sharing an `ss` becomes one group unit; everything else
+// stays its own exercise unit and renders exactly as it always has.
+//
+// Contiguity is an invariant the grouping actions maintain, not an assumption
+// — without it moveEx() could park a non-member between two members and the
+// round view would be meaningless. Handled defensively all the same: a second,
+// separated run carrying the same gid renders as its own unit rather than
+// throwing or silently swallowing the blocks in between.
+function sessionUnits() {
+  const out = [];
+  (S?.exercises || []).forEach((ex, i) => {
+    const prev = out[out.length - 1];
+    if (isGrouped(ex) && prev && prev.kind === 'group' && prev.gid === ex.ss) { prev.idxs.push(i); return; }
+    out.push(isGrouped(ex) ? { kind: 'group', gid: ex.ss, idxs: [i] } : { kind: 'ex', i });
+  });
+  return out;
+}
+
+const groupCfg = gid => (S?.groups && S.groups[gid]) || {};
+
+// Member render order for ONE round: that round's own deviation if it has
+// one, else the group default — which is simply the order the members sit in
+// the session array, so the common case stores nothing at all.
+//
+// A deviation that doesn't name every member still renders the rest, after.
+// A stale order (a member added since, or an id that arrived from another
+// device) must never make a logged set silently invisible.
+function roundMembers(idxs, gid, r) {
+  const dev = groupCfg(gid).roundOrder?.[r];
+  if (!dev || !dev.length) return idxs;
+  const byMem = new Map(idxs.map(i => [S.exercises[i].ssMem, i]));
+  const ordered = dev.map(m => byMem.get(m)).filter(i => i != null);
+  return [...ordered, ...idxs.filter(i => !ordered.includes(i))];
+}
+
+// The (exercise, set) pairs a round actually contains. A member with fewer
+// sets than the group's round count simply isn't in the later rounds —
+// which is the whole of the unequal-set-count handling (owner: "unequal set
+// counts are fine, history will add up the work that was done").
+function roundSets(idxs, r) {
+  const out = [];
+  idxs.forEach(i => {
+    const j = roundSetIdxs(S.exercises[i])[r];
+    if (j != null) out.push({ i, j });
+  });
+  return out;
+}
+
+// A round is DONE when every set it contains is EXPLICITLY completed —
+// derived, never stored, the same strict ===true rule exIsDone() applies one
+// level up. Order of checking inside the round is irrelevant: only the
+// transition into fully-done collapses it and starts the between-rounds rest.
+function roundIsDone(idxs, r) {
+  const ss = roundSets(idxs, r);
+  return ss.length > 0 && ss.every(({ i, j }) => S.exercises[i].sets[j].completed === true);
+}
+
+// Rest for one gap inside a group, in seconds.
+//
+// Inside a superset the per-transition cascade (restDurationFor) deliberately
+// does NOT apply: the owner defines the rests, so the group config is the
+// single source of truth for its members and there is no second place the two
+// could disagree. Each member's own `rest` field is left untouched and simply
+// goes unused while grouped — which is what makes Desagrupar restore the
+// normal cascade with nothing lost.
+//
+// `slot` is a member's ssMem (a gap between exercises) or 'end' (the gap after
+// the round). Keyed by MEMBER rather than by position, so reordering a round
+// carries its overrides with it instead of shifting them onto whoever moved
+// into that slot. 0 is a real value — "no timer here" — so the default is only
+// reached when nothing was configured at all.
+function groupGapSecs(gid, r, slot) {
+  const cfg = groupCfg(gid);
+  const ov = cfg.rest?.overrides?.[`${r}:${slot}`];
+  if (ov != null) return ov;
+  return (slot === 'end' ? cfg.rest?.round : cfg.rest?.between) ?? 0;
+}
+
+// Round collapse state lives on S (so it rides the live-session mirror across
+// a reload, like every other in-progress fact) and is keyed `${gid}:${r}`.
+// It never reaches history for free: the saved session record is a WHITELIST
+// of fields, so anything not named there — this included — cannot leak in.
+const roundCollapsed = (gid, r) => !!(S?.ssCollapsed && S.ssCollapsed[`${gid}:${r}`]);
+
+function buildGroupBlock(gid, idxs) {
+  const members = idxs.map(i => S.exercises[i]);
+  const rounds  = roundCountFor(members);
+  const ctxs    = {}; idxs.forEach(i => { ctxs[i] = exRowCtx(S.exercises[i], i); });
+
+  // Pre-round warm-ups: each member's LEADING warm-ups, done per exercise
+  // before the rounds start. This is the owner's stated default ("by default
+  // WUs should be grouped together"); a member flagged ssWu contributes
+  // nothing here because its warm-ups ride the rounds instead.
+  const soloBlocks = idxs.map(i => {
+    const ex = S.exercises[i], solo = soloSetIdxs(ex);
+    if (!solo.length) return '';
+    return `
+      <div style="margin-bottom:10px">
+        <div style="font-size:12px;color:${DM};margin-bottom:4px">${esc(ex.exName)}</div>
+        ${solo.map(j => setRowHTML(ctxs[i], ex.sets[j], j)).join('')}
+      </div>`;
+  }).join('');
+
+  const soloSection = !soloBlocks.trim() ? '' : `
+    <div style="padding:10px 14px;border-bottom:1px solid ${BD}">
+      <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:8px">AQUECIMENTO</div>
+      ${soloBlocks}
+    </div>`;
+
+  // One rest row — the owner's "timers are to be user defined, like adding a
+  // row to the sets table". A rest is literally a row in the round table,
+  // tappable to edit in place; editing writes a per-gap override and leaves
+  // the group's own default alone.
+  const restRow = (r, slot, label) => {
+    const secs = groupGapSecs(gid, r, slot);
+    const isEnd = slot === 'end';
+    return `<div onclick="openGapRest('${gid}',${r},'${slot}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:${isEnd?'7px 0 2px':'3px 0 5px'};${isEnd?`border-top:1px dashed ${BD};margin-top:4px`:''}">
+      <span style="font-size:11px;color:${secs?'#6fcf97':DM}">⏱ ${secs ? fmtSecs(secs) : 'sem descanso'}</span>
+      <span style="font-size:10px;color:${DM}">${label}</span>
+    </div>`;
+  };
+
+  const roundBlocks = Array.from({ length: rounds }, (_, r) => {
+    const order   = roundMembers(idxs, gid, r);
+    const present = order.filter(i => roundSetIdxs(S.exercises[i])[r] != null);
+    const done    = roundIsDone(idxs, r);
+    const sets    = roundSets(idxs, r);
+    const checked = sets.filter(({ i, j }) => S.exercises[i].sets[j].completed === true).length;
+    const open    = !roundCollapsed(gid, r);
+
+    const head = `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0">
+        <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px;line-height:1">${open?'▾':'▸'}</button>
+        <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding:0">Rodada ${r+1}</button>
+        ${groupCfg(gid).roundOrder?.[r] ? `<button onclick="applyRoundOrderToAll('${gid}',${r})" title="Usar esta ordem em todas as rodadas" style="flex-shrink:0;background:none;border:1px solid ${BD};border-radius:99px;color:#b9a7ff;font-size:9px;font-weight:700;cursor:pointer;padding:2px 7px;font-family:inherit">↕ todas</button>` : ''}
+        <span style="flex-shrink:0;font-size:12px;color:${done?'#6fcf97':DM}">${checked}/${sets.length} ✓</span>
+      </div>`;
+
+    if (!open) return `<div style="border-bottom:.5px solid ${BD};opacity:${done?'.7':'1'}">${head}</div>`;
+
+    const body = present.map((i, k) => {
+      const ex = S.exercises[i], j = roundSetIdxs(ex)[r];
+      // The member name sits ABOVE the controls rather than beside them: the
+      // W/WU toggle cannot be dropped to make room, because intent inside a
+      // round is per-member (a member warming up while another works is an
+      // explicitly supported shape), so the row is two lines by necessity.
+      // Reorder lives on the NAME line, not the controls line — measured at
+      // 375px, the controls row is full (28/54/83/83/38) while the name line
+      // has ~280px spare. Reordering writes only THIS round's order; the
+      // round header then offers "aplicar a todas", which is the owner's
+      // "be asked if he wants to apply it to all blocks or just the one"
+      // without a confirm on every single tap.
+      const arrow = (dir, off) => `<button onclick="moveInRound('${gid}',${r},'${ex.ssMem}',${dir})" ${off?'disabled':''} title="Mover nesta rodada" style="flex-shrink:0;background:none;border:none;color:${off?BD:DM};font-size:12px;cursor:${off?'default':'pointer'};padding:0 2px;line-height:1">${dir<0?'▲':'▼'}</button>`;
+      const nameHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+        ${present.length > 1 ? arrow(-1, k===0) + arrow(1, k===present.length-1) : ''}
+        <button onclick="openExerciseDetail('${ex.exId}')" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:600;font-size:13px;font-family:inherit;text-align:left;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
+        ${ex.instanceName ? `<span style="flex-shrink:0;font-size:10px;color:#4dd0c4;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${esc(ex.instanceName)}</span>` : ''}
+        <button onclick="openSsMember(${i})" title="Opções deste exercício" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:14px;cursor:pointer;padding:2px 4px;line-height:1">⋯</button>
+      </div>`;
+      const row = setRowHTML(ctxs[i], ex.sets[j], j, { nameHTML });
+      const gap = k < present.length - 1 ? restRow(r, ex.ssMem, 'entre exercícios') : '';
+      return row + gap;
+    }).join('');
+
+    return `<div style="border-bottom:.5px solid ${BD};padding-bottom:4px">
+      ${head}
+      <div style="padding:0 2px">${body}${restRow(r, 'end', 'após a rodada')}</div>
+    </div>`;
+  }).join('');
+
+  const allDone = rounds > 0 && Array.from({ length: rounds }, (_, r) => roundIsDone(idxs, r)).every(Boolean);
+
+  return `
+    <div id="ssblk-${gid}" style="background:${BG2};border:1px solid ${allDone?'#1a4a3a':'#3a3550'};border-radius:10px;margin-bottom:12px;overflow:hidden">
+      <div style="padding:10px 12px;border-bottom:1px solid ${BD};display:flex;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">⛓ Superset <span style="font-weight:400;font-size:11px;color:${DM}">· ${members.length} exercícios · ${rounds} ${rounds===1?'rodada':'rodadas'}</span></div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            ${idxs.map(i => `<button onclick="openSsMember(${i})" style="padding:3px 8px;border-radius:99px;border:1px solid ${BD};background:${BG3};color:${DM};font-size:10px;font-weight:600;cursor:pointer;font-family:inherit;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(S.exercises[i].exName)}</button>`).join('')}
+          </div>
+        </div>
+        <button onclick="openSsBuilder('${gid}')" title="Editar superset" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px">⚙</button>
+      </div>
+      ${soloSection}
+      <div style="padding:6px 14px 12px">
+        ${rounds ? roundBlocks : `<div style="font-size:12px;color:${DM};padding:8px 0">Nenhuma rodada ainda.</div>`}
+        ${B(BG3,TX,'+ Rodada',`addRound('${gid}')`,';margin-bottom:0;margin-top:10px')}
+      </div>
+    </div>`;
+}
+
+// ── Shared set-row rendering ─────────────────────────────────────────────────
+//
+// Factored out of buildExBlock when supersets (E3b) landed, and the reason is
+// a design promise rather than tidiness: a superset round is defined as "a
+// re-arrangement of the same inputs, not a reimplementation of them". That is
+// only true if both views literally render the same row — so the
+// timed/bodyweight/assisted/bw-plus branching, the plate-mode Total column,
+// the ↺/▲ quick-fill chips and the completed checkbox have exactly ONE
+// implementation, and a fix to any of them lands in both views at once.
+//
+// exRowCtx() holds everything that depends on the EXERCISE rather than on the
+// individual set. Hoisted so it isn't recomputed per row, and so the round
+// view can build it once per member and reuse it across every round.
+function exRowCtx(ex, i) {
+  const isAs = ex.regime==='assisted', isBW = ex.regime==='bodyweight', isBWP = ex.regime===REGIME_BW_PLUS;
   // Time-based (planks, dead hangs, any hold): the count column is SECONDS.
   // Read from the block's own snapshot so an in-progress session keeps
   // rendering correctly even if the library entry changes underneath it.
   const isTm = isTimed(ex);
+  const libEx = D.exercises.find(e => e.id === ex.exId);
+  // Barbell plate-input mode: whether this block converts typed loads. It
+  // branches the GRID (an extra computed Total column), the header label, and
+  // every displayed kg on it.
+  const isBarbell = libEx?.equipment === 'barbell';
+  const plateMode = isBarbell ? (ex.loadMode || null) : null;
+  const gridCols  = plateMode ? '28px 54px 1fr 1fr 1fr 38px' : '28px 54px 1fr 1fr 38px';
+  const kgHeader  = plateMode === 'side' ? 'Kg de cada lado' : plateMode === 'plates' ? 'Kg em anilhas' : (isAs?'Assist.':isBW?'BW':isBWP?'+ Kg':'Kg');
+  const dispKg    = k => (k===''||k==null) ? '' : loadToDisplay(ex, k);
+  // Formats a reps/kg pair for a quick-fill chip label. BW rows have no
+  // meaningful kg, so they show the count alone. In a plate mode the kg is
+  // CONVERTED to the block's input units — a chip must read in the same
+  // currency the field expects, or "▲ 8 × 100" over a per-side column misleads.
+  // A timed row's count is a DURATION, so it reads "1:00".
+  const cntLbl  = r => isTm ? fmtSecs(r) : `${r ?? '–'} reps`;
+  const fmtPair = (r,k) => isBW ? cntLbl(r)
+    : `${isTm ? fmtSecs(r) : (r ?? '–')} × ${k==null?'–':dispKg(k)} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
+  return { ex, i, isAs, isBW, isBWP, isTm, libEx, isBarbell, plateMode, gridCols, kgHeader, dispKg, cntLbl, fmtPair, bw: currentBW() };
+}
+
+// One set row. `opts.nameHTML`, passed only by the superset round view, adds
+// the member-name line above the controls — which is why a grouped row is two
+// lines: inside a round the W/WU toggle CANNOT be dropped to make space for
+// the name, because intent is per-member-per-round there (member A warming up
+// while member B works is an explicitly supported shape), so the toggle is
+// the control that expresses it.
+function setRowHTML(ctx, s, j, opts = {}) {
+  const { i, isBW, plateMode, gridCols, dispKg, fmtPair, bw } = ctx;
+  const isWork = s.intent === 'work';
+  const rv = (s.reps===''||s.reps==null) ? '' : s.reps;
+  const kv = (s.kg===''  ||s.kg==null)   ? '' : s.kg;
+  const repsColor = s.repsEdited ? TX : DM;
+  const kgColor   = s.kgEdited   ? TX : DM;
+
+  // Quick-fill chips — up to two per work row. "Repeat last time" always
+  // shows when there's history; "apply suggestion" only when it actually
+  // differs from last time. Tapping either fills reps+kg at once and marks
+  // the row edited, same as typing — see applyChip().
+  let chips = '';
+  if (isWork && (s.lastReps!=null || s.lastKg!=null)) {
+    const parts = [`<button onclick="applyChip(${i},${j},'last')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${DM}">↺ ${fmtPair(s.lastReps,s.lastKg)}</button>`];
+    // Bodyweight never has a suggested/last kg, so comparing kg there would
+    // always read as "different" even when the rep suggestion is identical.
+    const sameAsLast = s.sugReps===s.lastReps && (isBW || s.sugKg===s.lastKg);
+    if ((s.sugReps!=null || s.sugKg!=null) && !sameAsLast) {
+      // A lower rep target is never a regression — structurally it only ever
+      // results from a weight graduation (reps reset to the bottom of the
+      // range on purpose). Shown from the weight's perspective (▲) with a
+      // distinct color, so a graduation stands out without reading as bad news.
+      const isGraduation = s.sugReps!=null && s.lastReps!=null && s.sugReps < s.lastReps;
+      parts.push(`<button onclick="applyChip(${i},${j},'sug')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${isGraduation?CA:CG}">▲ ${fmtPair(s.sugReps,s.sugKg)}</button>`);
+    }
+    chips = `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:2px">${parts.join('')}</div>`;
+  }
+
+  // Completed checkbox — every row, warm-ups included. Warm-up completion
+  // doesn't feed memory/volume (those filter to intent==='work' upstream),
+  // it's purely the user's own tracking — but checking it still confirms
+  // whatever's in the fields, same as a work row (see toggleCompleted()).
+  const checkCell = `<button onclick="toggleCompleted(${i},${j})" aria-label="Concluído" style="width:100%;min-height:38px;border-radius:7px;border:1px solid ${s.completed?CG:BD};background:${s.completed?CG:'transparent'};color:#fff;font-size:14px;font-weight:700;cursor:pointer;padding:0">${s.completed?'✓':''}</button>`;
+
+  // The Total cell (plate modes only) — computed, read-only, always the
+  // stored grand total. A converted input of exactly 0 is the empty bar.
+  const dv = dispKg(s.kg);
+  const totalCell = !plateMode ? '' : (kv === ''
+    ? `<div style="text-align:center;font-size:12px;color:${DM}">–</div>`
+    : `<div style="text-align:center;line-height:1.2"><span style="font-size:13px;color:${TX}">${kv}</span>${dv === 0 ? `<div style="font-size:9px;color:${DM}">barra vazia</div>` : ''}</div>`);
+
+  return `<div style="margin-bottom:8px">
+    ${opts.nameHTML || ''}
+    ${chips}
+    <div style="display:grid;grid-template-columns:${gridCols};gap:6px;align-items:center">
+      ${checkCell}
+      <button onclick="toggleIntent(${i},${j})" style="padding:10px 0;border:none;border-radius:7px;
+        background:${isWork?CG:'#555'};color:#fff;font-weight:700;font-size:11px;cursor:pointer;
+        font-family:inherit;text-align:center;width:100%">${isWork?'W':'WU'}</button>
+      <input id="s-reps-${i}-${j}" type="number" inputmode="decimal" placeholder="${s.phReps||'Reps'}" value="${rv}"
+        oninput="setVal(${i},${j},'reps',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
+        style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
+      ${isBW
+        ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
+        : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${plateMode==='side'?'Por lado':plateMode==='plates'?'Anilhas':(ctx.isAs?'Assist.':'Kg')}" step="0.5" value="${dispKg(kv)}"
+             oninput="setVal(${i},${j},'kg',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
+             style="background:${BG3};border:1px solid ${ctx.isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
+      ${totalCell}
+      <button onclick="rmSet(${i},${j})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;text-align:center;width:100%">×</button>
+    </div>
+  </div>`;
+}
+
+function buildExBlock(ex, i) {
+  if (ex.slot) return buildSlotBlock(ex, i);
+  const isS  = ex.type==='strength', isH=ex.type==='hypertrophy';
+  const isW  = ex.regime==='weighted';
   const isFirst = i===0, isLast=i===S.exercises.length-1;
-  const bw = currentBW();
+  // Everything the set rows need, built once and shared VERBATIM with the
+  // superset round view (see exRowCtx) so the two renderings can never drift.
+  const ctx = exRowCtx(ex, i);
+  const { isAs, isBW, isBWP, isTm, libEx, isBarbell, plateMode, gridCols, kgHeader, dispKg } = ctx;
 
   // Same exercise+type+regime logged more than once in this session (e.g.
   // a squat→curl→squat→curl superset) is supported, not blocked — history
@@ -3002,26 +3470,16 @@ function buildExBlock(ex, i) {
       Mesma carga há ${sug.stallStreak} treinos — foque em completar todas as séries no topo da faixa de reps antes de aumentar a carga.
     </div>` : '';
 
-  // Availability lives on the LIBRARY entry, not the session copy — look it
-  // up fresh so a mid-session availability edit is reflected. Only warns
-  // when this session actually has a gym context (S.gymId); never blocks —
-  // maybe the machine exists and the tags are just stale.
-  const libEx = D.exercises.find(e => e.id === ex.exId);
+  // Availability lives on the LIBRARY entry, not the session copy — ctx.libEx
+  // is looked up fresh on every render, so a mid-session availability edit is
+  // reflected. Only warns when this session actually has a gym context
+  // (S.gymId); never blocks — maybe the machine exists and the tags are stale.
   const unavailableHere = S.gymId && libEx && !availableAtGym(libEx, S.gymId);
   const unavailableBanner = unavailableHere ? `
     <div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:10px;padding:10px 12px;margin:0 0 10px;font-size:12px;color:#e6c84a;display:flex;align-items:center;gap:10px">
       <span style="flex:1">Não disponível em ${esc(S.gymName||'nesta academia')} — trocar por um exercício equivalente?</span>
       ${Bs(BG3,TX,'Trocar',`openSwapEx(${i})`,';flex-shrink:0;padding:6px 10px;font-size:12px')}
     </div>` : '';
-
-  // Barbell plate-input mode: whether this block converts typed loads (see
-  // loadToDisplay()'s banner). Everything below branches its GRID (an extra
-  // computed Total column), its header label, and every displayed kg on it.
-  const isBarbell  = libEx?.equipment === 'barbell';
-  const plateMode  = isBarbell ? (ex.loadMode || null) : null;
-  const gridCols   = plateMode ? '28px 54px 1fr 1fr 1fr 38px' : '28px 54px 1fr 1fr 38px';
-  const kgHeader   = plateMode === 'side' ? 'Kg de cada lado' : plateMode === 'plates' ? 'Kg em anilhas' : (isAs?'Assist.':isBW?'BW':isBWP?'+ Kg':'Kg');
-  const dispKg     = k => (k===''||k==null) ? '' : loadToDisplay(ex, k);
 
   // First-ever log of this exercise (no sug) has no warm-ups yet — see
   // estimateWarmups(). Disappears on its own once warm-up rows exist
@@ -3061,88 +3519,9 @@ function buildExBlock(ex, i) {
       <span></span>
     </div>` : '';
 
-  // Formats a reps/kg pair for a quick-fill chip label. BW rows have no
-  // meaningful kg (it's always just current bodyweight, not user-entered),
-  // so they only ever show reps. In a plate mode the kg shown is CONVERTED
-  // to the block's input units — a chip must read in the same currency the
-  // field expects, or "▲ 8 × 100" over a per-side column would mislead.
-  // A timed row's count is a DURATION, so it reads "1:00" — the same m:ss
-  // the rest timer uses — instead of a rep count. Bodyweight rows carry no
-  // meaningful kg, so they show the count alone; that covers the common
-  // plank / dead-hang case, while a weighted hold still shows "1:00 × 20kg".
-  const cntLbl = r => isTm ? fmtSecs(r) : `${r ?? '–'} reps`;
-  const fmtPair = (r,k) => isBW ? cntLbl(r)
-    : `${isTm ? fmtSecs(r) : (r ?? '–')} × ${k==null?'–':dispKg(k)} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
-
-  const setRows = ex.sets.map((s,j) => {
-    const isWork = s.intent === 'work';
-    const rv = (s.reps===''||s.reps==null) ? '' : s.reps;
-    const kv = (s.kg===''  ||s.kg==null)   ? '' : s.kg;
-    const repsColor = s.repsEdited ? TX : DM;
-    const kgColor   = s.kgEdited   ? TX : DM;
-
-    // Quick-fill chips — up to two per work row. "Repeat last time" always
-    // shows when there's history; "apply suggestion" only shows when it
-    // actually differs from last time (nothing to offer otherwise). Tapping
-    // either fills both reps+kg at once and marks the row edited, same as
-    // typing — see applyChip().
-    let chips = '';
-    if (isWork && (s.lastReps!=null || s.lastKg!=null)) {
-      const parts = [`<button onclick="applyChip(${i},${j},'last')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${DM}">↺ ${fmtPair(s.lastReps,s.lastKg)}</button>`];
-      // Bodyweight never has a suggested/last kg (there's no kg field for
-      // it at all — sugKg is always null, lastKg is always the unused
-      // default ''), so comparing kg there would always read as "different"
-      // even when the rep suggestion is identical. Compare reps only for BW.
-      const sameAsLast = s.sugReps===s.lastReps && (isBW || s.sugKg===s.lastKg);
-      if ((s.sugReps!=null || s.sugKg!=null) && !sameAsLast) {
-        // A lower rep target than last time is never a regression — the
-        // only way sugReps < lastReps happens at all is a genuine weight
-        // graduation (working weight went up, so the rep target resets to
-        // the bottom of the range). Show it from the weight's perspective,
-        // which really did go up (▲), not the reps', with a distinct color
-        // so a graduation still stands out from a routine "aim higher"
-        // nudge — just not as if something went wrong.
-        const isGraduation = s.sugReps!=null && s.lastReps!=null && s.sugReps < s.lastReps;
-        parts.push(`<button onclick="applyChip(${i},${j},'sug')" style="background:none;border:none;padding:2px 6px;border-radius:99px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;color:${isGraduation?CA:CG}">▲ ${fmtPair(s.sugReps,s.sugKg)}</button>`);
-      }
-      chips = `<div style="display:flex;gap:2px;flex-wrap:wrap;margin-bottom:2px">${parts.join('')}</div>`;
-    }
-
-    // Completed checkbox — every row, warm-ups included. Warm-up completion
-    // doesn't feed memory/volume (those already filter to intent==='work'
-    // upstream), it's purely for the user's own tracking — but checking it
-    // still confirms whatever's in the fields, same as a work row (see
-    // toggleCompleted()).
-    const checkCell = `<button onclick="toggleCompleted(${i},${j})" aria-label="Concluído" style="width:100%;min-height:38px;border-radius:7px;border:1px solid ${s.completed?CG:BD};background:${s.completed?CG:'transparent'};color:#fff;font-size:14px;font-weight:700;cursor:pointer;padding:0">${s.completed?'✓':''}</button>`;
-
-    // The Total cell (plate modes only) — computed, read-only, always the
-    // stored grand total. A converted input of exactly 0 is the empty bar:
-    // the total shows barKg with the "barra vazia" hint the owner specced.
-    const dv = dispKg(s.kg);
-    const totalCell = !plateMode ? '' : (kv === ''
-      ? `<div style="text-align:center;font-size:12px;color:${DM}">–</div>`
-      : `<div style="text-align:center;line-height:1.2"><span style="font-size:13px;color:${TX}">${kv}</span>${dv === 0 ? `<div style="font-size:9px;color:${DM}">barra vazia</div>` : ''}</div>`);
-
-    return `<div style="margin-bottom:8px">
-      ${chips}
-      <div style="display:grid;grid-template-columns:${gridCols};gap:6px;align-items:center">
-        ${checkCell}
-        <button onclick="toggleIntent(${i},${j})" style="padding:10px 0;border:none;border-radius:7px;
-          background:${isWork?CG:'#555'};color:#fff;font-weight:700;font-size:11px;cursor:pointer;
-          font-family:inherit;text-align:center;width:100%">${isWork?'W':'WU'}</button>
-        <input id="s-reps-${i}-${j}" type="number" inputmode="decimal" placeholder="${s.phReps||'Reps'}" value="${rv}"
-          oninput="setVal(${i},${j},'reps',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
-          style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
-        ${isBW
-          ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
-          : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${plateMode==='side'?'Por lado':plateMode==='plates'?'Anilhas':(isAs?'Assist.':'Kg')}" step="0.5" value="${dispKg(kv)}"
-               oninput="setVal(${i},${j},'kg',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
-               style="background:${BG3};border:1px solid ${isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
-        ${totalCell}
-        <button onclick="rmSet(${i},${j})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;text-align:center;width:100%">×</button>
-      </div>
-    </div>`;
-  }).join('');
+  // One row per set — rendered by the SHARED renderer, so the plain block
+  // and the superset round view can never disagree about what a set row is.
+  const setRows = ex.sets.map((s,j) => setRowHTML(ctx, s, j)).join('');
 
   // Exercise-level done state is DERIVED from the sets (every set
   // explicitly completed), never stored — the two ways of finishing an
@@ -3315,9 +3694,30 @@ function buildHistory() {
             <span style="font-weight:600">${esc(ex.exName)}</span>${typePill(ex.type)}${ex.regime?regimePill(ex.regime):''}${ex.instanceName?`<span style="font-size:11px;color:${DM}">🔧 ${esc(ex.instanceName)}</span>`:''}
           </div>${ex.note ? `<div style="font-size:12px;color:#4dd0c4;margin:-2px 0 6px;line-height:1.4">📝 ${esc(ex.note)}</div>` : ''}${lines}
         </div>`;
-      }).join('');
+      });
 
-      detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${exRows}
+      // Superset bracket (E3b). History deliberately keeps each exercise as
+      // its own block with its own sets — progression is measured per
+      // exercise whether or not they were performed together (owner: "the
+      // history should track each exercise individually, even if they're done
+      // together"). The grouping is shown, not re-modelled: contiguous
+      // same-`ss` blocks are wrapped in one labelled frame. A round-by-round
+      // history RENDERING is deliberately not v1; the marker is stored, so it
+      // stays available if it's ever wanted.
+      const wrapped = [];
+      s.exercises.forEach((ex, k) => {
+        const prev = wrapped[wrapped.length - 1];
+        if (ex.ss && prev && prev.gid === ex.ss) { prev.html.push(exRows[k]); return; }
+        wrapped.push(ex.ss ? { gid: ex.ss, html: [exRows[k]] } : { gid: null, html: [exRows[k]] });
+      });
+      const exRowsHTML = wrapped.map(u => u.gid
+        ? `<div style="border-left:2px solid #4a3f7a;padding-left:10px;margin-bottom:14px">
+             <div style="font-size:11px;color:#b9a7ff;font-weight:700;margin-bottom:8px">⛓ SUPERSET · ${u.html.length} exercícios</div>
+             ${u.html.join('')}
+           </div>`
+        : u.html.join('')).join('');
+
+      detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${exRowsHTML}
         <div style="display:flex;gap:8px;margin-top:12px">
           ${Bs(BG3,TX,'Editar',`editSess('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
           ${Bs(BG3,TX,'Criar plano',`openPlanFromSession('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
@@ -4071,13 +4471,17 @@ function buildPlans() {
         }).join('')}`;
 }
 
-function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planRestEdit=null; _planNoteEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; _peMode='ex'; showPlanEditor(''); }
+function openNewPlan()   { _planExs=[]; _planId=null; _planRests={}; _planGroups={}; _planSsPick=[]; _planRestEdit=null; _planNoteEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; _peMode='ex'; showPlanEditor(''); }
 // _planExs holds ENTRY objects since schema 5 — deep-copied, because a
 // shallow spread would alias each entry's perGym/prescription objects and
 // let editor tinkering mutate the stored plan before Salvar.
-function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=JSON.parse(JSON.stringify(p.exercises||[])); _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planRestEdit=null; _planNoteEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; _peMode='ex'; showPlanEditor(p.name); }
+function openEditPlan(id){ const p=D.plans.find(x=>x.id===id); if(!p)return; _planId=id; _planExs=JSON.parse(JSON.stringify(p.exercises||[])); _planRests=JSON.parse(JSON.stringify(p.rests||{})); _planGroups=JSON.parse(JSON.stringify(p.groups||{})); _planSsPick=[]; _planRestEdit=null; _planNoteEdit=null; _peFMove=null; _peSearch=''; _peAlpha=false; _peFMuscle=null; _peFPattern=null; _peMode='ex'; showPlanEditor(p.name); }
 
 function showPlanEditor(name) {
+  // Cached so a sub-modal (the superset config) can rebuild this editor
+  // afterwards without losing whatever the user had typed into the name field.
+  _planNameCache = name || '';
+  _planSsMode = false; _planSsPick = [];
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:14px">${_planId?'Editar plano':'Novo plano'}</div>
     <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome do plano</label>
@@ -4179,7 +4583,7 @@ function refreshPlanExList() {
   const c = document.getElementById('plan-ex-list');
   if (!c) return;
   if (!_planExs.length) { c.innerHTML=`<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhum exercício adicionado.</div>`; return; }
-  c.innerHTML = _planExs.map((en,i) => {
+  c.innerHTML = planSsToolbarHTML() + _planExs.map((en,i) => {
     const isSlot = !en.exId;
     const ex = isSlot ? null : D.exercises.find(e => e.id===en.exId);
     const mv = isSlot ? MOVEMENTS[en.movement] : null;
@@ -4206,13 +4610,26 @@ function refreshPlanExList() {
           onchange="setPlanNote('${en.eid}', this.value)"
           style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
       </div>` : '';
-    return `<div style="border-bottom:.5px solid ${BD}">
-      <div style="display:flex;align-items:center;gap:6px;padding:7px 0">
-        <div style="display:flex;flex-direction:column;gap:2px">
+    // In pick mode the reorder arrows give way to a checkbox — the row can't
+    // carry both at this width, and reordering during selection isn't a thing
+    // anyone needs. A grouped entry shows its superset letter instead of its
+    // position number, which is what makes the grouping visible at a glance
+    // in a flat list.
+    const picked = _planSsPick.includes(en.eid);
+    const lead = _planSsMode
+      ? (en.ss ? `<span style="width:22px;flex-shrink:0"></span>`
+               : `<button onclick="togglePlanSsPick('${en.eid}')" style="flex-shrink:0;width:22px;height:22px;border-radius:5px;border:1px solid ${picked?CG:BD};background:${picked?CG:'transparent'};color:#fff;font-size:12px;font-weight:700;cursor:pointer;padding:0">${picked?'✓':''}</button>`)
+      : `<div style="display:flex;flex-direction:column;gap:2px">
           <button onclick="movePlanEx(${i},-1)" ${isFirst?'disabled':''} style="background:none;border:none;color:${isFirst?BD:DM};font-size:13px;cursor:${isFirst?'default':'pointer'};padding:1px 3px;line-height:1">▲</button>
           <button onclick="movePlanEx(${i},1)"  ${isLast?'disabled':''}  style="background:none;border:none;color:${isLast?BD:DM};font-size:13px;cursor:${isLast?'default':'pointer'};padding:1px 3px;line-height:1">▼</button>
-        </div>
-        <span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>
+        </div>`;
+    const ssBadge = en.ss
+      ? `<button onclick="openPlanSsCfg('${en.ss}')" title="Superset" style="color:#b9a7ff;font-size:11px;font-weight:700;min-width:18px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit">⛓${planSsLetter(en.ss)}</button>`
+      : `<span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>`;
+    return `<div style="border-bottom:.5px solid ${BD};${en.ss?`border-left:2px solid #4a3f7a;padding-left:6px`:''}">
+      <div style="display:flex;align-items:center;gap:6px;padding:7px 0">
+        ${lead}
+        ${ssBadge}
         ${isSlot
           ? `<span style="flex:1;font-size:14px">🎯 ${esc(mv?.pt || en.movement || 'Movimento')} <span style="color:${DM};font-size:11px">· qualquer variação</span></span>
              ${mv ? musclePill(mv.muscle, mv.pattern) : ''}`
@@ -4226,6 +4643,117 @@ function refreshPlanExList() {
       ${noteRow}
     </div>`;
   }).join('');
+}
+
+// ── Plan editor: supersets (E3b) ─────────────────────────────────────────────
+//
+// The plan-side half of "assembled in both the plan editor and mid-session".
+// Same data the session builder writes, so a group built here is the group
+// startPlan() hands to the workout — no translation layer between them.
+
+// Groups are lettered by the order their first member appears in the list, so
+// the label is stable to read and needs nothing stored.
+function planSsLetter(gid) {
+  const seen = [];
+  _planExs.forEach(en => { if (en.ss && !seen.includes(en.ss)) seen.push(en.ss); });
+  const n = seen.indexOf(gid);
+  return n < 0 ? '' : String.fromCharCode(65 + n);
+}
+
+function togglePlanSsMode() { _planSsMode = !_planSsMode; _planSsPick = []; refreshPlanExList(); }
+function togglePlanSsPick(eid) {
+  _planSsPick = _planSsPick.includes(eid) ? _planSsPick.filter(x => x !== eid) : [..._planSsPick, eid];
+  refreshPlanExList();
+}
+
+function planSsToolbarHTML() {
+  if (_planSsMode) return `
+    <div style="background:${BG3};border:1px solid #4a3f7a;border-radius:8px;padding:9px 10px;margin-bottom:8px">
+      <div style="font-size:11px;color:${DM};margin-bottom:8px">Marque 2 ou mais exercícios que serão feitos juntos, em rodadas.</div>
+      <div style="display:flex;gap:6px">
+        ${Bs(_planSsPick.length>=2?CG:'#333',TX,`Criar superset${_planSsPick.length?` (${_planSsPick.length})`:''}`,'doCreatePlanSuperset()')}
+        ${Bs(BG3,DM,'Cancelar','togglePlanSsMode()')}
+      </div>
+    </div>`;
+  const groupable = _planExs.filter(en => !en.ss).length >= 2;
+  return groupable ? `<div style="margin-bottom:8px">${Bs(BG3,DM,'⛓ Agrupar em superset','togglePlanSsMode()')}</div>` : '';
+}
+
+// Members are moved into a CONTIGUOUS run at the first pick's position — the
+// same invariant the session side maintains (see sessionUnits), and the plan
+// has to hold it too or startPlan() would hand the session a broken group.
+function doCreatePlanSuperset() {
+  const picks = _planExs.map((en, i) => _planSsPick.includes(en.eid) ? i : -1).filter(i => i >= 0);
+  if (picks.length < 2) return;
+  const gid = 'g' + uid();
+  const at = picks[0];
+  const members = picks.map(i => _planExs[i]);
+  members.forEach(en => { en.ss = gid; en.ssMem = en.ssMem || en.eid; });
+  _planExs = _planExs.filter(en => !members.includes(en));
+  _planExs.splice(Math.min(at, _planExs.length), 0, ...members);
+  _planGroups[gid] = { order: members.map(en => en.ssMem), rest: { between: 0, round: 120 } };
+  _planSsMode = false; _planSsPick = [];
+  refreshPlanExList();
+}
+
+function ungroupPlanSs(gid) {
+  _planExs.forEach(en => { if (en.ss === gid) { delete en.ss; delete en.ssMem; delete en.ssWu; } });
+  delete _planGroups[gid];
+  closeModal(); showPlanEditorKeepingState();
+}
+
+// Re-opening the editor modal after a sub-modal would lose the name input's
+// current text, so the name is cached before the rebuild. (A sub-modal
+// replaces the editor outright — the same constraint that made the rest and
+// note rows expand inline instead of opening their own modal.)
+function showPlanEditorKeepingState() { showPlanEditor(_planNameCache); }
+
+function openPlanSsCfg(gid) {
+  const cfg = _planGroups[gid] || {};
+  const mems = _planExs.filter(en => en.ss === gid);
+  _planNameCache = (document.getElementById('plan-name')?.value || '').trim();
+  const secsInput = (id, label, val) => `
+    <div style="flex:1">
+      <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${label}</div>
+      <input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
+        style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
+    </div>`;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">⛓ Superset ${planSsLetter(gid)}</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:14px">Executado em rodadas. Cada exercício continua sendo registrado individualmente.</div>
+    <div style="margin-bottom:14px">${mems.map(en => {
+      const ex = en.exId ? D.exercises.find(e => e.id === en.exId) : null;
+      const mv = !en.exId ? MOVEMENTS[en.movement] : null;
+      return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:.5px solid ${BD}">
+        <span style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ex ? ex.name : (mv?.pt || en.movement || '(removido)'))}</span>
+        <button onclick="togglePlanMemberWu('${en.eid}','${gid}')" style="flex-shrink:0;padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:10px;cursor:pointer;font-family:inherit;background:${en.ssWu?CB:BG3};color:${en.ssWu?TX:DM}">WU nas rodadas</button>
+      </div>`;
+    }).join('')}</div>
+    <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      ${secsInput('pss-between','Entre exercícios (s)', cfg.rest?.between ?? 0)}
+      ${secsInput('pss-round','Após a rodada (s)', cfg.rest?.round ?? 120)}
+    </div>
+    <div style="font-size:11px;color:${DM};margin-bottom:14px">Intervalos individuais por rodada são ajustados durante o treino.</div>
+    ${B(CG,TX,'Salvar',`savePlanSsCfg('${gid}')`)}
+    ${B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupPlanSs('${gid}')`)}
+    ${B(BG3,DM,'Cancelar',`closeModal();showPlanEditorKeepingState()`,';margin-bottom:0')}`);
+}
+
+function togglePlanMemberWu(eid, gid) {
+  const en = _planExs.find(x => x.eid === eid); if (!en) return;
+  if (en.ssWu) delete en.ssWu; else en.ssWu = true;
+  openPlanSsCfg(gid);
+}
+
+function savePlanSsCfg(gid) {
+  _planGroups[gid] = _planGroups[gid] || { order: _planExs.filter(en => en.ss === gid).map(en => en.ssMem) };
+  _planGroups[gid].rest = {
+    between: sanitizeSecs(document.getElementById('pss-between')?.value) ?? 0,
+    round:   sanitizeSecs(document.getElementById('pss-round')?.value) ?? 0,
+    ...(_planGroups[gid].rest?.overrides ? { overrides: _planGroups[gid].rest.overrides } : {}),
+  };
+  closeModal(); showPlanEditorKeepingState();
 }
 
 function togglePlanRestEdit(eid) { _planRestEdit = _planRestEdit === eid ? null : eid; refreshPlanExList(); }
@@ -4258,7 +4786,17 @@ function addExToPlan(id)   { if(!id)return; _planExs.push({ eid:uid(), exId:id }
 function addSlotToPlan(slug) { if(!slug||!MOVEMENTS[slug])return; _planExs.push({ eid:uid(), exId:null, movement:slug }); refreshPlanExList(); }
 // Removing an entry also drops its per-plan rest override — re-adding
 // it later silently resurrecting old timings would surprise more than help.
-function rmPlanEx(i)       { delete _planRests[_planExs[i].eid]; _planExs.splice(i,1); refreshPlanExList(); }
+function rmPlanEx(i)       {
+  const gone = _planExs[i];
+  delete _planRests[gone.eid]; _planExs.splice(i,1);
+  // A group left with one member is no longer a superset — dissolve it now
+  // rather than at save, so the list never shows a ⛓ badge on a lone row.
+  if (gone.ss && _planExs.filter(en => en.ss === gone.ss).length < 2) {
+    _planExs.forEach(en => { if (en.ss === gone.ss) { delete en.ss; delete en.ssMem; delete en.ssWu; } });
+    delete _planGroups[gone.ss];
+  }
+  refreshPlanExList();
+}
 
 // Prunes _planRests to the entries actually in the plan (a guard, not a
 // normal path — rmPlanEx already cleans as it goes) and drops empty
@@ -4277,8 +4815,19 @@ function savePlan() {
   // closes, and the stored plan must never share mutable entry objects
   // with it (same rule as doSaveSession's plan writes).
   const entries = JSON.parse(JSON.stringify(_planExs));
-  if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=entries;p.rests=rests;p.updatedAt=Date.now();} }
-  else D.plans.push({ id:uid(), name, exercises:entries, rests, updatedAt:Date.now() });
+  // Groups pruned to those the entries actually still form, with each order
+  // rebuilt from the entry list — an entry removed from the plan must not
+  // leave a group naming it, and a group down to one member is not a
+  // superset. Same rule sessionPlanShape() applies on the session side.
+  const groups = {};
+  Object.keys(_planGroups).forEach(gid => {
+    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem || en.eid);
+    if (mems.length >= 2) groups[gid] = { ..._planGroups[gid], order: mems };
+  });
+  entries.forEach((en, k) => { if (en.ss && !groups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; } });
+  const cleanGroups = sanitizeGroups(groups);
+  if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=entries;p.rests=rests;if(cleanGroups)p.groups=cleanGroups;else delete p.groups;p.updatedAt=Date.now();} }
+  else D.plans.push({ id:uid(), name, exercises:entries, rests, ...(cleanGroups?{groups:cleanGroups}:{}), updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function delPlan(id) { D.tombstones.plans[id]=Date.now(); D.plans=D.plans.filter(p=>p.id!==id); persist(); render(); }
@@ -4308,11 +4857,21 @@ function buildPlanPayload(p) {
     .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime,
       mainMuscle:e.mainMuscle, movementPattern:e.movementPattern, accessoryMuscles:e.accessoryMuscles||[],
       ...(e.rest ? { rest: e.rest } : {}) }));
+  // Superset grouping DOES travel, on the same argument that lets `rests`
+  // travel and keeps gym tags off: it is training prescription, not local
+  // bookkeeping — "do these three as a circuit, 15s between, 90s after" is
+  // exactly what the coach-sends-a-plan case wants to carry. Unlike perGym,
+  // nothing in it references sender-local ids: ssMem values are plan-internal,
+  // the same way eids already are.
   const entries = (p.exercises||[]).map(en => ({ eid: en.eid, exId: en.exId || null,
     ...(en.movement ? { movement: en.movement } : {}),
+    ...(en.ss ? { ss: en.ss, ssMem: en.ssMem || en.eid } : {}),
+    ...(en.ssWu ? { ssWu: true } : {}),
     ...(en.prescription?.note ? { prescription: { note: en.prescription.note } } : {}) }));
+  const shareGroups = sanitizeGroups(p.groups);
   return { type: 'gym-tracker-plan', name: p.name, exercises, entries,
-    ...(p.rests && Object.keys(p.rests).length ? { rests: p.rests } : {}) };
+    ...(p.rests && Object.keys(p.rests).length ? { rests: p.rests } : {}),
+    ...(shareGroups ? { groups: shareGroups } : {}) };
 }
 
 function exportPlan(id) {
@@ -4495,12 +5054,19 @@ function applyImportedPlan(data, sharedFrom) {
       const eid  = (typeof en.eid === 'string' && en.eid) ? en.eid : uid();
       const note = (typeof en.prescription?.note === 'string' && en.prescription.note.trim())
         ? en.prescription.note.trim().slice(0, 200) : null;
+      // Superset markers arrive as untrusted strings like everything else: a
+      // group id is only kept if it survives sanitizeGroups() below, and an
+      // entry whose group didn't survive is stripped back to ungrouped rather
+      // than left pointing at nothing.
+      const ss = (typeof en.ss === 'string' && /^[A-Za-z0-9_-]+$/.test(en.ss)) ? en.ss : null;
+      const grp = ss ? { ss, ssMem: (typeof en.ssMem === 'string' && /^[A-Za-z0-9_-]+$/.test(en.ssMem)) ? en.ssMem : eid,
+                         ...(en.ssWu === true ? { ssWu: true } : {}) } : {};
       if (en.exId) {
         const localId = idMap[en.exId] || (D.exercises.some(e => e.id === en.exId) ? en.exId : null);
-        return localId ? { eid, exId: localId, ...(note ? { prescription: { note } } : {}) } : null;
+        return localId ? { eid, exId: localId, ...grp, ...(note ? { prescription: { note } } : {}) } : null;
       }
       return (typeof en.movement === 'string' && MOVEMENTS[en.movement])
-        ? { eid, exId: null, movement: en.movement, ...(note ? { prescription: { note } } : {}) } : null;
+        ? { eid, exId: null, movement: en.movement, ...grp, ...(note ? { prescription: { note } } : {}) } : null;
     }).filter(Boolean);
   } else {
     entries = [...new Set(exIds)].map(exId => ({ eid: uid(), exId }));
@@ -4520,7 +5086,19 @@ function applyImportedPlan(data, sharedFrom) {
       if (en) rests[en.eid] = clean;
     }
   });
-  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: entries, rests, updatedAt: Date.now() });
+  // Groups, normalized as untrusted input and pruned to what actually landed:
+  // a group needs 2+ entries that survived exercise resolution to mean
+  // anything, and its member order is rebuilt from those entries so a
+  // hand-edited order can't name members this import never created.
+  const impGroups = {};
+  Object.entries(sanitizeGroups(data.groups) || {}).forEach(([gid, cfg]) => {
+    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
+    if (mems.length >= 2) impGroups[gid] = { ...cfg, order: mems };
+  });
+  entries.forEach((en, k) => { if (en.ss && !impGroups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; } });
+  const cleanGroups = sanitizeGroups(impGroups);
+  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: entries, rests,
+    ...(cleanGroups ? { groups: cleanGroups } : {}), updatedAt: Date.now() });
   persist(); render();
 }
 
@@ -5615,6 +6193,10 @@ function startPlan(id) {
   S = {
     planId: p.id, planName: p.name, date: today(),
     gymId: gm?.id || null, gymName: gm?.name || null,
+    // Sanitized on the way in for the same reason imported plans are: a plan
+    // can arrive from another device or another user, and a malformed group
+    // config must degrade to "no grouping" rather than break the session view.
+    ...(sanitizeGroups(p.groups) ? { groups: sanitizeGroups(p.groups) } : {}),
     exercises: (p.exercises||[]).map(en => {
       // A SLOT entry (exId null) becomes a placeholder block — the owner's
       // rule: a slot never resolves silently. The block itself surfaces the
@@ -5636,8 +6218,14 @@ function startPlan(id) {
       // reconciliation (slot entries must survive an 'update' as slots);
       // _planNote is the entry's prescription, live-display only — both are
       // stripped at save alongside _sug.
+      // Superset membership travels from the plan onto the block (E3b): the
+      // owner's "plan groups carry into the session". ssMem defaults to the
+      // entry's own eid, which is already unique per entry and is what the
+      // plan's group order/rest-override keys reference.
       const o  = { exId, exName:ex?ex.name:'(removido)', type:(lm?lm.type:ex?.type)||'hypertrophy', compound:ex?.compound, regime:(lm?lm.regime:ex?.regime)||'weighted',
                    ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}),
+                   ...(en.ss ? { ss: en.ss, ssMem: en.ssMem || en.eid } : {}),
+                   ...(en.ssWu ? { ssWu: true } : {}),
                    rest: seedRestFor(exId, p.id, en.eid), sets:[], _planEid:en.eid,
                    ...(en.prescription?.note ? { _planNote: en.prescription.note } : {}) };
       // Same last-used-machine default the picker path applies — before
@@ -5682,6 +6270,27 @@ function cancelSession() {
 // sanitizeRest for its own canonical key order.
 const restsKey = o => JSON.stringify(Object.keys(o||{}).sort().map(k => [k, sanitizeRest(o[k])]));
 
+// Canonical serialization of an ENTRY LIST for the drift comparison.
+//
+// This was a bare JSON.stringify of the two arrays, which is key-ORDER
+// sensitive. It worked only because every writer happened to build entries
+// the same way — and supersets break that luck: an entry that gains `ss` via
+// a spread carries the key at the end, while one authored with grouping in
+// the plan editor carries it wherever the editor put it. Two identical plans
+// would then stringify differently and every save would falsely report drift,
+// nagging the user to update a plan nothing had changed. Same job restsKey()
+// and groupsKey() already do for their maps.
+//
+// Every field a plan entry can hold is listed here on purpose: a field left
+// out would become invisible to drift detection, which fails silently and in
+// the dangerous direction (a real change that never prompts).
+const entriesKey = list => JSON.stringify((list || []).map(en => [
+  en.eid || '', en.exId || null, en.movement || null,
+  en.prescription?.note || '',
+  en.ss || '', en.ssMem || '', en.ssWu ? 1 : 0,
+  en.perGym ? Object.keys(en.perGym).sort().map(k => [k, en.perGym[k]]) : null,
+]));
+
 function sessionPlanDiff() {
   if (!S || !S.planId || S._editId) return null; // re-edits of old sessions save silently — the prompt is a live-workout affordance
   const plan = D.plans.find(p => p.id === S.planId);
@@ -5692,9 +6301,18 @@ function sessionPlanDiff() {
   // identity compares as JSON: an untouched entry is the same object, a
   // swapped concrete differs by exId, a new block is a new entry.
   const shape = sessionPlanShape(plan);
-  const listChanged  = JSON.stringify(shape.entries) !== JSON.stringify(plan.exercises || []);
-  const restsChanged = restsKey(shape.rests) !== restsKey(plan.rests);
-  return (listChanged || restsChanged) ? { plan, listChanged, restsChanged } : null;
+  const listChanged   = entriesKey(shape.entries) !== entriesKey(plan.exercises || []);
+  const restsChanged  = restsKey(shape.rests) !== restsKey(plan.rests);
+  // Assembling or dissolving a superset mid-session IS a change to the plan's
+  // shape, and the owner asked to be asked about it: "if you group an exercise
+  // mid-session, ask the user if he wants to update the plan or keep that for
+  // the sessions only". That question is exactly what this prompt already
+  // offers — update the plan / create a new plan / save only the session — so
+  // grouping needed no new dialog, only inclusion here. Deliberately NOT an
+  // interrupt at the moment of grouping: nothing modal fires mid-workout.
+  const groupsChanged = groupsKey(shape.groups) !== groupsKey(plan.groups);
+  return (listChanged || restsChanged || groupsChanged)
+    ? { plan, listChanged, restsChanged, groupsChanged } : null;
 }
 
 // A rest override is plan-worthy only when it differs from the library
@@ -5728,6 +6346,19 @@ function sessionPlanShape(plan) {
     if (known) en = (!known.exId && known.movement) ? known : (known.exId === ex.exId ? known : { ...known, exId: ex.exId });
     else if (ex.slot) return; // placeholder whose entry vanished from the plan — nothing to represent
     else en = { eid: uid(), exId: ex.exId };
+    // Superset membership is taken from the SESSION BLOCK, never from the plan
+    // entry that `known` reuses verbatim. That reuse is what lets an old app
+    // carry grouping through untouched — but here it would also silently
+    // discard a superset assembled (or dissolved) during the workout, which is
+    // precisely the change the save-time prompt exists to ask about. Rebuilt
+    // rather than mutated: `known` IS the stored plan's entry object.
+    const wantSs  = ex.ss || '';
+    const wantMem = wantSs ? (ex.ssMem || en.eid) : '';
+    const wantWu  = wantSs && ex.ssWu ? 1 : 0;
+    if (wantSs !== (en.ss || '') || wantMem !== (en.ssMem || '') || wantWu !== (en.ssWu ? 1 : 0)) {
+      const { ss, ssMem, ssWu, ...bare } = en;
+      en = wantSs ? { ...bare, ss: wantSs, ssMem: wantMem, ...(wantWu ? { ssWu: true } : {}) } : bare;
+    }
     entries.push(en);
     if (ex.slot) return;
     // Rest capture is SEED-aware, not just library-aware: a block's rest is
@@ -5748,7 +6379,24 @@ function sessionPlanShape(plan) {
       if (r) rests[en.eid] = r;
     }
   });
-  return { entries, rests };
+
+  // Group configs, kept only for groups the derived entries actually still
+  // form, and with each member ORDER rebuilt from those entries rather than
+  // copied from S.groups: the session's block order is the truth about who is
+  // in the group and in what sequence, while a stored order can name members
+  // that were swapped out or removed during the workout.
+  const groups = {};
+  Object.keys(S?.groups || {}).forEach(gid => {
+    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
+    if (mems.length >= 2) groups[gid] = { ...S.groups[gid], order: mems };
+  });
+  // A group that lost members until only one was left is not a superset — drop
+  // the marker too, so no entry is left pointing at a group that isn't there.
+  entries.forEach((en, k) => {
+    if (en.ss && !groups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; }
+  });
+
+  return { entries, rests, groups: sanitizeGroups(groups) };
 }
 
 // ── Machine picker & save-time nudge (E2) ────────────────────────────────────
@@ -6361,6 +7009,10 @@ function doSaveSession(mode) {
       const shape = sessionPlanShape(plan);
       plan.exercises = JSON.parse(JSON.stringify(shape.entries));
       plan.rests     = shape.rests;
+      // Deleted rather than left as undefined: `groups` has to disappear
+      // outright when the last superset is dissolved, or a stale config would
+      // survive on the plan and keep re-registering as drift forever.
+      if (shape.groups) plan.groups = JSON.parse(JSON.stringify(shape.groups)); else delete plan.groups;
       plan.updatedAt = Date.now();
     }
   } else if (mode === 'new') {
@@ -6373,7 +7025,8 @@ function doSaveSession(mode) {
     // OBJECT would not be.
     const src = S.planId ? D.plans.find(p => p.id === S.planId) : null;
     const shape = sessionPlanShape(src || null);
-    const np = { id: uid(), name, exercises: JSON.parse(JSON.stringify(shape.entries)), rests: shape.rests, updatedAt: Date.now() };
+    const np = { id: uid(), name, exercises: JSON.parse(JSON.stringify(shape.entries)), rests: shape.rests,
+      ...(shape.groups ? { groups: JSON.parse(JSON.stringify(shape.groups)) } : {}), updatedAt: Date.now() };
     D.plans.push(np);
     // The session record belongs to the plan it actually represents now.
     S.planId = np.id; S.planName = np.name;
@@ -6418,7 +7071,20 @@ function doSaveSession(mode) {
       return set;
     })
   }));
-  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises, updatedAt:Date.now() };
+  // Superset grouping into history. The `ss`/`ssWu` markers on each exercise
+  // ride along for free — the strip above is a BLOCKLIST, so genuinely new
+  // fields survive by design. The group CONFIG does not: this record is a
+  // WHITELIST, so `groups` has to be named explicitly. That asymmetry is the
+  // easiest way to ship this feature half-working, and it cuts the other way
+  // too — S.ssCollapsed (which round is folded right now) can never leak into
+  // history precisely because nothing names it.
+  // Pruned to the groups actually referenced by the saved exercises, so a
+  // group whose members were all removed (or were unresolved slots) doesn't
+  // persist as a dead shell.
+  const usedGids = new Set(exercises.map(e => e.ss).filter(Boolean));
+  const savedGroups = sanitizeGroups(Object.fromEntries(
+    Object.entries(S.groups || {}).filter(([g]) => usedGids.has(g))));
+  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises, ...(savedGroups ? { groups: savedGroups } : {}), updatedAt:Date.now() };
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
   persist(); S=null; _restTimer=null; _machineNudgeDone=false; TAB='history'; render();
@@ -6480,14 +7146,45 @@ function doPlanFromSession(sessId) {
   // (strictly better than the old last-occurrence-wins exId key). Slots are
   // deliberately not reconstructed from fromMovement provenance in v1: an
   // extracted plan pins what was actually done.
-  const entries = [], rests = {};
+  // Supersets are extracted too — a session that was trained in rounds should
+  // come back as a plan that still says so. Member ids are re-minted onto the
+  // fresh eids (the session's own ssMem values belong to that session's
+  // entries), and only groups that still have 2+ members survive.
+  const entries = [], rests = {}, memMap = {};
   s.exercises.forEach(e => {
     const en = { eid: uid(), exId: e.exId };
+    // Member ids are RE-MINTED onto the fresh eids: the session's own ssMem
+    // values identify that session's entries, and the new plan's entries are
+    // new. memMap carries the old→new mapping for the group config below.
+    if (e.ss) { en.ss = e.ss; en.ssMem = en.eid; if (e.ssWu) en.ssWu = true; memMap[e.ssMem] = en.eid; }
     entries.push(en);
     const r = planWorthyRest(e);
     if (r) rests[en.eid] = r;
   });
-  D.plans.push({ id: uid(), name, exercises: entries, rests, updatedAt: Date.now() });
+  const groups = {};
+  Object.keys(s.groups || {}).forEach(gid => {
+    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
+    if (mems.length < 2) return;
+    const src = s.groups[gid];
+    const grp = { ...src, order: mems };
+    // Both deviation maps key by member id, so both have to be remapped onto
+    // the new ids — otherwise they would survive the extraction looking valid
+    // and silently stop applying to anything.
+    const ov = {};
+    Object.keys(src.rest?.overrides || {}).forEach(k => {
+      const [r, slot] = k.split(':');
+      const to = slot === 'end' ? 'end' : memMap[slot];
+      if (to) ov[`${r}:${to}`] = src.rest.overrides[k];
+    });
+    grp.rest = { ...(src.rest || {}) };
+    if (Object.keys(ov).length) grp.rest.overrides = ov; else delete grp.rest.overrides;
+    if (src.roundOrder) grp.roundOrder = Object.fromEntries(Object.entries(src.roundOrder)
+      .map(([r, list]) => [r, list.map(m => memMap[m]).filter(Boolean)]));
+    groups[gid] = grp;
+  });
+  entries.forEach((en, k) => { if (en.ss && !groups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; } });
+  const cleanGroups = sanitizeGroups(groups);
+  D.plans.push({ id: uid(), name, exercises: entries, rests, ...(cleanGroups ? { groups: cleanGroups } : {}), updatedAt: Date.now() });
   persist();
   closeModal();
   TAB = 'plans'; // land where the result is
@@ -6675,16 +7372,28 @@ function seedRestFor(exId, planId, eid) {
 function startRestTimer(i, j) {
   const ex = S?.exercises[i]; if (!ex) return;
   const s  = ex.sets[j]; if (!s) return;
-  const next = ex.sets[j + 1];
-  const secs = restDurationFor(ex, s.intent, next ? next.intent : 'work');
-  if (!secs || secs <= 0) return; // a zeroed-out custom value means "no timer for this transition"
-  const isWU = s.intent === 'warmup' && next && next.intent === 'warmup';
-  _restTimer = {
-    endsAt: Date.now() + secs * 1000,
-    total: secs,
-    label: isWU ? 'descanso entre aquecimentos' : (s.intent === 'warmup' ? 'descanso antes da série de trabalho' : 'descanso entre séries'),
-    done: false,
-  };
+  let secs, label;
+  // Inside a superset ROUND the transition cascade doesn't apply at all —
+  // the group's own gap config decides (see groupGapSecs). Which gap depends
+  // on whether this check just finished the round: mid-round it's the gap
+  // after this member, and on the last check it's the between-rounds rest,
+  // which is exactly the owner's "once he checks the C set as done, the block
+  // collapses and the rest timer starts". A grouped member's SOLO warm-ups
+  // are not round sets, so they fall through to the normal cascade below —
+  // correct, since those are performed per exercise before the rounds begin.
+  const r = isGrouped(ex) ? roundSetIdxs(ex).indexOf(j) : -1;
+  if (r >= 0) {
+    const done = roundIsDone(groupIdxsOf(ex.ss), r);
+    secs  = groupGapSecs(ex.ss, r, done ? 'end' : ex.ssMem);
+    label = done ? 'descanso após a rodada' : 'descanso entre exercícios';
+  } else {
+    const next = ex.sets[j + 1];
+    secs = restDurationFor(ex, s.intent, next ? next.intent : 'work');
+    const isWU = s.intent === 'warmup' && next && next.intent === 'warmup';
+    label = isWU ? 'descanso entre aquecimentos' : (s.intent === 'warmup' ? 'descanso antes da série de trabalho' : 'descanso entre séries');
+  }
+  if (!secs || secs <= 0) return; // a zeroed-out value means "no timer for this gap/transition"
+  _restTimer = { endsAt: Date.now() + secs * 1000, total: secs, label, done: false };
   if (!_restTimerInterval) _restTimerInterval = setInterval(restTimerTick, 500);
 }
 
@@ -6905,7 +7614,14 @@ function toggleCompleted(i,j) {
     // collapse-and-advance the header box does, per the requested "either
     // marks this exercise-level check mark or marks all the individual
     // sets" equivalence.
-    if (exIsDone(S.exercises[i])) { collapseAndAdvance(i); return; }
+    // Inside a superset the unit that finishes is the ROUND, not the
+    // exercise: a member is normally still mid-workout when its round-1 set
+    // is done. Same fold-and-advance, one level down.
+    const ex = S.exercises[i];
+    if (isGrouped(ex)) {
+      const r = roundSetIdxs(ex).indexOf(j);
+      if (r >= 0 && roundIsDone(groupIdxsOf(ex.ss), r)) { collapseRoundAndAdvance(ex.ss, r); return; }
+    } else if (exIsDone(ex)) { collapseAndAdvance(i); return; }
   } else {
     // Unchecking CASCADES DOWNWARD: sets are performed in order, so "set 4
     // didn't happen (yet)" implies 5 and 6 didn't either — the common case
@@ -6965,6 +7681,324 @@ function collapseAndAdvance(i) {
   if (next !== -1) S.exercises[next]._collapsed = false;
   render();
   if (next !== -1) document.getElementById('exblk-' + next)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// ── Supersets: actions (E3b) ─────────────────────────────────────────────────
+
+const groupIdxsOf = gid => (S?.exercises || []).map((e, i) => e.ss === gid ? i : -1).filter(i => i >= 0);
+
+function toggleRoundCollapse(gid, r) {
+  if (!S.ssCollapsed) S.ssCollapsed = {};
+  const k = `${gid}:${r}`;
+  if (S.ssCollapsed[k]) delete S.ssCollapsed[k]; else S.ssCollapsed[k] = true;
+  render();
+}
+
+// The round-level twin of collapseAndAdvance(): fold the finished round,
+// unfold the next unfinished one, bring it into view. This is the owner's
+// focus-mode ask — "once he checks the C set as done, the block collapses and
+// the rest timer starts" — one level down from the per-exercise version, and
+// deliberately the same shape so the two behave alike.
+function collapseRoundAndAdvance(gid, r) {
+  if (!S.ssCollapsed) S.ssCollapsed = {};
+  S.ssCollapsed[`${gid}:${r}`] = true;
+  const idxs = groupIdxsOf(gid);
+  const total = roundCountFor(idxs.map(i => S.exercises[i]));
+  for (let n = r + 1; n < total; n++) {
+    if (!roundIsDone(idxs, n)) { delete S.ssCollapsed[`${gid}:${n}`]; break; }
+  }
+  render();
+  document.getElementById('ssblk-' + gid)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// One more round = one more work set on every member. Uses the same fresh-row
+// shape addSet() does, so a round added mid-session is indistinguishable from
+// a set added the ordinary way.
+function addRound(gid) {
+  groupIdxsOf(gid).forEach(i => S.exercises[i].sets.push({ intent:'work', reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null }));
+  render();
+}
+
+// Grow or shrink a group's rounds to an explicit count, NON-DESTRUCTIVELY:
+// only trailing sets are added or removed, so nothing already typed or
+// checked is discarded. That is deliberately unlike setExType/setExRegime,
+// which rebuild wholesale — there the numbers stop meaning the same thing,
+// whereas a round count is just how many times you go round.
+function setRoundCounts(gid, nWu, nW) {
+  groupIdxsOf(gid).forEach(i => {
+    const ex = S.exercises[i];
+    const wu = ex.sets.filter(s => s.intent === 'warmup');
+    const wk = ex.sets.filter(s => s.intent === 'work');
+    const mk = intent => ({ intent, reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null });
+    while (wu.length > nWu) wu.pop();
+    while (wu.length < nWu) wu.push(mk('warmup'));
+    while (wk.length > nW)  wk.pop();
+    while (wk.length < nW)  wk.push(mk('work'));
+    ex.sets = [...wu, ...wk];
+  });
+  render();
+}
+
+// Build a group out of the chosen blocks. Members are moved into a CONTIGUOUS
+// run at the position of the first one, because the round view's whole
+// premise is that a group is one stretch of the session (see sessionUnits()).
+// Each member gets a stable ssMem — reusing its plan entry id where it has
+// one — which is what lets per-round order and per-gap rests key by member
+// rather than by position and survive a reorder.
+function makeSuperset(idxSel, opts = {}) {
+  const picks = [...new Set(idxSel)].sort((a, b) => a - b).filter(i => S.exercises[i] && !S.exercises[i].slot);
+  if (picks.length < 2) return null;
+  const gid = 'g' + uid();
+  const at  = picks[0];
+  const members = picks.map(i => S.exercises[i]);
+  members.forEach(ex => { ex.ss = gid; if (!ex.ssMem) ex.ssMem = ex._planEid || ('m' + uid()); });
+  // Remove then re-insert as one run, preserving the picked order. Every
+  // member sits at an index >= picks[0], so nothing before that index moves
+  // and picks[0] is still the right insertion point in the filtered array.
+  S.exercises = S.exercises.filter(ex => !members.includes(ex));
+  S.exercises.splice(Math.min(at, S.exercises.length), 0, ...members);
+  if (!S.groups) S.groups = {};
+  S.groups[gid] = {
+    order: members.map(ex => ex.ssMem),
+    rest: { between: opts.between ?? 0, round: opts.round ?? 120 },
+  };
+  return gid;
+}
+
+// Desagrupar — the owner's "a function that untangles supersets and adds the
+// exercises to the plan individually". Members stay exactly where they are,
+// in their group order, and become ordinary blocks again. Their own `rest`
+// fields were never touched while grouped, so the normal per-transition
+// cascade resumes immediately: grouping is not a one-way door.
+function ungroupSuperset(gid) {
+  groupIdxsOf(gid).forEach(i => { const ex = S.exercises[i]; delete ex.ss; delete ex.ssMem; delete ex.ssWu; });
+  if (S.groups) delete S.groups[gid];
+  if (S.ssCollapsed) Object.keys(S.ssCollapsed).filter(k => k.startsWith(gid + ':')).forEach(k => delete S.ssCollapsed[k]);
+  closeModal(); render();
+}
+
+function removeFromSuperset(i) {
+  const ex = S.exercises[i]; if (!ex || !ex.ss) return;
+  const gid = ex.ss;
+  delete ex.ss; delete ex.ssMem; delete ex.ssWu;
+  // A group of one is not a superset — dissolve it rather than leaving a
+  // degenerate round table with a single column.
+  if (groupIdxsOf(gid).length < 2) { ungroupSuperset(gid); return; }
+  closeModal(); render();
+}
+
+// Reorder within ONE round. Writes a sparse roundOrder deviation and leaves
+// every other round alone — the owner's "add, remove or change the order of
+// exercises per block, without affecting the rest".
+function moveInRound(gid, r, memId, dir) {
+  const cfg = S.groups?.[gid]; if (!cfg) return;
+  const idxs = groupIdxsOf(gid);
+  const cur = roundMembers(idxs, gid, r)
+    .filter(i => roundSetIdxs(S.exercises[i])[r] != null)
+    .map(i => S.exercises[i].ssMem);
+  const at = cur.indexOf(memId), to = at + dir;
+  if (at < 0 || to < 0 || to >= cur.length) return;
+  [cur[at], cur[to]] = [cur[to], cur[at]];
+  cfg.roundOrder = cfg.roundOrder || {};
+  // Members absent from THIS round (unequal set counts) are appended so the
+  // stored order stays a complete statement about the group rather than a
+  // partial one that shifts meaning as sets are added.
+  const missing = idxs.map(i => S.exercises[i].ssMem).filter(m => !cur.includes(m));
+  cfg.roundOrder[r] = [...cur, ...missing];
+  render();
+}
+
+// Promote one round's order to the group default. The DEFAULT order is the
+// order the member blocks sit in (roundMembers falls back to the array), so
+// this has to move the blocks themselves — writing cfg.order alone would be
+// ignored, which is exactly the kind of silently-inert state this codebase
+// avoids by deriving instead of storing.
+function applyRoundOrderToAll(gid, r) {
+  const cfg = S.groups?.[gid]; if (!cfg) return;
+  const want = cfg.roundOrder?.[r]; if (!want) return;
+  const idxs = groupIdxsOf(gid), at = idxs[0];
+  const byMem = new Map(idxs.map(i => [S.exercises[i].ssMem, S.exercises[i]]));
+  const ordered = want.map(m => byMem.get(m)).filter(Boolean);
+  const members = [...ordered, ...idxs.map(i => S.exercises[i]).filter(ex => !ordered.includes(ex))];
+  S.exercises = S.exercises.filter(ex => !members.includes(ex));
+  S.exercises.splice(Math.min(at, S.exercises.length), 0, ...members);
+  cfg.order = members.map(ex => ex.ssMem);
+  delete cfg.roundOrder;   // one order for every round again
+  render();
+}
+
+function toggleMemberWu(i) {
+  const ex = S.exercises[i]; if (!ex) return;
+  if (ex.ssWu) delete ex.ssWu; else ex.ssWu = true;
+  render();
+}
+
+// ── Supersets: builder, member sheet, gap editor ─────────────────────────────
+
+// Which blocks are ticked in the create-a-superset picker. Module state, like
+// every other modal's working state (_planExs, _dupKeepers), because the modal
+// is rebuilt from it on each toggle.
+let _ssPick = [];
+
+function toggleSsPick(i) {
+  _ssPick = _ssPick.includes(i) ? _ssPick.filter(x => x !== i) : [..._ssPick, i];
+  openSsBuilder();
+}
+
+// The builder. Two modes in one modal: with no gid it ASSEMBLES a group from
+// the session's ungrouped blocks; with a gid it EDITS an existing one. Same
+// modal because they answer the same questions (who's in it, how many rounds,
+// where the rests go) and the owner asked for one builder, not two screens.
+function openSsBuilder(gid) {
+  const editing = !!gid;
+  const idxs = editing ? groupIdxsOf(gid) : [];
+  const cfg  = editing ? groupCfg(gid) : {};
+
+  // Round counts are shown from the FIRST member; setRoundCounts applies to
+  // all. Members can legitimately diverge afterwards (unequal set counts are
+  // supported), so this is an editing convenience, not a stored fact.
+  const first = editing ? S.exercises[idxs[0]] : null;
+  const nWu = first ? first.sets.filter(s => s.intent === 'warmup').length : 0;
+  const nW  = first ? first.sets.filter(s => s.intent === 'work').length   : 3;
+
+  const pickable = (S?.exercises || [])
+    .map((ex, i) => ({ ex, i }))
+    .filter(({ ex }) => !ex.slot && !isGrouped(ex));
+
+  const memberRows = editing ? idxs.map(i => {
+    const ex = S.exercises[i];
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:.5px solid ${BD}">
+      <span style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ex.exName)}</span>
+      <button onclick="toggleMemberWu(${i});openSsBuilder('${gid}')" title="Aquecimento junto com as rodadas" style="flex-shrink:0;padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:10px;cursor:pointer;font-family:inherit;background:${ex.ssWu?CB:BG3};color:${ex.ssWu?TX:DM}">WU nas rodadas</button>
+      <button onclick="removeFromSuperset(${i})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:19px;cursor:pointer;padding:2px 4px;line-height:1">×</button>
+    </div>`;
+  }).join('') : pickable.map(({ ex, i }) => {
+    const on = _ssPick.includes(i);
+    return `<button onclick="toggleSsPick(${i})" style="width:100%;display:flex;align-items:center;gap:10px;padding:9px 0;border:none;border-bottom:.5px solid ${BD};background:none;color:${TX};font-family:inherit;text-align:left;cursor:pointer">
+      <span style="flex-shrink:0;width:20px;height:20px;border-radius:5px;border:1px solid ${on?CG:BD};background:${on?CG:'transparent'};color:#fff;font-size:12px;font-weight:700;display:inline-flex;align-items:center;justify-content:center">${on?'✓':''}</span>
+      <span style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ex.exName)}</span>
+      <span style="flex-shrink:0">${typePill(ex.type)}</span>
+    </button>`;
+  }).join('');
+
+  const secsInput = (id, label, val) => `
+    <div style="flex:1">
+      <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${label}</div>
+      <input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
+        style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
+    </div>`;
+
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">${editing ? 'Editar superset' : 'Novo superset'}</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:14px">${editing
+      ? 'Os exercícios continuam sendo registrados individualmente — o superset é como você treina, não como o progresso é medido.'
+      : 'Escolha 2 ou mais exercícios. Eles serão executados em rodadas, na ordem escolhida.'}</div>
+
+    <div style="max-height:34vh;overflow-y:auto;margin-bottom:14px">${memberRows || `<div style="font-size:13px;color:${DM}">Nenhum exercício disponível.</div>`}</div>
+
+    ${editing ? `
+    <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">RODADAS</div>
+    <div style="display:flex;gap:8px;margin-bottom:6px">
+      ${secsInput('ss-nwu','Aquecimento', nWu)}
+      ${secsInput('ss-nw','Trabalho', nW)}
+    </div>
+    ${Bs(BG3,TX,'Aplicar rodadas',`setRoundCounts('${gid}',+document.getElementById('ss-nwu').value,+document.getElementById('ss-nw').value);openSsBuilder('${gid}')`,';width:100%;justify-content:center;margin-bottom:14px')}` : ''}
+
+    <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      ${secsInput('ss-between','Entre exercícios (s)', cfg.rest?.between ?? 0)}
+      ${secsInput('ss-round','Após a rodada (s)', cfg.rest?.round ?? 120)}
+    </div>
+    <div style="font-size:11px;color:${DM};margin-bottom:14px">Cada intervalo pode ser ajustado individualmente depois, tocando na linha de descanso dentro da rodada.</div>
+
+    ${editing
+      ? B(CG,TX,'Salvar',`saveSsRests('${gid}')`)
+        + B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupSuperset('${gid}')`)
+        + B(BG3,DM,'Fechar','closeModal()',';margin-bottom:0')
+      : B(_ssPick.length>=2?CG:'#333',TX,`Criar superset${_ssPick.length?` (${_ssPick.length})`:''}`,'doCreateSuperset()')
+        + B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
+}
+
+function doCreateSuperset() {
+  if (_ssPick.length < 2) return;
+  const between = sanitizeSecs(document.getElementById('ss-between')?.value) ?? 0;
+  const round   = sanitizeSecs(document.getElementById('ss-round')?.value) ?? 120;
+  const gid = makeSuperset(_ssPick, { between, round });
+  _ssPick = [];
+  closeModal(); render();
+  if (gid) document.getElementById('ssblk-' + gid)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function saveSsRests(gid) {
+  const cfg = S.groups?.[gid]; if (!cfg) return;
+  cfg.rest = cfg.rest || {};
+  cfg.rest.between = sanitizeSecs(document.getElementById('ss-between')?.value) ?? 0;
+  cfg.rest.round   = sanitizeSecs(document.getElementById('ss-round')?.value) ?? 0;
+  closeModal(); render();
+}
+
+// The per-member sheet. An interleaved round view has no per-exercise header
+// to hang the block furniture on, so everything a normal block carries in its
+// header lives here instead — reached from the ⋯ on the member's row or from
+// its chip in the group header.
+function openSsMember(i) {
+  const ex = S.exercises[i]; if (!ex) return;
+  const ctx = exRowCtx(ex, i);
+  const isS = ex.type === 'strength';
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:2px">${esc(ex.exName)}</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:14px">Exercício dentro do superset</div>
+
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:14px">
+      <button onclick="setExType(${i},'strength');openSsMember(${i})" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${isS?'#A32D2D':BG3};color:${isS?TX:DM}">Força</button>
+      <button onclick="setExType(${i},'hypertrophy');openSsMember(${i})" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${!isS?CB:BG3};color:${!isS?TX:DM}">Hipert.</button>
+      <button onclick="toggleMemberWu(${i});openSsMember(${i})" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${ex.ssWu?CB:BG3};color:${ex.ssWu?TX:DM}">Aquecer nas rodadas</button>
+    </div>
+
+    ${Bs(BG3,TX,'🔧 ' + (ex.instanceName ? esc(ex.instanceName) : equipChipLabel(ex.exId)), `closeModal();openMachinePicker(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
+    ${ctx.isBarbell ? Bs(BG3,TX,'⚖ Como digitar a carga', `closeModal();toggleLoadSetup(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px') : ''}
+    ${Bs(BG3,TX,'📝 Observação de hoje', `closeModal();toggleExNote(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
+    ${Bs(BG3,TX,'⇄ Trocar exercício', `closeModal();openSwapEx(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
+    ${Bs(BG3,TX,'ℹ Ver dicas e detalhes', `closeModal();openExerciseDetail('${ex.exId}')`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
+
+    <div style="font-size:11px;color:${DM};margin:14px 0 10px">O descanso deste exercício é definido pelo superset, não pelo ⏱ individual.</div>
+    ${B(BG3,TX,'Remover do superset',`removeFromSuperset(${i})`)}
+    ${B(BG3,DM,'Fechar','closeModal()',';margin-bottom:0')}`);
+}
+
+function openGapRest(gid, r, slot) {
+  const isEnd = slot === 'end';
+  const cur = groupGapSecs(gid, r, slot);
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">${isEnd ? 'Descanso após a rodada' : 'Descanso entre exercícios'}</div>
+    <div style="font-size:12px;color:${DM};margin-bottom:14px">Rodada ${r + 1}. Use 0 para não descansar aqui.</div>
+    <input id="gap-secs" type="number" inputmode="numeric" min="0" step="5" value="${cur}"
+      style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:16px;padding:11px 10px;text-align:center;outline:none;box-sizing:border-box;margin-bottom:14px">
+    ${B(CG,TX,'Só nesta rodada',`setGapRest('${gid}',${r},'${slot}',document.getElementById('gap-secs').value,false)`)}
+    ${B(BG3,TX,'Aplicar a todas as rodadas',`setGapRest('${gid}',${r},'${slot}',document.getElementById('gap-secs').value,true)`)}
+    ${B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
+}
+
+// Per-gap rest editing. Writes an OVERRIDE, leaving the group default alone —
+// or, on "todas as rodadas", rewrites the default and clears the overrides of
+// that kind, which is the owner's "be asked if he wants to apply it to all
+// blocks or just the one" applied to timings.
+function setGapRest(gid, r, slot, val, allRounds) {
+  const cfg = S.groups?.[gid]; if (!cfg) return;
+  const secs = sanitizeSecs(val) ?? 0;
+  cfg.rest = cfg.rest || {};
+  if (allRounds) {
+    if (slot === 'end') cfg.rest.round = secs; else cfg.rest.between = secs;
+    if (cfg.rest.overrides) {
+      Object.keys(cfg.rest.overrides)
+        .filter(k => (k.split(':')[1] === 'end') === (slot === 'end'))
+        .forEach(k => delete cfg.rest.overrides[k]);
+    }
+  } else {
+    cfg.rest.overrides = cfg.rest.overrides || {};
+    cfg.rest.overrides[`${r}:${slot}`] = secs;
+  }
+  closeModal(); render();
 }
 
 // Type/regime changes re-run auto-population from memory — DESTRUCTIVE by
