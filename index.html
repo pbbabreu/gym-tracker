@@ -177,8 +177,13 @@ const MOVEMENT_PATTERNS = {
 // pattern's) and self-heals on the next app deploy.
 const MOVEMENTS = {
   'fly':                        { pt:'Crucifixo', en:'Chest fly', muscle:'chest', pattern:'fly', family:['Crucifixo'], aliases:['voador','peck deck','fly'] },
+  'high-to-low-fly':            { pt:'Crucifixo alto-baixo', en:'High-to-low fly', muscle:'chest', pattern:'fly', family:['Crucifixo'], aliases:['cable crossover','crossover','high to low fly','crucifixo alto-baixo','cruzamento'] },
   'low-to-high-fly':            { pt:'Crucifixo baixo-alto', en:'Low-to-high fly', muscle:'chest', pattern:'fly', family:['Crucifixo'], aliases:['voador','fly','crossover'] },
+  'incline-fly':                { pt:'Crucifixo inclinado', en:'Incline fly', muscle:'chest', pattern:'fly', family:['Crucifixo'], aliases:['incline fly','incline flyes','crucifixo inclinado'] },
+  'pullover':                   { pt:'Pullover', en:'Pullover', muscle:'chest', pattern:'other', aliases:['pullover','pull over','puxada com halter deitado'] },
+  'push-up':                    { pt:'Flexão de braço', en:'Push-up', muscle:'chest', pattern:'press', aliases:['push up','pushup','push-up','flexao de braco','flexao'] },
   'chest-dip':                  { pt:'Mergulho (peito)', en:'Chest dip', muscle:'chest', pattern:'press', family:['Mergulho'], aliases:['dip','paralelas','mergulho'] },
+  'decline-press':              { pt:'Supino declinado', en:'Decline press', muscle:'chest', pattern:'press', family:['Supino'], aliases:['decline press','supino declinado','declinado'] },
   'incline-press':              { pt:'Supino inclinado', en:'Incline press', muscle:'chest', pattern:'press', family:['Supino'], aliases:['supino','incline'] },
   'bench-press':                { pt:'Supino reto', en:'Flat bench press', muscle:'chest', pattern:'press', family:['Supino'], aliases:['supino','bench'] },
   'back-extension':             { pt:'Extensão lombar', en:'Back extension', muscle:'back', pattern:'extension', aliases:['lombar','hiperextensão'] },
@@ -252,13 +257,27 @@ const MOVEMENTS = {
 // exercises aren't in this table at all — backfillExerciseClassification()
 // defaults anything not found here to 'undefined'/'undefined'/[].
 const SEED_CLASSIFICATION = {
+  'cable-crossover':               ['chest', 'fly', ['shoulders'], 'high-to-low-fly'],
   'cable-low-to-high-fly':         ['chest', 'fly', ['shoulders'], 'low-to-high-fly'],
+  'dumbbell-fly':                  ['chest', 'fly', [], 'fly'],
+  'incline-dumbbell-fly':          ['chest', 'fly', ['shoulders'], 'incline-fly'],
+  'incline-cable-fly':             ['chest', 'fly', ['shoulders'], 'incline-fly'],
+  'flat-bench-cable-fly':          ['chest', 'fly', [], 'fly'],
   'pec-deck-fly':                  ['chest', 'fly', [], 'fly'],
+  'dumbbell-pullover':             ['chest', 'other', ['back','triceps'], 'pullover'],
+  'feet-elevated-push-up':         ['chest', 'press', ['shoulders','triceps'], 'push-up'],
+  'push-up':                       ['chest', 'press', ['shoulders','triceps'], 'push-up'],
+  'incline-push-up':               ['chest', 'press', ['shoulders','triceps'], 'push-up'],
   'dip-gravitron':                 ['chest', 'press', ['triceps','shoulders'], 'chest-dip'],
+  'machine-decline-press':         ['chest', 'press', ['shoulders','triceps'], 'decline-press'],
+  'smith-decline-press':           ['chest', 'press', ['shoulders','triceps'], 'decline-press'],
   'dumbbell-incline-press':        ['chest', 'press', ['shoulders','triceps'], 'incline-press'],
   'incline-press-machine':         ['chest', 'press', ['shoulders','triceps'], 'incline-press'],
+  'incline-cable-press':           ['chest', 'press', ['shoulders','triceps'], 'incline-press'],
+  'cable-chest-press':             ['chest', 'press', ['shoulders','triceps'], 'bench-press'],
   'bench-press':                   ['chest', 'press', ['triceps','shoulders'], 'bench-press'],
   'dumbbell-bench-press':          ['chest', 'press', ['triceps','shoulders'], 'bench-press'],
+  'machine-chest-press':           ['chest', 'press', ['shoulders','triceps'], 'bench-press'],
   'single-leg-45-back-extension':  ['back', 'extension', ['hamstrings','glutes'], 'back-extension'],
   'narrow-stance-sumo-deadlift':   ['back', 'hinge', ['hamstrings','glutes','quads'], 'narrow-sumo-deadlift'],
   'scapular-pull-up':              ['back', 'other', [], 'scapular-pull-up'],
@@ -5115,12 +5134,37 @@ function aRefreshList() {
   c.scrollTop = 0;
 }
 
+// Preference used only to break a tie between equally-common sibling classes:
+// the apparatus a movement is archetypally done on comes first. Anything not
+// listed sorts last, so an unknown/future class never wins a tie by accident.
+const VARIANT_EQUIP_PREF = ['barbell', 'dumbbell', 'machine', 'cable', 'bodyweight', 'kettlebell', 'band', 'other'];
+
+function defaultVariantEquip(slug) {
+  const counts = {};
+  D.exercises.forEach(e => {
+    if (e.movement !== slug || !e.equipment) return;
+    counts[e.equipment] = (counts[e.equipment] || 0) + 1;
+  });
+  const classes = Object.keys(counts);
+  if (!classes.length) return null;
+  const rank = k => { const i = VARIANT_EQUIP_PREF.indexOf(k); return i === -1 ? VARIANT_EQUIP_PREF.length : i; };
+  return classes.sort((a, b) => (counts[b] - counts[a]) || (rank(a) - rank(b)))[0];
+}
+
 function openPickMovement(slug) {
   _aMovement = slug; _aSearch = '';
-  // The new-variant form defaults to the first sibling's equipment class —
-  // the likeliest case — but shows it as a SELECTED CHIP the user can flip
-  // (barra → halteres is exactly how "Supino com halteres" gets born).
-  _newVarEquip = D.exercises.find(e => e.movement === slug)?.equipment || null;
+  // The new-variant form defaults to a sibling's equipment class as a
+  // SELECTED CHIP the user can flip (barra → halteres is exactly how
+  // "Supino com halteres" gets born).
+  //
+  // Which sibling used to be whichever `find()` hit first, i.e. whatever the
+  // generator's (muscle, pattern, name) sort happened to put earliest. That
+  // is unstable: promoting "Supino no cabo" silently moved the bench-press
+  // default from barra to cabo, because "no cabo" sorts before "reto". So
+  // it now takes the most COMMON class among the siblings, and breaks ties
+  // with a fixed preference that puts the archetypal apparatus first —
+  // deterministic, and it survives every future content batch.
+  _newVarEquip = defaultVariantEquip(slug);
   const inp = document.getElementById('a-search'); if (inp) inp.value = '';
   aRefreshList();
 }

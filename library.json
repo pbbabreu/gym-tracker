@@ -1,6 +1,28 @@
 {
   "exercises": [
     {
+      "id": "cable-crossover",
+      "name": "Crossover alto-baixo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "fly",
+      "movement": "high-to-low-fly",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Cable crossover",
+      "aliases": [
+        "cable crossover",
+        "crossover",
+        "cruzamento no cabo",
+        "crucifixo alto-baixo"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
       "id": "cable-low-to-high-fly",
       "name": "Crucifixo baixo-alto no cabo",
       "type": "hypertrophy",
@@ -20,6 +42,84 @@
       "equipment": "cable"
     },
     {
+      "id": "dumbbell-fly",
+      "name": "Crucifixo com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "fly",
+      "movement": "fly",
+      "name_en": "Dumbbell flyes",
+      "aliases": [
+        "dumbbell flyes",
+        "crucifixo com halteres",
+        "crucifixo reto"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "incline-dumbbell-fly",
+      "name": "Crucifixo inclinado com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "fly",
+      "movement": "incline-fly",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Incline dumbbell flyes",
+      "aliases": [
+        "incline dumbbell flyes",
+        "crucifixo inclinado com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "incline-cable-fly",
+      "name": "Crucifixo inclinado no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "fly",
+      "movement": "incline-fly",
+      "accessoryMuscles": [
+        "shoulders"
+      ],
+      "name_en": "Incline cable flye",
+      "aliases": [
+        "incline cable flye",
+        "crucifixo inclinado no cabo"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "flat-bench-cable-fly",
+      "name": "Crucifixo no cabo (banco)",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "fly",
+      "movement": "fly",
+      "name_en": "Flat bench cable flyes",
+      "aliases": [
+        "flat bench cable flyes",
+        "crucifixo no cabo",
+        "crucifixo na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
       "id": "pec-deck-fly",
       "name": "Voador (peck deck)",
       "type": "hypertrophy",
@@ -35,6 +135,95 @@
       ],
       "equipment": "machine",
       "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-pullover",
+      "name": "Pullover com halter",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "other",
+      "movement": "pullover",
+      "accessoryMuscles": [
+        "back",
+        "triceps"
+      ],
+      "name_en": "Dumbbell pullover",
+      "aliases": [
+        "dumbbell pullover",
+        "pullover com halter",
+        "pullover"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "feet-elevated-push-up",
+      "name": "Flexão com pés elevados",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "push-up",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Feet-elevated push-up",
+      "aliases": [
+        "push ups with feet elevated",
+        "flexao com pes elevados",
+        "flexao declinada"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "push-up",
+      "name": "Flexão de braço",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "push-up",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Push-up",
+      "aliases": [
+        "pushups",
+        "push up",
+        "flexao de braco",
+        "flexao"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "incline-push-up",
+      "name": "Flexão inclinada",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "bodyweight",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "push-up",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Incline push-up",
+      "aliases": [
+        "incline push up",
+        "flexao inclinada",
+        "flexao com maos elevadas"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
     },
     {
       "id": "dip-gravitron",
@@ -56,6 +245,48 @@
         "chest dip"
       ],
       "equipment": "machine"
+    },
+    {
+      "id": "machine-decline-press",
+      "name": "Supino declinado na máquina",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "decline-press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Leverage decline chest press",
+      "aliases": [
+        "leverage decline chest press",
+        "supino declinado na maquina"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "smith-decline-press",
+      "name": "Supino declinado no Smith",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "decline-press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Smith machine decline press",
+      "aliases": [
+        "smith machine decline press",
+        "supino declinado no smith"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
     },
     {
       "id": "dumbbell-incline-press",
@@ -118,6 +349,49 @@
       "equipment": "machine"
     },
     {
+      "id": "incline-cable-press",
+      "name": "Supino inclinado no cabo",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "incline-press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Incline cable chest press",
+      "aliases": [
+        "incline cable chest press",
+        "supino inclinado no cabo"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "cable-chest-press",
+      "name": "Supino no cabo",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "bench-press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Cable chest press",
+      "aliases": [
+        "cable chest press",
+        "supino no cabo",
+        "supino na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
       "id": "bench-press",
       "name": "Supino reto",
       "type": "strength",
@@ -176,6 +450,28 @@
         "Clanking the dumbbells at the top and dumping pec tension",
         "Flaring the elbows to 90°, shifting the strain onto the shoulders"
       ],
+      "stretchEmphasis": false
+    },
+    {
+      "id": "machine-chest-press",
+      "name": "Supino reto na máquina",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "chest",
+      "movementPattern": "press",
+      "movement": "bench-press",
+      "accessoryMuscles": [
+        "shoulders",
+        "triceps"
+      ],
+      "name_en": "Leverage chest press",
+      "aliases": [
+        "leverage chest press",
+        "supino na maquina",
+        "chest press"
+      ],
+      "equipment": "machine",
       "stretchEmphasis": false
     },
     {

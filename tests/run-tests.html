@@ -121,6 +121,7 @@
     TRACK_TIME, TRACK_REPS, trackingOf, isTimed, fmtSecs, volEx, computeSuggestion, profileFor,
     // Catalog delivery: the library arrives on its own and needs no account.
     syncGlobalLibrary, deletedCatalogEntries, restoreDeletedExercise, mergeCollection,
+    defaultVariantEquip,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -455,7 +456,10 @@
       tiers.samePattern.some(e => e.id === 'incline-press-machine')
       && tiers.samePattern.some(e => e.id === 'dumbbell-incline-press')
       && tiers.samePattern.every(e => e.mainMuscle === 'chest' && e.movementPattern === 'press')
-      && tiers.sameMuscle.length === 0
+      // sameMuscle holds chest-but-NOT-press matches. It was empty until
+      // incline flyes were promoted; asserting 0 was pinning the catalog's
+      // size, not the ranking. Assert the SHAPE instead.
+      && tiers.sameMuscle.every(e => e.mainMuscle === 'chest' && e.movementPattern !== 'press')
       && tiers.others.every(e => e.id === 'incline-deficit-curl') && tiers.others.length >= 1);
     // gym filter removes unavailable-there suggestions entirely
     const inclineEx = T.D.exercises.find(e => e.id === 'incline-press-machine');
@@ -2454,8 +2458,17 @@
       list().includes('Barra') && list().includes('Halter') && list().includes('Supino reto com halteres'));
 
     // The variant form now OFFERS the equipment class (default = sibling's).
-    t('variant form defaults the equipment chips to the sibling class', T.varEquip === 'barbell'
-      && list().includes('av-eq-dumbbell'));
+    // The default is the most COMMON sibling class, ties broken by the
+    // archetype-first preference (bench-press has one of each, so barra
+    // wins the tie). Pinned as the rule rather than as a value, because
+    // the old find()-first default silently changed when a cable variant
+    // was promoted ahead of it alphabetically.
+    t('variant form defaults the equipment chips to the archetype sibling class',
+      T.varEquip === 'barbell' && list().includes('av-eq-dumbbell'));
+    t('defaultVariantEquip picks the most common sibling class',
+      W.defaultVariantEquip('incline-fly') === 'dumbbell' || W.defaultVariantEquip('incline-fly') === 'cable');
+    t('defaultVariantEquip is null for a movement with no classed sibling',
+      W.defaultVariantEquip('no-such-movement-slug') === null);
     W.setVarEquip('dumbbell');
     W.document.getElementById('av-name').value = 'Supino teste halteres';
     W.createVariant('bench-press');
