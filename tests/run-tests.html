@@ -124,6 +124,7 @@
     defaultVariantEquip,
     // quick-create classification + per-exercise session notes
     avSetMuscle, createAndAdd, setExNote, TIME_BANDS,
+    REGIME_BW_PLUS, actualLoad, setExRegime,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -2890,6 +2891,49 @@
     T.D.sessions = T.D.sessions.filter(x => x.id !== sess.id);
     T.D.exercises = T.D.exercises.filter(e => e.id !== qc.id);
     T.S = null;
+  }
+
+
+  // -- bw-plus: bodyweight WITH added load ----------------------------------
+  // The mirror of `assisted`. It exists because a dead hang, dip or pull-up
+  // stops being pure bodyweight the moment a belt goes on -- and without it
+  // the two-axis time progression was unreachable for exactly the exercises
+  // that need it. Critically it is NOT isBW: it has a kg field AND a load
+  // axis, so it behaves like `weighted` everywhere except the load maths.
+  g('bw-plus regime');
+  {
+    const keepW = T.D.weights;
+    T.D.weights = [{ id: 'wq', date: T.today(), kg: 80, updatedAt: Date.now() }];
+    const set = { intent: 'work', reps: 5, kg: 10 };
+    t('assisted subtracts from bodyweight', W.actualLoad(set, 'assisted') === 70);
+    t('bw-plus ADDS to bodyweight', W.actualLoad(set, T.REGIME_BW_PLUS) === 90);
+    t('plain bodyweight is unchanged', W.actualLoad(set, 'bodyweight') === 80);
+    T.D.weights = [];
+    t('bw-plus with no logged bodyweight yields null, like assisted',
+       W.actualLoad(set, T.REGIME_BW_PLUS) === null);
+    T.D.weights = [{ id: 'wq', date: T.today(), kg: 80, updatedAt: Date.now() }];
+    t('bw-plus with no added kg is just bodyweight',
+       W.actualLoad({ intent: 'work', reps: 5, kg: '' }, T.REGIME_BW_PLUS) === 80);
+
+    // a shared/imported definition may legitimately carry the new regime
+    t('normalizeExerciseDef accepts bw-plus',
+       W.normalizeExerciseDef({ id: 'z1', name: 'Z', regime: T.REGIME_BW_PLUS }).regime === T.REGIME_BW_PLUS);
+    t('...and still rejects nonsense', W.normalizeExerciseDef({ id: 'z2', name: 'Z', regime: 'levitating' }).regime === 'weighted');
+
+    // the case this whole regime exists for: a WEIGHTED HOLD progresses on
+    // both axes -- clear the seconds band, then the added load goes up
+    const keepS = T.D.sessions;
+    T.D.sessions = [{ id: 'wh', date: '2026-07-01', exercises: [
+      { exId: 'plank', exName: 'P', type: 'hypertrophy', regime: T.REGIME_BW_PLUS, tracking: 'time',
+        sets: [{ intent: 'work', reps: 60, kg: 10 }] } ] }];
+    const prof = T.profileFor('hypertrophy', T.REGIME_BW_PLUS, T.TRACK_TIME);
+    const sg = T.computeSuggestion('plank', 'hypertrophy', T.REGIME_BW_PLUS, prof);
+    t('a weighted hold graduates and bumps the ADDED load',
+       sg && sg.graduated === true && sg.suggestedKg > 10, sg && JSON.stringify(sg));
+    t('...and resets the time target to the band floor', sg && sg.repsTarget === 30);
+
+    T.D.sessions = keepS;
+    T.D.weights = keepW;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

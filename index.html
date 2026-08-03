@@ -2253,9 +2253,32 @@ function bwIsStale() {
   return (new Date(today()) - new Date(last)) / 86400000 > 7;
 }
 
+// ── Regimes ──────────────────────────────────────────────────────────────────
+// How resistance is applied, as a per-SESSION tracking mode (not exercise
+// identity — see the type/regime note in buildExBlock):
+//
+//   weighted    kg IS the load
+//   assisted    kg is COUNTERWEIGHT, real load = bodyweight − kg
+//   bodyweight  no kg at all, real load = bodyweight
+//   bw-plus     kg is ADDED load, real load = bodyweight + kg
+//
+// `bw-plus` is the mirror of `assisted` and exists because a dead hang, dip,
+// pull-up or plank stops being a pure bodyweight exercise the moment a belt
+// goes on. Crucially it is NOT treated as `isBW` anywhere else: isBW means
+// both "no kg field" and "no load axis to progress on", and a weighted
+// pull-up has both. So bw-plus behaves exactly like `weighted` for the kg
+// column, graduation and stalls — only the real-load maths and the labels
+// differ. That is what makes a weighted hold reachable by the two-axis time
+// progression in computeSuggestion().
+const REGIME_BW_PLUS = 'bw-plus';
+const isBodyweightish = r => r === 'bodyweight' || r === REGIME_BW_PLUS;
+
 function actualLoad(set, regime) {
   const bw = currentBW();
   if (regime === 'bodyweight') return bw || null;
+  // Added load only counts once a bodyweight is known — without it there is
+  // no base to add to, exactly as assisted has nothing to subtract from.
+  if (regime === REGIME_BW_PLUS) return bw ? bw + (hasKg(set) ? Number(set.kg) : 0) : null;
   // hasKg, not a truthy check — a genuinely-entered 0kg set (full
   // graduation for assisted; a deliberate empty-bar/0kg entry for
   // weighted) must count, not be treated as an untouched field. Applies to
@@ -2441,7 +2464,9 @@ const typePill = t => t === 'strength'
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#2d1010;color:#e57373">Força</span>`
   : `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0d2744;color:#64b5f6">Hipert.</span>`;
 
-const regimePill = r => r === 'assisted'
+const regimePill = r => r === REGIME_BW_PLUS
+  ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0a2438;color:#7fb8e0">Corporal + carga</span>`
+  : r === 'assisted'
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#2e1a00;color:#f0a030">Assistido</span>`
   : r === 'bodyweight'
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0a2e24;color:#6fcf97">Corporal</span>`
@@ -2944,7 +2969,7 @@ function buildSlotBlock(ex, i) {
 function buildExBlock(ex, i) {
   if (ex.slot) return buildSlotBlock(ex, i);
   const isS  = ex.type==='strength', isH=ex.type==='hypertrophy';
-  const isW  = ex.regime==='weighted', isAs=ex.regime==='assisted', isBW=ex.regime==='bodyweight';
+  const isW  = ex.regime==='weighted', isAs=ex.regime==='assisted', isBW=ex.regime==='bodyweight', isBWP=ex.regime===REGIME_BW_PLUS;
   // Time-based (planks, dead hangs, any hold): the count column is SECONDS.
   // Read from the block's own snapshot so an in-progress session keeps
   // rendering correctly even if the library entry changes underneath it.
@@ -2995,7 +3020,7 @@ function buildExBlock(ex, i) {
   const isBarbell  = libEx?.equipment === 'barbell';
   const plateMode  = isBarbell ? (ex.loadMode || null) : null;
   const gridCols   = plateMode ? '28px 54px 1fr 1fr 1fr 38px' : '28px 54px 1fr 1fr 38px';
-  const kgHeader   = plateMode === 'side' ? 'Kg de cada lado' : plateMode === 'plates' ? 'Kg em anilhas' : (isAs?'Assist.':isBW?'BW':'Kg');
+  const kgHeader   = plateMode === 'side' ? 'Kg de cada lado' : plateMode === 'plates' ? 'Kg em anilhas' : (isAs?'Assist.':isBW?'BW':isBWP?'+ Kg':'Kg');
   const dispKg     = k => (k===''||k==null) ? '' : loadToDisplay(ex, k);
 
   // First-ever log of this exercise (no sug) has no warm-ups yet — see
@@ -3170,6 +3195,7 @@ function buildExBlock(ex, i) {
             <button onclick="setExRegime(${i},'weighted')"   style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isW?CB:BG3};color:${isW?TX:DM}">Carga</button>
             <button onclick="setExRegime(${i},'assisted')"   style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isAs?CA:BG3};color:${isAs?TX:DM}">Assist.</button>
             <button onclick="setExRegime(${i},'bodyweight')" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
+            <button onclick="setExRegime(${i},'${REGIME_BW_PLUS}')" title="Peso corporal + carga adicional (cinto, colete)" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isBWP?'#0a2438':BG3};color:${isBWP?'#7fb8e0':DM}">BW+</button>
           </div>
           <!-- Machine chip — which SPECIFIC apparatus this is being done on.
                Numbers are machine-calibrated (owner: "much stronger in
@@ -3276,6 +3302,7 @@ function buildHistory() {
           // entered 0kg set (full graduation for assisted; a deliberate
           // 0kg entry for weighted) must show "0", not "–" as if untouched.
           const kgLbl = ex.regime==='bodyweight' ? (bw?`${bw}kg (BW)`:'BW')
+            : ex.regime===REGIME_BW_PLUS ? (bw ? `+${hasKg(set)?set.kg:0} kg (${bw+(hasKg(set)?Number(set.kg):0)}kg real)` : `+${hasKg(set)?set.kg:'–'} kg`)
             : ex.regime==='assisted' ? (bw ? `${hasKg(set)?set.kg:'–'} assist. (${bw&&hasKg(set)?Math.max(0,bw-Number(set.kg)):'-'}kg real)` : `${hasKg(set)?set.kg:'–'} assist.`)
             : `${hasKg(set)?set.kg:'–'} kg`;
           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid ${BD};font-size:14px">
@@ -3580,7 +3607,7 @@ function progressBodyHTML(exId, regime, instance) {
       ${prog.instances.map(b => `<option value="${esc(b.key)}" ${b.key === prog.instance ? 'selected' : ''}>🔧 ${esc(b.name)}</option>`).join('')}
     </select>` : '';
   const unit = prog.regime === 'bodyweight' ? 'reps' : 'kg';
-  const metricName = prog.regime === 'bodyweight' ? 'Reps máx.' : prog.regime === 'assisted' ? 'Contrapeso' : 'Carga';
+  const metricName = prog.regime === 'bodyweight' ? 'Reps máx.' : prog.regime === 'assisted' ? 'Contrapeso' : prog.regime === REGIME_BW_PLUS ? 'Carga adicional' : 'Carga';
   const last = P[P.length - 1];
   const best = prog.regime === 'assisted' ? Math.min(...P.map(p => p.metric)) : Math.max(...P.map(p => p.metric));
   const bestE = P.some(p => p.e1rm != null) ? Math.max(...P.map(p => p.e1rm || 0)) : null;
@@ -4354,7 +4381,7 @@ function normalizeExerciseDef(imp, originHint) {
   const sharedFrom = (origin === ORIGIN_SHARED && typeof imp.sharedFrom === 'string' && imp.sharedFrom.trim())
     ? imp.sharedFrom.trim().slice(0, 120) : null;
   const type     = imp.type==='strength' ? 'strength' : 'hypertrophy';
-  const regime   = (imp.regime==='assisted'||imp.regime==='bodyweight') ? imp.regime : 'weighted';
+  const regime   = (imp.regime==='assisted'||imp.regime==='bodyweight'||imp.regime===REGIME_BW_PLUS) ? imp.regime : 'weighted';
   const compound = imp.compound===true || imp.compound===false ? imp.compound : null;
   const mainMuscle = (typeof imp.mainMuscle === 'string' && MUSCLE_GROUPS[imp.mainMuscle]) ? imp.mainMuscle : 'undefined';
   const patternMap = MOVEMENT_PATTERNS[mainMuscle] || MOVEMENT_PATTERNS.undefined;
@@ -4724,6 +4751,7 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
       <button id="ex-w"  onclick="exF('regime','weighted')"   style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='weighted'?CB:BG3};color:${_newRegime==='weighted'?TX:DM}">Carga</button>
       <button id="ex-a"  onclick="exF('regime','assisted')"   style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='assisted'?CA:BG3};color:${_newRegime==='assisted'?TX:DM}">Assist.</button>
       <button id="ex-bw" onclick="exF('regime','bodyweight')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime==='bodyweight'?CG:BG3};color:${_newRegime==='bodyweight'?TX:DM}">BW</button>
+      <button id="ex-bwp" onclick="exF('regime','${REGIME_BW_PLUS}')" title="Peso corporal + carga adicional" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newRegime===REGIME_BW_PLUS?'#0a2438':BG3};color:${_newRegime===REGIME_BW_PLUS?'#7fb8e0':DM}">BW+</button>
     </div>
     <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Equipamento</label>
     <div style="font-size:11px;color:${DM};margin-bottom:6px">Agrupa variações no seletor e define o 🔧: máquina/cabo têm sugestões por aparelho; pesos livres compartilham a progressão. Sem escolha, vale o comportamento de máquina.</div>
@@ -5422,7 +5450,7 @@ function pickEx(id) {
   // choice, not a category); the library values only seed the first-ever log.
   const lm = lastModesFor(id);
   _pickType=(lm?lm.type:ex.type)||'hypertrophy'; _pickRegime=(lm?lm.regime:ex.regime)||'weighted';
-  const isS=_pickType==='strength', isW=_pickRegime==='weighted', isAs=_pickRegime==='assisted', isBW=_pickRegime==='bodyweight';
+  const isS=_pickType==='strength', isW=_pickRegime==='weighted', isAs=_pickRegime==='assisted', isBW=_pickRegime==='bodyweight', isBWP=_pickRegime===REGIME_BW_PLUS;
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(ex.name)}</div>
     <div style="display:flex;gap:5px;margin-bottom:14px;flex-wrap:wrap">${ex.compound!=null?compPill(ex.compound):''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
@@ -5436,6 +5464,7 @@ function pickEx(id) {
       <button id="pr-w"  onclick="setPickRegime('weighted')"   style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isW?CB:BG3};color:${isW?TX:DM}">Carga</button>
       <button id="pr-a"  onclick="setPickRegime('assisted')"   style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isAs?CA:BG3};color:${isAs?TX:DM}">Assist.</button>
       <button id="pr-bw" onclick="setPickRegime('bodyweight')" style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
+      <button id="pr-bwp" onclick="setPickRegime('${REGIME_BW_PLUS}')" title="Peso corporal + carga adicional" style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isBWP?'#0a2438':BG3};color:${isBWP?'#7fb8e0':DM}">BW+</button>
     </div>
     ${B(CG,TX,'Adicionar',`addPickedEx('${id}')`)}
     ${B(BG3,TX,'Voltar','showAddEx()',';margin-bottom:0')}`);
