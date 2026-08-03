@@ -541,6 +541,69 @@
       "accessoryMuscles": []
     },
     {
+      "id": "cable-external-rotation",
+      "name": "Rotação externa no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "other",
+      "movement": "shoulder-rotation",
+      "name_en": "Cable external rotation",
+      "aliases": [
+        "external rotation with cable",
+        "rotacao externa no cabo",
+        "manguito rotador",
+        "rotator cuff"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "arnold-press",
+      "name": "Desenvolvimento Arnold",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "press",
+      "movement": "shoulder-press",
+      "accessoryMuscles": [
+        "triceps"
+      ],
+      "name_en": "Arnold press",
+      "aliases": [
+        "arnold press",
+        "arnold dumbbell press",
+        "desenvolvimento arnold"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "standing-military-press",
+      "name": "Desenvolvimento militar",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "press",
+      "movement": "shoulder-press",
+      "accessoryMuscles": [
+        "triceps"
+      ],
+      "name_en": "Standing military press",
+      "aliases": [
+        "standing military press",
+        "desenvolvimento militar",
+        "militar com barra",
+        "overhead press"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "seated-machine-shoulder-press",
       "name": "Desenvolvimento máquina",
       "type": "hypertrophy",
@@ -561,6 +624,68 @@
       "equipment": "machine"
     },
     {
+      "id": "cable-shoulder-press",
+      "name": "Desenvolvimento no cabo",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "press",
+      "movement": "shoulder-press",
+      "accessoryMuscles": [
+        "triceps"
+      ],
+      "name_en": "Cable shoulder press",
+      "aliases": [
+        "cable shoulder press",
+        "desenvolvimento na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "seated-dumbbell-press",
+      "name": "Desenvolvimento sentado com halteres",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "press",
+      "movement": "shoulder-press",
+      "accessoryMuscles": [
+        "triceps"
+      ],
+      "name_en": "Seated dumbbell press",
+      "aliases": [
+        "seated dumbbell press",
+        "desenvolvimento com halteres",
+        "desenvolvimento sentado"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "push-press",
+      "name": "Push press",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "press",
+      "movement": "push-press",
+      "accessoryMuscles": [
+        "quads",
+        "triceps"
+      ],
+      "name_en": "Push press",
+      "aliases": [
+        "push press",
+        "desenvolvimento com impulso"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "crucifix-swing",
       "name": "Crucifixo balanço",
       "type": "hypertrophy",
@@ -574,6 +699,44 @@
         "crucifix swing"
       ],
       "equipment": "kettlebell",
+      "accessoryMuscles": []
+    },
+    {
+      "id": "dumbbell-front-raise",
+      "name": "Elevação frontal com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "movement": "front-raise",
+      "name_en": "Front dumbbell raise",
+      "aliases": [
+        "front dumbbell raise",
+        "elevacao frontal com halteres",
+        "elevacao frontal"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "cable-front-raise",
+      "name": "Elevação frontal no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "movement": "front-raise",
+      "name_en": "Front cable raise",
+      "aliases": [
+        "front cable raise",
+        "elevacao frontal no cabo",
+        "elevacao frontal na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
       "accessoryMuscles": []
     },
     {
@@ -591,6 +754,65 @@
       ],
       "equipment": "dumbbell",
       "accessoryMuscles": []
+    },
+    {
+      "id": "cable-lateral-raise",
+      "name": "Elevação lateral no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "movement": "lateral-raise",
+      "name_en": "Cable lateral raise",
+      "aliases": [
+        "cable lateral raise",
+        "elevacao lateral no cabo",
+        "elevacao lateral na polia"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "one-arm-lateral-raise",
+      "name": "Elevação lateral unilateral",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "movement": "lateral-raise",
+      "name_en": "One-arm side lateral",
+      "aliases": [
+        "one arm side lateral",
+        "elevacao lateral unilateral",
+        "elevacao lateral um braco"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "barbell-upright-row",
+      "name": "Remada alta com barra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "raise",
+      "movement": "upright-row",
+      "accessoryMuscles": [
+        "back"
+      ],
+      "name_en": "Upright barbell row",
+      "aliases": [
+        "upright barbell row",
+        "remada alta com barra",
+        "remada alta"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
     },
     {
       "id": "hammer-curl-lateral-raise",
@@ -611,6 +833,64 @@
       "equipment": "dumbbell"
     },
     {
+      "id": "dumbbell-reverse-fly",
+      "name": "Crucifixo invertido com halteres",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "rear_delt",
+      "movement": "rear-delt-fly",
+      "name_en": "Reverse flyes",
+      "aliases": [
+        "reverse flyes",
+        "crucifixo invertido",
+        "crucifixo inverso com halteres"
+      ],
+      "equipment": "dumbbell",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "machine-reverse-fly",
+      "name": "Crucifixo invertido na máquina",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "rear_delt",
+      "movement": "rear-delt-fly",
+      "name_en": "Reverse machine flyes",
+      "aliases": [
+        "reverse machine flyes",
+        "crucifixo invertido na maquina",
+        "voador invertido",
+        "peck deck invertido"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "cable-reverse-fly",
+      "name": "Crucifixo invertido no cabo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "rear_delt",
+      "movement": "rear-delt-fly",
+      "name_en": "Cable rear delt fly",
+      "aliases": [
+        "cable rear delt fly",
+        "crucifixo invertido no cabo",
+        "cross invertido"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
       "id": "face-pull",
       "name": "Face pull",
       "type": "hypertrophy",
@@ -627,6 +907,27 @@
         "puxada para o rosto"
       ],
       "equipment": "cable"
+    },
+    {
+      "id": "rope-rear-delt-row",
+      "name": "Remada para posterior na corda",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "shoulders",
+      "movementPattern": "rear_delt",
+      "movement": "rear-delt-row",
+      "accessoryMuscles": [
+        "back"
+      ],
+      "name_en": "Rope rear-delt row",
+      "aliases": [
+        "rope rear delt row",
+        "remada para posterior",
+        "remada alta na corda"
+      ],
+      "equipment": "cable",
+      "stretchEmphasis": false
     },
     {
       "id": "single-arm-preacher-curl",
