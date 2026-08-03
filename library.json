@@ -2634,6 +2634,26 @@
       "accessoryMuscles": []
     },
     {
+      "id": "nordic-curl",
+      "name": "Flexão nórdica",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "hamstrings",
+      "movementPattern": "curl",
+      "movement": "nordic-curl",
+      "name_en": "Nordic hamstring curl",
+      "aliases": [
+        "nordic curl",
+        "nordic hamstring curl",
+        "flexao nordica",
+        "nordico"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false,
+      "accessoryMuscles": []
+    },
+    {
       "id": "seated-leg-curl",
       "name": "Mesa flexora sentada",
       "type": "hypertrophy",
@@ -2671,6 +2691,70 @@
       "accessoryMuscles": []
     },
     {
+      "id": "barbell-good-morning",
+      "name": "Bom dia com barra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "hamstrings",
+      "movementPattern": "hinge",
+      "movement": "good-morning",
+      "accessoryMuscles": [
+        "glutes",
+        "back"
+      ],
+      "name_en": "Barbell good morning",
+      "aliases": [
+        "good morning",
+        "bom dia com barra"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "reverse-hyperextension",
+      "name": "Hiperextensão inversa",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "hamstrings",
+      "movementPattern": "hinge",
+      "movement": "reverse-hyperextension",
+      "accessoryMuscles": [
+        "glutes"
+      ],
+      "name_en": "Reverse hyperextension",
+      "aliases": [
+        "reverse hyperextension",
+        "reverse hyper",
+        "hiperextensao inversa"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "romanian-deadlift",
+      "name": "Levantamento terra romeno",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "hamstrings",
+      "movementPattern": "hinge",
+      "movement": "romanian-deadlift",
+      "accessoryMuscles": [
+        "glutes",
+        "back"
+      ],
+      "name_en": "Romanian deadlift",
+      "aliases": [
+        "romanian deadlift",
+        "rdl",
+        "terra romeno"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
       "id": "stiff-leg-deadlift",
       "name": "Levantamento terra stiff",
       "type": "hypertrophy",
@@ -2689,6 +2773,28 @@
         "stiff leg deadlift"
       ],
       "equipment": "barbell"
+    },
+    {
+      "id": "smith-stiff-leg-deadlift",
+      "name": "Terra stiff no Smith",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "hamstrings",
+      "movementPattern": "hinge",
+      "movement": "stiff-leg-deadlift",
+      "accessoryMuscles": [
+        "glutes",
+        "back"
+      ],
+      "name_en": "Smith machine stiff-legged deadlift",
+      "aliases": [
+        "smith machine stiff legged deadlift",
+        "terra stiff no smith",
+        "stiff no smith"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false
     },
     {
       "id": "hip-abduction-machine",
@@ -2767,6 +2873,69 @@
       "equipment": "barbell"
     },
     {
+      "id": "barbell-glute-bridge",
+      "name": "Elevação de quadril no solo com barra",
+      "type": "hypertrophy",
+      "compound": true,
+      "regime": "weighted",
+      "mainMuscle": "glutes",
+      "movementPattern": "hip_thrust",
+      "movement": "glute-bridge",
+      "accessoryMuscles": [
+        "hamstrings"
+      ],
+      "name_en": "Barbell glute bridge",
+      "aliases": [
+        "barbell glute bridge",
+        "ponte de gluteo com barra",
+        "elevacao de quadril no solo"
+      ],
+      "equipment": "barbell",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "single-leg-glute-bridge",
+      "name": "Elevação de quadril unilateral",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "glutes",
+      "movementPattern": "hip_thrust",
+      "movement": "glute-bridge",
+      "accessoryMuscles": [
+        "hamstrings"
+      ],
+      "name_en": "Single-leg glute bridge",
+      "aliases": [
+        "single leg glute bridge",
+        "ponte unilateral",
+        "elevacao de quadril unilateral"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
+      "id": "glute-kickback",
+      "name": "Coice de glúteo",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "bodyweight",
+      "mainMuscle": "glutes",
+      "movementPattern": "other",
+      "movement": "glute-kickback",
+      "accessoryMuscles": [
+        "hamstrings"
+      ],
+      "name_en": "Glute kickback",
+      "aliases": [
+        "glute kickback",
+        "coice de gluteo",
+        "coice"
+      ],
+      "equipment": "bodyweight",
+      "stretchEmphasis": false
+    },
+    {
       "id": "hip-adduction-machine",
       "name": "Cadeira adutora",
       "type": "hypertrophy",
@@ -2799,6 +2968,25 @@
       ],
       "equipment": "machine",
       "stretchEmphasis": true,
+      "accessoryMuscles": []
+    },
+    {
+      "id": "leg-press-calf-raise",
+      "name": "Panturrilha no leg press",
+      "type": "hypertrophy",
+      "compound": false,
+      "regime": "weighted",
+      "mainMuscle": "calves",
+      "movementPattern": "raise",
+      "movement": "standing-calf-raise",
+      "name_en": "Calf press on the leg press machine",
+      "aliases": [
+        "calf press on the leg press",
+        "panturrilha no leg press",
+        "panturrilha no leg"
+      ],
+      "equipment": "machine",
+      "stretchEmphasis": false,
       "accessoryMuscles": []
     },
     {
