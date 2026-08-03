@@ -1835,7 +1835,24 @@ const memKey = (exId, type, regime) => `${exId}:${type}:${regime||'weighted'}`;
 
 const isCountedWork = s => s.intent === 'work' && s.completed !== false;
 
-function profileFor(type, regime) {
+// Target bands for TIMED exercises, in seconds — the direct analogue of
+// repLow/repHigh. A hold graduates by getting LONGER until it reaches the
+// top of its band, at which point (if the exercise carries load) the load
+// goes up and the target resets to the bottom, exactly as reps do.
+// Strength holds are short and heavy, hypertrophy/endurance holds longer.
+// Per-exercise overrides are the already-planned custom-profiles item.
+const TIME_BANDS = { strength: { low: 15, high: 30 }, hypertrophy: { low: 30, high: 60 } };
+
+function profileFor(type, regime, tracking) {
+  // A timed exercise measures the same three things — how many work sets,
+  // and the low/high of the target band — the band is just in seconds. The
+  // rest of the engine reads repLow/repHigh, so timed profiles fill those
+  // fields with the time band rather than introducing a parallel shape;
+  // `timed` marks which unit they're in.
+  if (tracking === TRACK_TIME) {
+    const b = TIME_BANDS[type === 'strength' ? 'strength' : 'hypertrophy'];
+    return { targetWorkSets: type === 'strength' ? 3 : 1, repLow: b.low, repHigh: b.high, timed: true };
+  }
   // 3–5, per the owner's explicit correction (2026-07-25). The earlier 2–5
   // came from git archaeology of the pre-feature code and stood until the
   // range got real-world use — user preference beats historical accuracy.
@@ -2009,13 +2026,12 @@ function computeSuggestion(exId, type, regime, profile, instanceId=null) {
 
   const isAsst = regime === 'assisted';
   const isBW   = regime === 'bodyweight';
-  // A timed exercise stores SECONDS in s.reps, so every rep-range test below
-  // ("did they hit repHigh?") would be comparing a duration against a rep
-  // count. Opt out of graduation entirely — the same shape as the bodyweight
-  // opt-out further down, and for the same reason: the progression axis this
-  // engine knows how to nudge doesn't exist here. Load/duration progression
-  // for holds is future work (see Backlog: isometric regimes).
-  const isTime = isTimed(D.exercises.find(e => e.id === exId));
+  // A timed exercise stores SECONDS in s.reps. That is not an obstacle to
+  // progression, it just changes the UNIT of the target band: `profile`
+  // carries a seconds band (TIME_BANDS) instead of a rep range, and every
+  // comparison below reads the same way. See the graduation comment for how
+  // the two progression axes — duration and load — sequence.
+  const isTime = profile.timed === true;
 
   // Assisted: less counterweight = harder, so the WORKING weight (the one
   // that was actually challenging) is the SMALLEST kg logged in a session,
@@ -2048,21 +2064,50 @@ function computeSuggestion(exId, type, regime, profile, instanceId=null) {
   // stable "aim for more reps" cue. (Revisit if weighted-bodyweight
   // variants — vest/added load as a real progression axis — are ever
   // tracked; see the project Log.)
-  const graduated = !isBW && !isTime && graduatedAt(last);
+  // A TIMED exercise progresses on two axes, and which ones exist depends on
+  // whether it carries load:
+  //
+  //   timed + weighted (weighted dead hang, plate on a plank)
+  //     Both axes. It behaves exactly like a rep exercise with the band in
+  //     seconds: hold the whole band at one working load, then the LOAD goes
+  //     up and the time target resets to the bottom of the band. No special
+  //     case is needed — graduatedAt() already reads profile.repHigh, which
+  //     for a timed profile IS the band top in seconds.
+  //
+  //   timed + bodyweight (plank, dead hang)
+  //     Duration is the ONLY axis, so freezing the target at the band top
+  //     would stall the exercise the day someone holds 60 s. Instead the bar
+  //     is "the shortest set you held last time, but never below the band
+  //     top", and clearing it on every set moves the bar up by TIME_STEP.
+  //     That is the direct analogue of bumpWeight() for an exercise whose
+  //     resistance can't be changed.
+  const TIME_STEP = 5; // seconds added on a bodyweight-hold graduation
+  let timeTarget = null, timeGraduated = false;
+  if (isTime && isBW) {
+    const times = last.filter(hasReps).map(s => Number(s.reps));
+    const floor = times.length ? Math.min(...times) : 0;
+    const bar   = Math.max(profile.repHigh, floor);
+    timeGraduated = times.length >= profile.targetWorkSets && times.every(t => t >= bar);
+    timeTarget = timeGraduated ? bar + TIME_STEP : bar;
+  }
+
+  const graduated = isTime && isBW ? timeGraduated : (!isBW && graduatedAt(last));
 
   const suggestedKg = (graduated && workingKg != null) ? bumpWeight(workingKg, isAsst) : workingKg;
-  // A timed exercise has no rep target to aim at — repHigh is a rep count.
-  // null keeps the "aim for N" cue off the block rather than printing a
-  // number that means nothing for a hold.
-  const repsTarget   = isTime ? null : (graduated ? profile.repLow : profile.repHigh);
+  // For a timed BODYWEIGHT hold the target is the computed seconds bar; for
+  // everything else (including timed+weighted) it is the band bottom after a
+  // graduation and the band top otherwise — the unit differs, the rule does not.
+  const repsTarget   = (isTime && isBW) ? timeTarget
+                     : (graduated ? profile.repLow : profile.repHigh);
 
   // Stall streak — consecutive most-recent sessions that did NOT graduate.
   // 0 if the last session graduated (no stall, they just progressed).
-  // Timed exercises are excluded for the same reason as bodyweight: a
-  // "you've stalled, add load" nudge needs a progression rule, and holds
-  // don't have one in this version.
+  // Bodyweight (including bodyweight holds) still opts out: "you've stalled,
+  // add load" is not an actionable nudge when there is no load to add. A
+  // timed WEIGHTED exercise does have that axis, so it accrues a streak like
+  // any other loaded lift.
   let stallStreak = 0;
-  if (!isBW && !isTime) {
+  if (!isBW) {
     for (const sets of history) {
       if (graduatedAt(sets)) break;
       stallStreak++;
@@ -2150,7 +2195,7 @@ function warmupCtxFor(ex) {
 function buildSetsFromMemory(ex) {
   const regime  = ex.regime || 'weighted';
   const isComp  = ex.compound !== false;
-  const profile = profileFor(ex.type, regime);
+  const profile = profileFor(ex.type, regime, trackingOf(ex));
   const sug     = computeSuggestion(ex.exId, ex.type, regime, profile, calibratedInstanceId(ex));
   ex._sug       = sug; // cached for buildExBlock()'s stall banner — see its comment
   const sets    = [];
@@ -2966,6 +3011,21 @@ function buildExBlock(ex, i) {
         style="margin-top:8px;width:100%;background:${BG2};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 10px;outline:none;box-sizing:border-box">
     </div>` : '';
 
+  // Per-exercise session note — "how THIS exercise went today" (a twinge, a
+  // seat position that worked, why the load dropped). Deliberately distinct
+  // from the two notes that already exist: a MACHINE note is a durable fact
+  // about the apparatus, and a PLAN note is a standing instruction. This one
+  // is history: it belongs to this session and is read back in Histórico.
+  // Shown expanded whenever it has content, so a written note is never
+  // hidden behind a tap.
+  const noteOpen = _exNoteEdit === i || !!ex.note;
+  const noteRow = noteOpen ? `
+    <div style="margin-bottom:10px">
+      <input type="text" value="${esc(ex.note || '')}" placeholder="Como foi hoje? Ex.: banco 7, ombro incomodou"
+        onchange="setExNote(${i}, this.value)"
+        style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
+    </div>` : '';
+
   const setHeader = ex.sets.length ? `
     <div style="display:grid;grid-template-columns:${gridCols};gap:6px;margin-bottom:6px">
       <span></span>
@@ -3144,12 +3204,14 @@ function buildExBlock(ex, i) {
           <button onclick="rmEx(${i})" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px 6px;line-height:1;margin-top:-2px">×</button>
           <button onclick="openSwapEx(${i})" title="Trocar exercício" style="background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:2px 6px;line-height:1">⇄</button>
           <button onclick="openExRest(${i})" title="Descanso deste exercício" style="background:none;border:none;color:${ex.rest?'#6fcf97':DM};font-size:13px;cursor:pointer;padding:2px 6px;line-height:1">⏱</button>
+          <button onclick="toggleExNote(${i})" title="Observação deste exercício hoje" style="background:none;border:none;color:${ex.note||_exNoteEdit===i?'#4dd0c4':DM};font-size:13px;cursor:pointer;padding:2px 6px;line-height:1">📝</button>
         </div>
       </div>
       <!-- Set rows -->
       <div style="padding:12px 16px">
         ${unavailableBanner}
         ${stallBanner}
+        ${noteRow}
         ${estimatePrompt}
         ${!ex.sets.length ? `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma série. Adicione abaixo.</div>` : ''}
         ${setHeader}${setRows}
@@ -3224,7 +3286,7 @@ function buildHistory() {
         return `<div style="margin-bottom:14px">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
             <span style="font-weight:600">${esc(ex.exName)}</span>${typePill(ex.type)}${ex.regime?regimePill(ex.regime):''}${ex.instanceName?`<span style="font-size:11px;color:${DM}">🔧 ${esc(ex.instanceName)}</span>`:''}
-          </div>${lines}
+          </div>${ex.note ? `<div style="font-size:12px;color:#4dd0c4;margin:-2px 0 6px;line-height:1.4">📝 ${esc(ex.note)}</div>` : ''}${lines}
         </div>`;
       }).join('');
 
@@ -4946,7 +5008,23 @@ function showAddEx() {
         <button id="m-str" onclick="setNewType('strength')"    style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:#A32D2D;color:${TX}">Força</button>
         <button id="m-hyt" onclick="setNewType('hypertrophy')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${BG3};color:${DM}">Hipert.</button>
       </div>
-      <div style="font-size:11px;color:${DM};margin-bottom:10px;line-height:1.5">Sem classificação de músculo/movimento — prefira criar dentro de um movimento acima; dá pra corrigir depois na Biblioteca.</div>
+      <!-- Muscle + pattern are asked for HERE, not left to a follow-up
+           Library edit. An exercise created without a muscle group earns no
+           credit at all in weeklyMuscleVolume(), so the fastest way to add
+           an exercise used to be the one that silently punched a hole in the
+           volume chart. Pattern is filtered to the chosen muscle, exactly
+           like the Library modal. -->
+      <label style="font-size:11px;color:${DM};display:block;margin-bottom:4px">Grupo muscular</label>
+      <select id="av-muscle" onchange="avSetMuscle(this.value)"
+        style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 10px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+        ${Object.entries(MUSCLE_GROUPS).map(([k,l]) => `<option value="${k}" ${_avMuscle===k?'selected':''}>${l}</option>`).join('')}
+      </select>
+      <label style="font-size:11px;color:${DM};display:block;margin-bottom:4px">Padrão de movimento</label>
+      <select id="av-pattern" onchange="_avPattern=this.value"
+        style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 10px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
+        ${avPatternOptions()}
+      </select>
+      <div style="font-size:11px;color:${DM};margin-bottom:10px;line-height:1.5">Sem movimento — prefira criar dentro de um movimento acima, que já herda tudo. Classificar aqui é o mínimo para o exercício contar no volume por músculo.</div>
       ${B(CG,TX,'Criar e adicionar','createAndAdd()')}
     </div>
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
@@ -5410,6 +5488,31 @@ function seedLoadPrefs(o, attachedInstance) {
   if (bar > 0) o.barKg = bar;
 }
 
+// Quick-create classification state. Defaults to Undefined so the selects
+// have a valid starting value; a user who ignores them lands exactly where
+// this path used to land, but the fields are in front of them now.
+let _avMuscle = 'undefined', _avPattern = 'undefined';
+
+// Pattern options scoped to the chosen muscle — the same containment the
+// Library modal enforces, so an impossible (muscle, pattern) pair can't be
+// produced from here either.
+function avPatternOptions() {
+  const map = MOVEMENT_PATTERNS[_avMuscle] || MOVEMENT_PATTERNS.undefined;
+  return Object.entries(map).map(([k, l]) =>
+    `<option value="${k}" ${_avPattern === k ? 'selected' : ''}>${l}</option>`).join('');
+}
+
+function avSetMuscle(v) {
+  _avMuscle = v;
+  // Changing muscle invalidates the pattern: 'press' means something under
+  // chest and nothing under biceps. Reset to the first legal option rather
+  // than carrying a pattern that its new muscle doesn't own.
+  const map = MOVEMENT_PATTERNS[_avMuscle] || MOVEMENT_PATTERNS.undefined;
+  _avPattern = Object.keys(map)[0];
+  const sel = document.getElementById('av-pattern');
+  if (sel) sel.innerHTML = avPatternOptions();
+}
+
 function createAndAdd() {
   const el   = document.getElementById('new-ex-name');
   const name = (el?el.value:'').trim(); if(!name)return;
@@ -5435,15 +5538,15 @@ function createAndAdd() {
     return;
   }
   const id   = newUserExId();
-  // mainMuscle/movementPattern default to 'undefined' here, same as the
-  // hardcoded compound/regime just above — this quick-create path only
-  // exposes Type (see setNewType()); a proper classification still needs a
-  // follow-up Library edit, exactly like fixing a mis-tagged regime already
-  // does today. NOTE this is the one path that can still mint an
-  // unclassified exercise, and an 'undefined' mainMuscle earns NO credit in
-  // weeklyMuscleVolume() — a permanent hole in the volume chart until it's
-  // edited. Closing that is a separate, already-planned change.
-  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', origin:ORIGIN_USER, mainMuscle:'undefined', movementPattern:'undefined', accessoryMuscles:[], updatedAt:Date.now() });
+  // Classification now comes from the form (avSetMuscle/_avPattern) instead
+  // of defaulting to Undefined. That matters beyond tidiness: an exercise
+  // with mainMuscle 'undefined' earns NO credit in weeklyMuscleVolume(), so
+  // the fastest way to add an exercise mid-session used to be the one that
+  // silently punched a permanent hole in the volume chart. compound/regime
+  // are still assumed here — they're per-session tracking modes the user
+  // adjusts on the block itself, not identity.
+  D.exercises.push({ id, name, type:_newType, compound:true, regime:'weighted', origin:ORIGIN_USER,
+    mainMuscle:_avMuscle, movementPattern:_avPattern, accessoryMuscles:[], updatedAt:Date.now() });
   if (S) { const o={exId:id,exName:name,type:_newType,compound:true,regime:'weighted',rest:seedRestFor(id,S.planId),sets:[]}; o.sets=buildSetsFromMemory(o); S.exercises.push(o); }
   persist(); closeModal(); render();
 }
@@ -5697,7 +5800,7 @@ function remachineEx(i) {
   const touched = (ex.sets||[]).some(s => s.completed === true || s.repsEdited || s.kgEdited);
   if (!touched) { ex.sets = []; ex.sets = buildSetsFromMemory(ex); }
   else {
-    const profile = profileFor(ex.type, ex.regime||'weighted');
+    const profile = profileFor(ex.type, ex.regime||'weighted', trackingOf(ex));
     ex._sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex));
   }
 }
@@ -6305,7 +6408,7 @@ function editSess(id) {
     // for this exercise" — not a snapshot from whenever it was first added.
     // Deliberately does NOT call buildSetsFromMemory() (would rebuild
     // .sets from scratch, discarding the real logged data being edited).
-    const profile = profileFor(ex.type, ex.regime||'weighted');
+    const profile = profileFor(ex.type, ex.regime||'weighted', trackingOf(ex));
     return {
       ...ex,
       _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex)),
@@ -6704,6 +6807,26 @@ function saveTimerSettings() {
 // choice, see saveSession's options). Placeholders show what "blank"
 // currently inherits, so the three states read clearly: number = override,
 // 0 = timer off, blank = inherit the device default.
+// Which block's note input is force-open. A block whose note already has
+// content renders open regardless (see noteRow), so this only tracks the
+// "opened, still empty" state.
+let _exNoteEdit = null;
+function toggleExNote(i) { _exNoteEdit = _exNoteEdit === i ? null : i; render(); }
+
+// Trimmed and capped like every other free-text field that rides the sync
+// payload (the same 200-char discipline as the plan prescription note).
+// Empty clears the field entirely rather than storing "" — an absent note
+// and a blank one should not be two different states in history.
+function setExNote(i, v) {
+  const ex = S && S.exercises[i]; if (!ex) return;
+  const note = (v || '').trim().slice(0, 200);
+  if (note) ex.note = note; else delete ex.note;
+  _exNoteEdit = null;
+  // render() mirrors the live session through stashLiveSession() before
+  // rebuilding, so the note survives a reload without an explicit persist.
+  render();
+}
+
 function openExRest(i) {
   const ex = S?.exercises[i]; if (!ex) return;
   const cfg = timerCfg()[ex.type === 'strength' ? 'strength' : 'hypertrophy'];

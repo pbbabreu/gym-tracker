@@ -122,6 +122,8 @@
     // Catalog delivery: the library arrives on its own and needs no account.
     syncGlobalLibrary, deletedCatalogEntries, restoreDeletedExercise, mergeCollection,
     defaultVariantEquip,
+    // quick-create classification + per-exercise session notes
+    avSetMuscle, createAndAdd, setExNote, TIME_BANDS,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -2790,28 +2792,104 @@
     t('volEx counts kg x reps for a rep exercise', T.volEx(sets, 'weighted', false) === 60 * 10 + 45 * 10);
     t('volEx returns 0 for a timed exercise', T.volEx(sets, 'weighted', true) === 0);
 
-    // graduation / stall / e1RM must not fire on seconds
-    const prof = T.profileFor('hypertrophy', 'weighted');
-    const mkSess = (id, reps) => ({ id, date: '2026-07-0' + id, exercises: [
-      { exId: 'plank', exName: 'Prancha', type: 'hypertrophy', regime: 'weighted', tracking: 'time',
-        sets: Array.from({ length: prof.targetWorkSets }, () => ({ intent: 'work', reps, kg: 10 })) } ] });
+    // ---- progression on time -------------------------------------------
+    // A timed profile carries the target band in SECONDS, so the same engine
+    // that ranges reps ranges durations. Which axes exist depends on load:
+    // a bodyweight hold can only get longer; a loaded hold gets longer, then
+    // heavier.
     const keepSess = T.D.sessions;
-    T.D.sessions = [mkSess(1, 99), mkSess(2, 99), mkSess(3, 99)];
-    const sug = T.computeSuggestion('plank', 'hypertrophy', 'weighted', prof);
-    t('a timed exercise never graduates, however long the hold', sug && sug.graduated === false,
-       sug && JSON.stringify({ g: sug.graduated, r: sug.repsTarget }));
-    t('...and shows no rep target', sug && sug.repsTarget === null);
-    t('...and never accrues a stall streak', sug && sug.stallStreak === 0);
-    // the same history on a rep-tracked exercise DOES graduate -- proving the
-    // opt-out above is the tracking flag doing it, not the fixture being inert
-    T.D.sessions = T.D.sessions.map(x => ({ ...x, exercises: x.exercises.map(e =>
-      ({ ...e, exId: 'bench-press', tracking: undefined })) }));
-    const sug2 = T.computeSuggestion('bench-press', 'hypertrophy', 'weighted', prof);
-    t('control: identical history on a rep exercise DOES graduate', sug2 && sug2.graduated === true,
-       sug2 && JSON.stringify({ g: sug2.graduated }));
-    // e1RM is skipped for timed
-    T.D.sessions = [mkSess(1, 60)];
+    const hold = (secs, kg, regime) => ({ id: 's1', date: '2026-07-01', exercises: [
+      { exId: 'plank', exName: 'Prancha', type: 'hypertrophy', regime, tracking: 'time',
+        sets: [{ intent: 'work', reps: secs, kg }] } ] });
+
+    const bwProf = T.profileFor('hypertrophy', 'bodyweight', T.TRACK_TIME);
+    t('a timed profile bands in seconds, not reps', bwProf.timed === true && bwProf.repHigh === 60);
+
+    T.D.sessions = [hold(60, '', 'bodyweight')];
+    let sg = T.computeSuggestion('plank', 'hypertrophy', 'bodyweight', bwProf);
+    t('a bodyweight hold that clears the band graduates on TIME',
+       sg && sg.graduated === true && sg.repsTarget === 65, sg && JSON.stringify(sg));
+    T.D.sessions = [hold(40, '', 'bodyweight')];
+    sg = T.computeSuggestion('plank', 'hypertrophy', 'bodyweight', bwProf);
+    t('...and short of the band it keeps aiming at the band top',
+       sg && sg.graduated === false && sg.repsTarget === 60);
+    // past the band the bar must track HISTORY, or the exercise stalls
+    // forever the day someone holds longer than the band top
+    T.D.sessions = [hold(90, '', 'bodyweight')];
+    sg = T.computeSuggestion('plank', 'hypertrophy', 'bodyweight', bwProf);
+    t('...and beyond the band the bar follows the last hold', sg && sg.repsTarget === 95);
+
+    // loaded hold: BOTH axes -- clearing the band bumps the load and resets
+    // the time target to the bottom of the band, exactly as reps do
+    const wProf = T.profileFor('hypertrophy', 'weighted', T.TRACK_TIME);
+    T.D.sessions = [hold(60, 20, 'weighted')];
+    sg = T.computeSuggestion('plank', 'hypertrophy', 'weighted', wProf);
+    t('a LOADED hold that clears the band bumps the load',
+       sg && sg.graduated === true && sg.suggestedKg > 20, sg && JSON.stringify(sg));
+    t('...and resets the time target to the band floor', sg && sg.repsTarget === 30);
+    T.D.sessions = [hold(35, 20, 'weighted')];
+    sg = T.computeSuggestion('plank', 'hypertrophy', 'weighted', wProf);
+    t('...while short of the band the load holds still',
+       sg && sg.graduated === false && sg.suggestedKg === 20 && sg.repsTarget === 60);
+
     T.D.sessions = keepSess;
+  }
+
+
+  // -- quick-create classification + session notes ---------------------------
+  g('quick-create & notes');
+  {
+    // Mid-session quick-create used to mint mainMuscle:'undefined', and an
+    // undefined main earns NO credit in weeklyMuscleVolume() -- so the
+    // fastest way to add an exercise was the one that silently punched a
+    // hole in the volume chart. It now asks for the classification.
+    W.startFree(); T.TAB = 'log';
+    W.openAddEx();
+    W.document.getElementById('a-avulso-toggle').click();
+    W.document.getElementById('new-ex-name').value = 'QC Teste';
+    W.avSetMuscle('chest');
+    const opts = [...W.document.getElementById('av-pattern').options].map(o => o.value);
+    t('quick-create scopes patterns to the chosen muscle',
+       opts.includes('fly') && opts.includes('press') && !opts.includes('curl'));
+    W.avSetMuscle('biceps');
+    t('...and switching muscle resets the pattern to a legal one',
+       [...W.document.getElementById('av-pattern').options].map(o => o.value).includes('curl'));
+    W.avSetMuscle('chest');
+    W.createAndAdd();
+    const qc = T.D.exercises.find(e => e.name === 'QC Teste');
+    t('quick-create stores a real muscle group', qc && qc.mainMuscle === 'chest',
+       qc && qc.mainMuscle);
+    t('...so it can never be invisible to the volume chart', qc && qc.mainMuscle !== 'undefined');
+    t('...and is still a user exercise with a u_ id',
+       qc && qc.origin === T.ORIGIN_USER && /^u_/.test(qc.id));
+
+    // per-exercise session note: trimmed, capped, and CLEARED rather than
+    // stored blank -- an absent note and an empty one must not be two states
+    const i = T.S.exercises.findIndex(e => e.exId === qc.id);
+    W.setExNote(i, '   banco 7, ombro incomodou   ');
+    t('a session note is trimmed', T.S.exercises[i].note === 'banco 7, ombro incomodou');
+    W.setExNote(i, 'x'.repeat(400));
+    t('...and capped', T.S.exercises[i].note.length === 200);
+    W.setExNote(i, '    ');
+    t('...and clearing removes the field entirely', !('note' in T.S.exercises[i]));
+
+    // it must survive the save-time field strip into history
+    W.setExNote(i, 'ombro incomodou');
+    T.S.exercises[i].sets = [{ intent: 'work', reps: 8, kg: 20 }];
+    W.doSaveSession('new');
+    const sess = T.D.sessions[T.D.sessions.length - 1];
+    const savedEx = sess.exercises.find(e => e.exId === qc.id);
+    t('a session note survives into history', savedEx && savedEx.note === 'ombro incomodou');
+    // buildHistory() only renders a session's exercise detail when that
+    // session is EXPANDED, so the note check has to expand it first.
+    W.toggleExp(sess.id);
+    t('...and renders there', W.buildHistory().includes('ombro incomodou'));
+    W.toggleExp(sess.id);
+
+    // cleanup
+    T.D.sessions = T.D.sessions.filter(x => x.id !== sess.id);
+    T.D.exercises = T.D.exercises.filter(e => e.id !== qc.id);
+    T.S = null;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────
