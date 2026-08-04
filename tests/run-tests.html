@@ -2984,6 +2984,35 @@
     t('round count is the MAX across members, so unequal counts just work',
        T.roundCountFor([mk(1,['work','work','work']), mk(2,['work'])]) === 3);
 
+    // setRoundCounts must not REORDER, only add/remove. An earlier version
+    // rebuilt each member as [...warmups, ...works], which silently moved a
+    // mid-round warm-up to the front — where it becomes a LEADING warm-up and
+    // drops out of the rounds entirely.
+    {
+      newSess(mk(9, ['work','warmup','work']));
+      const g9 = W.makeSuperset([0, 0], {});        // needs 2+, so this is a no-op...
+      T.S.exercises[0].ss = 'gtmp'; T.S.exercises[0].ssMem = 'm9';
+      T.S.exercises.push({ ...mk(10, ['work','work','work']), ss: 'gtmp', ssMem: 'm10' });
+      T.S.groups = { gtmp: { order: ['m9','m10'], rest: { between: 0, round: 60 } } };
+      // member 0 is [work, warmup, work] = 1 WU + 2 W; asking for 1 + 3 must
+      // APPEND one work set at the end and touch nothing else. The partition
+      // bug would have produced ["warmup","work","work","work"].
+      W.setRoundCounts('gtmp', 1, 3);
+      t('setRoundCounts preserves set ORDER, it does not partition by intent',
+         JSON.stringify(T.S.exercises[0].sets.map(s => s.intent)) === '["work","warmup","work","work"]',
+         JSON.stringify(T.S.exercises[0].sets.map(s => s.intent)));
+      t('...so the mid-round warm-up stays in its round instead of leading',
+         JSON.stringify(T.roundSetIdxs(T.S.exercises[0])) === '[0,1,2,3]' &&
+         JSON.stringify(T.soloSetIdxs(T.S.exercises[0])) === '[]');
+      t('...while growth still reaches the requested work-set count',
+         T.S.exercises[1].sets.filter(s => s.intent === 'work').length === 3 && g9 === null);
+      // and shrinking trims from the END, leaving the earlier sets untouched
+      W.setRoundCounts('gtmp', 1, 2);
+      t('shrinking trims from the end, preserving what came before',
+         JSON.stringify(T.S.exercises[0].sets.map(s => s.intent)) === '["work","warmup","work"]',
+         JSON.stringify(T.S.exercises[0].sets.map(s => s.intent)));
+    }
+
     // ── grouping, rounds and rests on a real session ─────────────────────────
     newSess(mk(1, ['work','work','work']), mk(2, ['work']), mk(3, ['work','work']));
     const gid = W.makeSuperset([0,1,2], { between: 15, round: 90 });

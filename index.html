@@ -2617,12 +2617,30 @@ function weeklyMuscleVolume(nWeeks = 4) {
 // ║  These are pure HTML string factories.
 // ║  B()  = full-width button
 // ║  Bs() = small inline button
+// ║  numField() = small labelled number input (side-by-side in a flex row)
 // ║  *Pill() = colored badge for type / regime / compound
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 // ── Buttons ───────────────────────────────────────────────────────────────────
 const B  = (bg,col,txt,oc,x='') => `<button onclick="${oc}" style="display:flex;align-items:center;justify-content:center;padding:11px 16px;border-radius:8px;border:none;background:${bg};color:${col};font-weight:600;font-size:14px;cursor:pointer;width:100%;font-family:inherit;margin-bottom:8px${x}">${txt}</button>`;
 const Bs = (bg,col,txt,oc,x='') => `<button onclick="${oc}" style="display:inline-flex;align-items:center;justify-content:center;padding:7px 12px;border-radius:7px;border:none;background:${bg};color:${col};font-weight:600;font-size:13px;cursor:pointer;font-family:inherit${x}">${txt}</button>`;
+
+// ── Number field ──────────────────────────────────────────────────────────────
+// A labelled numeric input sized to sit beside its twin in a flex row. Shared
+// by the superset builder and the plan editor's superset sheet, which were
+// carrying a near-identical local copy each.
+//
+// `step` is a REQUIRED argument rather than a default, because getting it
+// wrong is silent: the two callers mix rest SECONDS (step 5) with round
+// COUNTS (step 1), and a seconds-shaped helper had the spinner walking the
+// round count 0 → 5 → 10.
+const numField = (id, label, val, step, onchange = '') => `
+  <div style="flex:1">
+    <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${label}</div>
+    <input id="${id}" type="number" inputmode="numeric" min="0" step="${step}" value="${val}"
+      ${onchange ? `onchange="${onchange}"` : ''}
+      style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
+  </div>`;
 
 // ── Pills (colored badges) ────────────────────────────────────────────────────
 const typePill = t => t === 'strength'
@@ -2937,6 +2955,17 @@ function bwBanner() {
 // ║  name, checked-count.
 // ║  Set row: completed ✓ (drives the rest timer + collapse-and-advance),
 // ║  W/WU toggle, reps input, kg input, repeat/suggestion chips, remove.
+// ║  Rendered by setRowHTML() over an exRowCtx() — shared verbatim with the
+// ║  superset round view, so the two renderings can never drift apart.
+// ║
+// ║  SUPERSET group block (E3b): a contiguous run of blocks sharing an `ss`
+// ║  renders as ONE unit instead of separate blocks (see sessionUnits()) —
+// ║  header + member strip, an optional pre-round AQUECIMENTO section
+// ║  holding each member's leading warm-ups, then one card per ROUND. A
+// ║  round is derived, never stored (roundSetIdxs/roundCountFor), so
+// ║  unequal set counts need no special case. Rests inside a group come
+// ║  from the group config, not the per-transition cascade, and render as
+// ║  literal rows in the round table (groupGapSecs).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildLog() {
@@ -3087,7 +3116,7 @@ function buildLogSession() {
     ${restTimerHTML()}
     ${sessionUnits().map(u => u.kind === 'group' ? buildGroupBlock(u.gid, u.idxs) : buildExBlock(S.exercises[u.i], u.i)).join('')}
     ${B(BG3,TX,'+ Exercício','openAddEx()')}
-    ${(S.exercises.filter(e => !e.slot && !isGrouped(e)).length >= 2) ? B(BG3,DM,'⛓ Agrupar em superset','openSsBuilder()',';margin-top:-4px') : ''}
+    ${(S.exercises.filter(e => !e.slot && !isGrouped(e)).length >= 2) ? B(BG3,DM,'⛓ Agrupar em superset','startSsBuilder()',';margin-top:-4px') : ''}
     ${B(S.exercises.length?CG:'#333',TX,isEdit?'Salvar alterações':'Salvar treino','saveSession()',';margin-bottom:0')}`;
 }
 
@@ -4392,9 +4421,18 @@ function doMergeGroup(key) {
 // ║  Plans carry a `rests` map (per-exercise rest overrides — edited via
 // ║  the per-row ⏱ inline expansion, see refreshPlanExList()).
 // ║
+// ║  Plans also carry SUPERSETS (E3b): entries take an `ss` group id (plus
+// ║  optional `ssWu`) and the plan a `groups` map, the exact shape the
+// ║  session uses — so startPlan() hands the workout the group with no
+// ║  translation layer. Assembled here via pick mode (togglePlanSsMode →
+// ║  togglePlanSsPick → doCreatePlanSuperset), configured in openPlanSsCfg,
+// ║  dissolved by ungroupPlanSs. Group membership is pruned on every write
+// ║  path: a group needs 2+ entries to mean anything, and its member order
+// ║  is rebuilt from the entries rather than trusted.
+// ║
 // ║  Plan sharing, two transports over ONE payload (buildPlanPayload():
-// ║  name + a snapshot of the exercises' definitions + rests — never bare
-// ║  ids, and never gym tags):
+// ║  name + a snapshot of the exercises' definitions + rests + supersets —
+// ║  never bare ids, and never gym tags):
 // ║    · file: exportPlan()/importPlanFile() — works with zero accounts
 // ║    · in-app: openSharePlan()/sendPlanShare() by e-mail; received ones
 // ║      land in the "Planos recebidos" inbox (receivedSharesHTML) with
@@ -4712,12 +4750,6 @@ function openPlanSsCfg(gid) {
   const cfg = _planGroups[gid] || {};
   const mems = _planExs.filter(en => en.ss === gid);
   _planNameCache = (document.getElementById('plan-name')?.value || '').trim();
-  const secsInput = (id, label, val) => `
-    <div style="flex:1">
-      <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${label}</div>
-      <input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
-        style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
-    </div>`;
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">⛓ Superset ${planSsLetter(gid)}</div>
     <div style="font-size:12px;color:${DM};margin-bottom:14px">Executado em rodadas. Cada exercício continua sendo registrado individualmente.</div>
@@ -4731,8 +4763,8 @@ function openPlanSsCfg(gid) {
     }).join('')}</div>
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
-      ${secsInput('pss-between','Entre exercícios (s)', cfg.rest?.between ?? 0)}
-      ${secsInput('pss-round','Após a rodada (s)', cfg.rest?.round ?? 120)}
+      ${numField('pss-between','Entre exercícios (s)', cfg.rest?.between ?? 0, 5)}
+      ${numField('pss-round','Após a rodada (s)', cfg.rest?.round ?? 120, 5)}
     </div>
     <div style="font-size:11px;color:${DM};margin-bottom:14px">Intervalos individuais por rodada são ajustados durante o treino.</div>
     ${B(CG,TX,'Salvar',`savePlanSsCfg('${gid}')`)}
@@ -6181,6 +6213,21 @@ function createAndAdd() {
 // ║  (openExRest), the rest timer (startRestTimer/tick/banner/settings),
 // ║  and focus mode (exIsDone/toggleExCollapse/toggleExDone/
 // ║  collapseAndAdvance + toggleCompleted's cascade-down uncheck).
+// ║
+// ║  SUPERSETS (E3b) — the actions half; the rendering lives in section 11:
+// ║    makeSuperset()/ungroupSuperset()/removeFromSuperset() — assemble and
+// ║      dissolve. Members are kept CONTIGUOUS in S.exercises, which the
+// ║      round view depends on.
+// ║    addRound()/setRoundCounts() — grow or shrink the rounds, trailing
+// ║      sets only, so nothing already typed or checked is discarded.
+// ║    setGapRest()/moveInRound()/applyRoundOrderToAll() — the two sparse
+// ║      deviation maps (rest.overrides, roundOrder) over the group default.
+// ║    collapseRoundAndAdvance() — focus mode one level down: the unit that
+// ║      finishes inside a group is the ROUND, not the exercise.
+// ║    openSsBuilder()/openSsMember()/openGapRest() — the three modals.
+// ║  startRestTimer() and toggleCompleted() each branch on membership; a
+// ║  grouped member's SOLO warm-ups deliberately fall through to the normal
+// ║  cascade, since those are performed per exercise before the rounds.
 // ║
 // ║  Per-set mutations (addSet, rmSet, toggleIntent, setVal) are called
 // ║  directly from oninput/onclick attributes in the exercise block HTML.
@@ -7719,22 +7766,33 @@ function addRound(gid) {
   render();
 }
 
-// Grow or shrink a group's rounds to an explicit count, NON-DESTRUCTIVELY:
-// only trailing sets are added or removed, so nothing already typed or
-// checked is discarded. That is deliberately unlike setExType/setExRegime,
-// which rebuild wholesale — there the numbers stop meaning the same thing,
-// whereas a round count is just how many times you go round.
+// Grow or shrink a group's rounds to an explicit count, NON-DESTRUCTIVELY —
+// and non-destructive here has to mean "nothing moves", not merely "nothing
+// is deleted". An earlier version rebuilt each member as
+// [...allWarmups, ...allWorkSets], which discarded nothing but silently
+// REORDERED: a member whose round-2 set the user had toggled to WU (the
+// mixed-intent case rounds explicitly support) would see that set jump to the
+// front, become a LEADING warm-up, and so drop out of the rounds altogether
+// into the solo section. Positions of surviving sets are therefore preserved
+// exactly: trimming removes from the end of the given intent, and growth
+// appends work sets at the end and warm-ups after the last existing one.
+//
+// Deliberately unlike setExType/setExRegime, which rebuild wholesale — there
+// the numbers stop meaning the same thing, whereas a round count is just how
+// many times you go round.
 function setRoundCounts(gid, nWu, nW) {
   groupIdxsOf(gid).forEach(i => {
     const ex = S.exercises[i];
-    const wu = ex.sets.filter(s => s.intent === 'warmup');
-    const wk = ex.sets.filter(s => s.intent === 'work');
+    const sets = ex.sets.slice();
     const mk = intent => ({ intent, reps:'', kg:'', lastReps:null, lastKg:null, sugReps:null, sugKg:null });
-    while (wu.length > nWu) wu.pop();
-    while (wu.length < nWu) wu.push(mk('warmup'));
-    while (wk.length > nW)  wk.pop();
-    while (wk.length < nW)  wk.push(mk('work'));
-    ex.sets = [...wu, ...wk];
+    const countOf = k => sets.filter(s => s.intent === k).length;
+    const trim = (k, want) => {
+      for (let n = sets.length - 1; n >= 0 && countOf(k) > want; n--) if (sets[n].intent === k) sets.splice(n, 1);
+    };
+    trim('warmup', nWu); trim('work', nW);
+    while (countOf('warmup') < nWu) sets.splice(sets.map(s => s.intent).lastIndexOf('warmup') + 1, 0, mk('warmup'));
+    while (countOf('work')   < nW)  sets.push(mk('work'));
+    ex.sets = sets;
   });
   render();
 }
@@ -7838,7 +7896,19 @@ function toggleMemberWu(i) {
 // Which blocks are ticked in the create-a-superset picker. Module state, like
 // every other modal's working state (_planExs, _dupKeepers), because the modal
 // is rebuilt from it on each toggle.
+//
+// These are INDICES into S.exercises, so a stale selection is not merely
+// untidy — after a reorder or a removal the same index names a different
+// exercise, and "Criar superset" would group the wrong blocks. It must
+// therefore be cleared on every fresh entry, which is what startSsBuilder()
+// is for; openSsBuilder() cannot do it because it doubles as the re-render
+// after each tick, and clearing there would un-tick every box as it was
+// ticked.
 let _ssPick = [];
+
+// Fresh create-mode entry. The only way in from the session screen.
+function startSsBuilder() { _ssPick = []; openSsBuilder(); }
+function closeSsBuilder() { _ssPick = []; closeModal(); }
 
 function toggleSsPick(i) {
   _ssPick = _ssPick.includes(i) ? _ssPick.filter(x => x !== i) : [..._ssPick, i];
@@ -7881,12 +7951,6 @@ function openSsBuilder(gid) {
     </button>`;
   }).join('');
 
-  const secsInput = (id, label, val) => `
-    <div style="flex:1">
-      <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${label}</div>
-      <input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
-        style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
-    </div>`;
 
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">${editing ? 'Editar superset' : 'Novo superset'}</div>
@@ -7899,42 +7963,50 @@ function openSsBuilder(gid) {
     ${editing ? `
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">RODADAS</div>
     <div style="display:flex;gap:8px;margin-bottom:6px">
-      ${secsInput('ss-nwu','Aquecimento', nWu)}
-      ${secsInput('ss-nw','Trabalho', nW)}
+      ${numField('ss-nwu','Aquecimento', nWu, 1)}
+      ${numField('ss-nw','Trabalho', nW, 1)}
     </div>
     ${Bs(BG3,TX,'Aplicar rodadas',`setRoundCounts('${gid}',+document.getElementById('ss-nwu').value,+document.getElementById('ss-nw').value);openSsBuilder('${gid}')`,';width:100%;justify-content:center;margin-bottom:14px')}` : ''}
 
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
-      ${secsInput('ss-between','Entre exercícios (s)', cfg.rest?.between ?? 0)}
-      ${secsInput('ss-round','Após a rodada (s)', cfg.rest?.round ?? 120)}
+      ${numField('ss-between','Entre exercícios (s)', cfg.rest?.between ?? 0, 5, editing ? `setSsRestDefault('${gid}','between',this.value)` : '')}
+      ${numField('ss-round','Após a rodada (s)', cfg.rest?.round ?? 120, 5, editing ? `setSsRestDefault('${gid}','round',this.value)` : '')}
     </div>
     <div style="font-size:11px;color:${DM};margin-bottom:14px">Cada intervalo pode ser ajustado individualmente depois, tocando na linha de descanso dentro da rodada.</div>
 
     ${editing
-      ? B(CG,TX,'Salvar',`saveSsRests('${gid}')`)
-        + B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupSuperset('${gid}')`)
+      ? B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupSuperset('${gid}')`)
         + B(BG3,DM,'Fechar','closeModal()',';margin-bottom:0')
       : B(_ssPick.length>=2?CG:'#333',TX,`Criar superset${_ssPick.length?` (${_ssPick.length})`:''}`,'doCreateSuperset()')
-        + B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
+        + B(BG3,DM,'Cancelar','closeSsBuilder()',';margin-bottom:0')}`);
 }
 
 function doCreateSuperset() {
   if (_ssPick.length < 2) return;
+  // Both fields are always rendered pre-filled, so a blank one is a
+  // deliberate clear rather than "untouched" — it reads as 0, "no rest here",
+  // the same 0-is-real-data rule sanitizeRest() and hasKg() follow.
   const between = sanitizeSecs(document.getElementById('ss-between')?.value) ?? 0;
-  const round   = sanitizeSecs(document.getElementById('ss-round')?.value) ?? 120;
+  const round   = sanitizeSecs(document.getElementById('ss-round')?.value) ?? 0;
   const gid = makeSuperset(_ssPick, { between, round });
   _ssPick = [];
   closeModal(); render();
   if (gid) document.getElementById('ssblk-' + gid)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-function saveSsRests(gid) {
+// Committed on change rather than behind a Salvar button, because every other
+// control in the edit-mode builder — removing a member, the WU toggle,
+// "Aplicar rodadas" — already applies immediately. A modal where half the
+// controls save instantly and half wait for a button is the kind of quiet
+// inconsistency people lose edits to. (The PLAN editor's equivalent sheet
+// does keep a Salvar, deliberately: there the whole editor is a working copy
+// committed by savePlan(), so an explicit save is the local convention.)
+function setSsRestDefault(gid, key, val) {
   const cfg = S.groups?.[gid]; if (!cfg) return;
   cfg.rest = cfg.rest || {};
-  cfg.rest.between = sanitizeSecs(document.getElementById('ss-between')?.value) ?? 0;
-  cfg.rest.round   = sanitizeSecs(document.getElementById('ss-round')?.value) ?? 0;
-  closeModal(); render();
+  cfg.rest[key] = sanitizeSecs(val) ?? 0;
+  render();
 }
 
 // The per-member sheet. An interleaved round view has no per-exercise header
