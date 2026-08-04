@@ -3158,7 +3158,7 @@ function buildLogSession() {
     ${restTimerHTML()}
     ${sessionUnits().map(u => u.kind === 'group' ? buildGroupBlock(u.gid, u.idxs) : buildExBlock(S.exercises[u.i], u.i)).join('')}
     ${B(BG3,TX,'+ Exercício','openAddEx()')}
-    ${(S.exercises.filter(e => !e.slot && !isGrouped(e)).length >= 2) ? B(BG3,DM,'⛓ Agrupar em superset','startSsBuilder()',';margin-top:-4px') : ''}
+    ${B(BG3,DM,'⛓ Novo superset','startSsBuilder()',';margin-top:-4px')}
     ${B(S.exercises.length?CG:'#333',TX,isEdit?'Salvar alterações':'Salvar treino','saveSession()',';margin-bottom:0')}`;
 }
 
@@ -3369,11 +3369,17 @@ function buildRoundHTML(gid, idxs, r, ctxs, restRow) {
     const sets    = roundSets(idxs, r);
     const checked = sets.filter(({ i, j }) => S.exercises[i].sets[j].completed === true).length;
     const open    = !roundCollapsed(gid, r);
+    // A round where EVERY participating set is a warm-up is a warm-up round —
+    // say so, rather than calling it "Rodada 1" and leaving the user to read
+    // the W/WU chips. Mixed rounds (a member warming up while others work)
+    // stay plain "Rodada n", because that is exactly what they are.
+    const allWu = sets.length > 0 && sets.every(({ i, j }) => S.exercises[i].sets[j].intent === 'warmup');
+    const label = allWu ? `Aquecimento ${r+1}` : `Rodada ${r+1}`;
 
     const head = `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 0">
         <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px;line-height:1">${open?'▾':'▸'}</button>
-        <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding:0">Rodada ${r+1}</button>
+        <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding:0">${label}</button>
         ${groupCfg(gid).roundOrder?.[r] ? `<button onclick="applyRoundOrderToAll('${gid}',${r})" title="Usar esta ordem em todas as rodadas" style="flex-shrink:0;background:none;border:1px solid ${BD};border-radius:99px;color:${CST};font-size:9px;font-weight:700;cursor:pointer;padding:2px 7px;font-family:inherit">↕ todas</button>` : ''}
         <span style="flex-shrink:0;font-size:12px;color:${done?'#6fcf97':DM}">${checked}/${sets.length} ✓</span>
       </div>`;
@@ -6154,7 +6160,13 @@ function addPickedEx(exId) {
   if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
   seedLoadPrefs(o, lim);
   o.sets = buildSetsFromMemory(o);
-  S.exercises.push(o); closeModal(); render();
+  S.exercises.push(o);
+  // Added from INSIDE the superset builder ("+ Exercício" there): tick the
+  // new block and go straight back, so a group can be assembled in one pass
+  // instead of "add three exercises, then find the group button". Reuses the
+  // whole movement-first picker rather than growing a second one.
+  if (_ssPendingAdd) { _ssPick = [..._ssPick, S.exercises.length - 1]; render(); openSsBuilder(); return; }
+  closeModal(); render();
 }
 
 // Barbell plate-input preference carry-over: reuse last session's
@@ -7914,6 +7926,15 @@ function applyRoundOrderToAll(gid, r) {
   render();
 }
 
+// Group-level warm-up placement: every member at once. The per-member
+// toggle in openSsMember() stays for the mixed case (one exercise still
+// warming up while the others work) — this is just the common decision made
+// once, which is what the builder was missing.
+function setGroupWu(gid, on) {
+  groupIdxsOf(gid).forEach(i => { if (on) S.exercises[i].ssWu = true; else delete S.exercises[i].ssWu; });
+  render(); openSsBuilder(gid);
+}
+
 function toggleMemberWu(i) {
   const ex = S.exercises[i]; if (!ex) return;
   if (ex.ssWu) delete ex.ssWu; else ex.ssWu = true;
@@ -7935,9 +7956,19 @@ function toggleMemberWu(i) {
 // ticked.
 let _ssPick = [];
 
+// Set while the add-exercise picker was opened FROM the builder, so
+// addPickedEx() knows to tick the new block and come straight back instead of
+// dropping the user into the session. Cleared on every entry and exit, since
+// a stale true would hijack an ordinary "+ Exercício" afterwards.
+let _ssPendingAdd = false;
+
 // Fresh create-mode entry. The only way in from the session screen.
-function startSsBuilder() { _ssPick = []; openSsBuilder(); }
-function closeSsBuilder() { _ssPick = []; closeModal(); }
+function startSsBuilder() { _ssPick = []; _ssPendingAdd = false; openSsBuilder(); }
+function closeSsBuilder() { _ssPick = []; _ssPendingAdd = false; closeModal(); }
+
+// "+ Exercício" from inside the builder: park the pending flag, hand over to
+// the normal picker, and let addPickedEx() bring us back.
+function ssAddExercise() { _ssPendingAdd = true; openAddEx(); }
 
 function toggleSsPick(i) {
   _ssPick = _ssPick.includes(i) ? _ssPick.filter(x => x !== i) : [..._ssPick, i];
@@ -7977,6 +8008,14 @@ function openSsBuilder(gid) {
   const nWu = first ? first.sets.filter(s => s.intent === 'warmup').length : 0;
   const nW  = first ? first.sets.filter(s => s.intent === 'work').length   : 3;
 
+  // Are the warm-ups PART of the rounds, or done per exercise beforehand?
+  // This has to be a visible group-level choice, and it wasn't: the count
+  // field sat under a "RODADAS" heading while the default (ssWu absent) sent
+  // every warm-up to the solo section, so asking for "2 rodadas de
+  // aquecimento" produced two loose sets and zero warm-up rounds. The count
+  // and the placement are one decision and are now presented as one.
+  const wuInRounds = editing && idxs.length > 0 && idxs.every(i => !!S.exercises[i].ssWu);
+
   const pickable = (S?.exercises || [])
     .map((ex, i) => ({ ex, i }))
     .filter(({ ex }) => !ex.slot && !isGrouped(ex));
@@ -8004,15 +8043,25 @@ function openSsBuilder(gid) {
       ? 'Os exercícios continuam sendo registrados individualmente — o superset é como você treina, não como o progresso é medido.'
       : 'Escolha 2 ou mais exercícios. Eles serão executados em rodadas, na ordem escolhida.'}</div>
 
-    <div style="max-height:34vh;overflow-y:auto;margin-bottom:14px">${memberRows || `<div style="font-size:13px;color:${DM}">Nenhum exercício disponível.</div>`}</div>
+    <div style="max-height:34vh;overflow-y:auto;margin-bottom:8px">${memberRows || `<div style="font-size:13px;color:${DM};padding:6px 0">Nenhum exercício ainda — adicione abaixo.</div>`}</div>
+    ${editing ? '' : Bs(BG3,TX,'+ Exercício','ssAddExercise()',';width:100%;justify-content:center;margin-bottom:14px')}
 
     ${editing ? `
-    <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">RODADAS</div>
-    <div style="display:flex;gap:8px;margin-bottom:6px">
-      ${numField('ss-nwu','Aquecimento', nWu, 1)}
-      ${numField('ss-nw','Trabalho', nW, 1)}
+    <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">AQUECIMENTO</div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button onclick="setGroupWu('${gid}',false)" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${!wuInRounds?CB:BG3};color:${!wuInRounds?TX:DM}">Antes, por exercício</button>
+      <button onclick="setGroupWu('${gid}',true)"  style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${wuInRounds?CB:BG3};color:${wuInRounds?TX:DM}">Nas rodadas</button>
     </div>
-    ${Bs(BG3,TX,'Aplicar rodadas',`setRoundCounts('${gid}',+document.getElementById('ss-nwu').value,+document.getElementById('ss-nw').value);openSsBuilder('${gid}')`,';width:100%;justify-content:center;margin-bottom:14px')}` : ''}
+    <div style="font-size:11px;color:${DM};margin-bottom:12px">${wuInRounds
+      ? 'As séries de aquecimento entram como rodadas, junto com os outros exercícios.'
+      : 'Cada exercício faz seu aquecimento antes de começarem as rodadas.'}</div>
+
+    <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">SÉRIES POR EXERCÍCIO</div>
+    <div style="display:flex;gap:8px;margin-bottom:6px">
+      ${numField('ss-nwu', wuInRounds ? 'Rodadas de aquec.' : 'Aquec. (soltas)', nWu, 1)}
+      ${numField('ss-nw','Rodadas de trabalho', nW, 1)}
+    </div>
+    ${Bs(BG3,TX,'Aplicar',`setRoundCounts('${gid}',+document.getElementById('ss-nwu').value,+document.getElementById('ss-nw').value);openSsBuilder('${gid}')`,';width:100%;justify-content:center;margin-bottom:14px')}` : ''}
 
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
@@ -8036,7 +8085,7 @@ function doCreateSuperset() {
   const between = sanitizeSecs(document.getElementById('ss-between')?.value) ?? 0;
   const round   = sanitizeSecs(document.getElementById('ss-round')?.value) ?? 0;
   const gid = makeSuperset(_ssPick, { between, round });
-  _ssPick = [];
+  _ssPick = []; _ssPendingAdd = false;
   closeModal(); render();
   if (gid) document.getElementById('ssblk-' + gid)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }

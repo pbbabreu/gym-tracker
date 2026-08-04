@@ -131,7 +131,7 @@
     // properties), but they are all listed to keep the group readable.
     // NOTE - still no backticks anywhere in this block.
     isGrouped, roundSetIdxs, soloSetIdxs, roundCountFor, groupCfg, groupIdxsOf,
-    roundCollapsed, groupsKey, entriesKey, sanitizeGroups, sanitizeSecs,
+    roundCollapsed, groupsKey, entriesKey, sanitizeGroups, sanitizeSecs, pruneGroups,
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -3068,6 +3068,31 @@
     t('live-only round-collapse state can NOT leak into history', !('ssCollapsed' in rec));
     t('the set-metadata strip is unchanged by grouping',
        rec.exercises.every(e => e.sets.every(s => Object.keys(s).every(k => ['intent','reps','kg','completed'].includes(k)))));
+
+    // ── warm-up placement is a GROUP decision, and the count must honour it ──
+    //
+    // Reported as "comportamento irregular ao criar séries de aquecimento":
+    // the builder's warm-up count sat under a RODADAS heading while the
+    // default sent every warm-up to the solo section, so asking for 2
+    // warm-up ROUNDS produced 2 loose sets and no warm-up rounds at all.
+    {
+      newSess(mk(11, ['work']), mk(12, ['work']));
+      const gw = W.makeSuperset([0, 1], { between: 0, round: 60 });
+      W.setGroupWu(gw, true);
+      W.setRoundCounts(gw, 2, 3);
+      const gidxs = T.groupIdxsOf(gw);
+      t('warm-ups placed "nas rodadas" really do become rounds',
+         T.roundCountFor(gidxs.map(i => T.S.exercises[i])) === 5,
+         T.roundCountFor(gidxs.map(i => T.S.exercises[i])));
+      t('...leaving nothing in the pre-round solo section',
+         gidxs.every(i => T.soloSetIdxs(T.S.exercises[i]).length === 0));
+      W.setGroupWu(gw, false);
+      t('switching back to "antes, por exercício" restores the solo warm-ups',
+         T.roundCountFor(gidxs.map(i => T.S.exercises[i])) === 3 &&
+         gidxs.every(i => T.soloSetIdxs(T.S.exercises[i]).length === 2));
+      t('...and the group-level switch reaches EVERY member, not just the first',
+         gidxs.every(i => !T.S.exercises[i].ssWu));
+    }
 
     // ── plan round-trip and drift ────────────────────────────────────────────
     T.D.plans = [{ id: 'ssplan', name: 'SS', updatedAt: 1,
