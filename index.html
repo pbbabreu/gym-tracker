@@ -44,12 +44,19 @@ const COLOR = {
   text:   '#f0ede6',
   dim:    '#8a8680',  // secondary text
   border: '#2e2e2e',
+  // Superset (E3b) — its own accent so a group reads as one thing at a
+  // glance without competing with the regime colors above (a superset can
+  // contain any mix of them). Three shades because they do three jobs:
+  ss:     '#4a3f7a',  // the left rule tying a group's rows together
+  ssBd:   '#3a3550',  // the group block's own border — quieter than the rule
+  ssTx:   '#b9a7ff',  // labels on dark: "⛓ SUPERSET", the group letter
 };
 
-// Shorthand aliases used in template literals
+
 const CG=COLOR.green, CB=COLOR.blue, CR=COLOR.red, CA=COLOR.amber;
 const BG=COLOR.bg, BG2=COLOR.bg2, BG3=COLOR.bg3;
 const TX=COLOR.text, DM=COLOR.dim, BD=COLOR.border;
+const CS=COLOR.ss, CSB=COLOR.ssBd, CST=COLOR.ssTx;
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -1098,6 +1105,41 @@ function sanitizeGroups(g) {
 // Stable serialization for the drift comparison, mirroring restsKey()'s job
 // for the per-entry rest overrides.
 const groupsKey = g => JSON.stringify(sanitizeGroups(g) || null);
+
+// THE single definition of what makes a stored superset valid.
+//
+// Four write paths independently derive an entry list plus a candidate group
+// map — savePlan(), sessionPlanShape(), doPlanFromSession() and
+// applyImportedPlan() — and every one of them has to apply the same two
+// rules:
+//   1. a group needs 2+ SURVIVING members, or it isn't a superset any more
+//      (entries get removed during a workout, dropped on import when their
+//      exercise can't be resolved, deleted in the plan editor);
+//   2. its member order is rebuilt from those entries and never trusted from
+//      the incoming config, which can legitimately name members that were
+//      swapped out — or, in a hand-edited share file, members that never
+//      existed.
+// Then any entry whose group didn't survive has its markers stripped, so
+// nothing is left pointing at a group that isn't there.
+//
+// This lived as four near-identical copies until the post-build review. An
+// invariant duplicated per call site is one that drifts the moment a fifth
+// path appears, and the failure would be quiet: a half-pruned group renders
+// as a one-member "superset" or an entry marked into a group with no config.
+//
+// Mutates `entries` in place (that is the marker strip) and returns the
+// cleaned group map, or undefined when nothing survives.
+function pruneGroups(entries, srcGroups) {
+  const out = {};
+  Object.keys(srcGroups || {}).forEach(gid => {
+    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
+    if (mems.length >= 2) out[gid] = { ...srcGroups[gid], order: mems };
+  });
+  entries.forEach((en, k) => {
+    if (en.ss && !out[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; }
+  });
+  return sanitizeGroups(out);
+}
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
@@ -3286,8 +3328,42 @@ function buildGroupBlock(gid, idxs) {
     </div>`;
   };
 
-  const roundBlocks = Array.from({ length: rounds }, (_, r) => {
+  const roundBlocks = Array.from({ length: rounds }, (_, r) => buildRoundHTML(gid, idxs, r, ctxs, restRow)).join('');
+
+  const allDone = rounds > 0 && Array.from({ length: rounds }, (_, r) => roundIsDone(idxs, r)).every(Boolean);
+
+  return `
+    <div id="ssblk-${gid}" style="background:${BG2};border:1px solid ${allDone?'#1a4a3a':CSB};border-radius:10px;margin-bottom:12px;overflow:hidden">
+      <div style="padding:10px 12px;border-bottom:1px solid ${BD};display:flex;align-items:flex-start;gap:8px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:14px;margin-bottom:4px">⛓ Superset <span style="font-weight:400;font-size:11px;color:${DM}">· ${members.length} exercícios · ${rounds} ${rounds===1?'rodada':'rodadas'}</span></div>
+          <div style="display:flex;gap:4px;flex-wrap:wrap">
+            ${idxs.map(i => `<button onclick="openSsMember(${i})" style="padding:3px 8px;border-radius:99px;border:1px solid ${BD};background:${BG3};color:${DM};font-size:10px;font-weight:600;cursor:pointer;font-family:inherit;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(S.exercises[i].exName)}</button>`).join('')}
+          </div>
+        </div>
+        <button onclick="openSsBuilder('${gid}')" title="Editar superset" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px">⚙</button>
+      </div>
+      ${soloSection}
+      <div style="padding:6px 14px 12px">
+        ${rounds ? roundBlocks : `<div style="font-size:12px;color:${DM};padding:8px 0">Nenhuma rodada ainda.</div>`}
+        ${B(BG3,TX,'+ Rodada',`addRound('${gid}')`,';margin-bottom:0;margin-top:10px')}
+      </div>
+    </div>`;
+}
+
+// One ROUND card: the header (fold chevron, "Rodada n", the promote-this-order
+// affordance, the checked/total count) and, when open, one two-line member row
+// per participating member with the rest gaps between them.
+//
+// Split out of buildGroupBlock() in the post-build review: at 106 lines that
+// function was the densest thing in the feature, and a round is the unit
+// people actually reason about, so it earns its own name. `restRow` is passed
+// in rather than rebuilt because it closes over the group's gap config.
+function buildRoundHTML(gid, idxs, r, ctxs, restRow) {
     const order   = roundMembers(idxs, gid, r);
+    // Members with no set at this round index simply don't appear — the whole
+    // of the unequal-set-count handling, and the reason nothing here special-
+    // cases it.
     const present = order.filter(i => roundSetIdxs(S.exercises[i])[r] != null);
     const done    = roundIsDone(idxs, r);
     const sets    = roundSets(idxs, r);
@@ -3298,7 +3374,7 @@ function buildGroupBlock(gid, idxs) {
       <div style="display:flex;align-items:center;gap:8px;padding:6px 0">
         <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px;line-height:1">${open?'▾':'▸'}</button>
         <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding:0">Rodada ${r+1}</button>
-        ${groupCfg(gid).roundOrder?.[r] ? `<button onclick="applyRoundOrderToAll('${gid}',${r})" title="Usar esta ordem em todas as rodadas" style="flex-shrink:0;background:none;border:1px solid ${BD};border-radius:99px;color:#b9a7ff;font-size:9px;font-weight:700;cursor:pointer;padding:2px 7px;font-family:inherit">↕ todas</button>` : ''}
+        ${groupCfg(gid).roundOrder?.[r] ? `<button onclick="applyRoundOrderToAll('${gid}',${r})" title="Usar esta ordem em todas as rodadas" style="flex-shrink:0;background:none;border:1px solid ${BD};border-radius:99px;color:${CST};font-size:9px;font-weight:700;cursor:pointer;padding:2px 7px;font-family:inherit">↕ todas</button>` : ''}
         <span style="flex-shrink:0;font-size:12px;color:${done?'#6fcf97':DM}">${checked}/${sets.length} ✓</span>
       </div>`;
 
@@ -3331,27 +3407,6 @@ function buildGroupBlock(gid, idxs) {
     return `<div style="border-bottom:.5px solid ${BD};padding-bottom:4px">
       ${head}
       <div style="padding:0 2px">${body}${restRow(r, 'end', 'após a rodada')}</div>
-    </div>`;
-  }).join('');
-
-  const allDone = rounds > 0 && Array.from({ length: rounds }, (_, r) => roundIsDone(idxs, r)).every(Boolean);
-
-  return `
-    <div id="ssblk-${gid}" style="background:${BG2};border:1px solid ${allDone?'#1a4a3a':'#3a3550'};border-radius:10px;margin-bottom:12px;overflow:hidden">
-      <div style="padding:10px 12px;border-bottom:1px solid ${BD};display:flex;align-items:flex-start;gap:8px">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:700;font-size:14px;margin-bottom:4px">⛓ Superset <span style="font-weight:400;font-size:11px;color:${DM}">· ${members.length} exercícios · ${rounds} ${rounds===1?'rodada':'rodadas'}</span></div>
-          <div style="display:flex;gap:4px;flex-wrap:wrap">
-            ${idxs.map(i => `<button onclick="openSsMember(${i})" style="padding:3px 8px;border-radius:99px;border:1px solid ${BD};background:${BG3};color:${DM};font-size:10px;font-weight:600;cursor:pointer;font-family:inherit;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(S.exercises[i].exName)}</button>`).join('')}
-          </div>
-        </div>
-        <button onclick="openSsBuilder('${gid}')" title="Editar superset" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px">⚙</button>
-      </div>
-      ${soloSection}
-      <div style="padding:6px 14px 12px">
-        ${rounds ? roundBlocks : `<div style="font-size:12px;color:${DM};padding:8px 0">Nenhuma rodada ainda.</div>`}
-        ${B(BG3,TX,'+ Rodada',`addRound('${gid}')`,';margin-bottom:0;margin-top:10px')}
-      </div>
     </div>`;
 }
 
@@ -3740,8 +3795,8 @@ function buildHistory() {
         wrapped.push(ex.ss ? { gid: ex.ss, html: [exRows[k]] } : { gid: null, html: [exRows[k]] });
       });
       const exRowsHTML = wrapped.map(u => u.gid
-        ? `<div style="border-left:2px solid #4a3f7a;padding-left:10px;margin-bottom:14px">
-             <div style="font-size:11px;color:#b9a7ff;font-weight:700;margin-bottom:8px">⛓ SUPERSET · ${u.html.length} exercícios</div>
+        ? `<div style="border-left:2px solid ${CS};padding-left:10px;margin-bottom:14px">
+             <div style="font-size:11px;color:${CST};font-weight:700;margin-bottom:8px">⛓ SUPERSET · ${u.html.length} exercícios</div>
              ${u.html.join('')}
            </div>`
         : u.html.join('')).join('');
@@ -4662,9 +4717,9 @@ function refreshPlanExList() {
           <button onclick="movePlanEx(${i},1)"  ${isLast?'disabled':''}  style="background:none;border:none;color:${isLast?BD:DM};font-size:13px;cursor:${isLast?'default':'pointer'};padding:1px 3px;line-height:1">▼</button>
         </div>`;
     const ssBadge = en.ss
-      ? `<button onclick="openPlanSsCfg('${en.ss}')" title="Superset" style="color:#b9a7ff;font-size:11px;font-weight:700;min-width:18px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit">⛓${planSsLetter(en.ss)}</button>`
+      ? `<button onclick="openPlanSsCfg('${en.ss}')" title="Superset" style="color:${CST};font-size:11px;font-weight:700;min-width:18px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit">⛓${planSsLetter(en.ss)}</button>`
       : `<span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>`;
-    return `<div style="border-bottom:.5px solid ${BD};${en.ss?`border-left:2px solid #4a3f7a;padding-left:6px`:''}">
+    return `<div style="border-bottom:.5px solid ${BD};${en.ss?`border-left:2px solid ${CS};padding-left:6px`:''}">
       <div style="display:flex;align-items:center;gap:6px;padding:7px 0">
         ${lead}
         ${ssBadge}
@@ -4706,7 +4761,7 @@ function togglePlanSsPick(eid) {
 
 function planSsToolbarHTML() {
   if (_planSsMode) return `
-    <div style="background:${BG3};border:1px solid #4a3f7a;border-radius:8px;padding:9px 10px;margin-bottom:8px">
+    <div style="background:${BG3};border:1px solid ${CS};border-radius:8px;padding:9px 10px;margin-bottom:8px">
       <div style="font-size:11px;color:${DM};margin-bottom:8px">Marque 2 ou mais exercícios que serão feitos juntos, em rodadas.</div>
       <div style="display:flex;gap:6px">
         ${Bs(_planSsPick.length>=2?CG:'#333',TX,`Criar superset${_planSsPick.length?` (${_planSsPick.length})`:''}`,'doCreatePlanSuperset()')}
@@ -4851,13 +4906,7 @@ function savePlan() {
   // rebuilt from the entry list — an entry removed from the plan must not
   // leave a group naming it, and a group down to one member is not a
   // superset. Same rule sessionPlanShape() applies on the session side.
-  const groups = {};
-  Object.keys(_planGroups).forEach(gid => {
-    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem || en.eid);
-    if (mems.length >= 2) groups[gid] = { ..._planGroups[gid], order: mems };
-  });
-  entries.forEach((en, k) => { if (en.ss && !groups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; } });
-  const cleanGroups = sanitizeGroups(groups);
+  const cleanGroups = pruneGroups(entries, _planGroups);
   if (_planId) { const p=D.plans.find(x=>x.id===_planId); if(p){p.name=name;p.exercises=entries;p.rests=rests;if(cleanGroups)p.groups=cleanGroups;else delete p.groups;p.updatedAt=Date.now();} }
   else D.plans.push({ id:uid(), name, exercises:entries, rests, ...(cleanGroups?{groups:cleanGroups}:{}), updatedAt:Date.now() });
   persist(); closeModal(); render();
@@ -5122,13 +5171,7 @@ function applyImportedPlan(data, sharedFrom) {
   // a group needs 2+ entries that survived exercise resolution to mean
   // anything, and its member order is rebuilt from those entries so a
   // hand-edited order can't name members this import never created.
-  const impGroups = {};
-  Object.entries(sanitizeGroups(data.groups) || {}).forEach(([gid, cfg]) => {
-    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
-    if (mems.length >= 2) impGroups[gid] = { ...cfg, order: mems };
-  });
-  entries.forEach((en, k) => { if (en.ss && !impGroups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; } });
-  const cleanGroups = sanitizeGroups(impGroups);
+  const cleanGroups = pruneGroups(entries, sanitizeGroups(data.groups));
   D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: entries, rests,
     ...(cleanGroups ? { groups: cleanGroups } : {}), updatedAt: Date.now() });
   persist(); render();
@@ -6432,18 +6475,7 @@ function sessionPlanShape(plan) {
   // copied from S.groups: the session's block order is the truth about who is
   // in the group and in what sequence, while a stored order can name members
   // that were swapped out or removed during the workout.
-  const groups = {};
-  Object.keys(S?.groups || {}).forEach(gid => {
-    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
-    if (mems.length >= 2) groups[gid] = { ...S.groups[gid], order: mems };
-  });
-  // A group that lost members until only one was left is not a superset — drop
-  // the marker too, so no entry is left pointing at a group that isn't there.
-  entries.forEach((en, k) => {
-    if (en.ss && !groups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; }
-  });
-
-  return { entries, rests, groups: sanitizeGroups(groups) };
+  return { entries, rests, groups: pruneGroups(entries, S?.groups) };
 }
 
 // ── Machine picker & save-time nudge (E2) ────────────────────────────────────
@@ -7208,15 +7240,13 @@ function doPlanFromSession(sessId) {
     const r = planWorthyRest(e);
     if (r) rests[en.eid] = r;
   });
-  const groups = {};
+  // Both deviation maps key by member id, so both are remapped onto the fresh
+  // ids FIRST — otherwise they would survive the extraction looking perfectly
+  // valid while applying to nothing. pruneGroups() then applies the shared
+  // validity rules (2+ surviving members, order rebuilt from the entries).
+  const remapped = {};
   Object.keys(s.groups || {}).forEach(gid => {
-    const mems = entries.filter(en => en.ss === gid).map(en => en.ssMem);
-    if (mems.length < 2) return;
-    const src = s.groups[gid];
-    const grp = { ...src, order: mems };
-    // Both deviation maps key by member id, so both have to be remapped onto
-    // the new ids — otherwise they would survive the extraction looking valid
-    // and silently stop applying to anything.
+    const src = s.groups[gid], grp = { ...src };
     const ov = {};
     Object.keys(src.rest?.overrides || {}).forEach(k => {
       const [r, slot] = k.split(':');
@@ -7227,10 +7257,9 @@ function doPlanFromSession(sessId) {
     if (Object.keys(ov).length) grp.rest.overrides = ov; else delete grp.rest.overrides;
     if (src.roundOrder) grp.roundOrder = Object.fromEntries(Object.entries(src.roundOrder)
       .map(([r, list]) => [r, list.map(m => memMap[m]).filter(Boolean)]));
-    groups[gid] = grp;
+    remapped[gid] = grp;
   });
-  entries.forEach((en, k) => { if (en.ss && !groups[en.ss]) { const { ss, ssMem, ssWu, ...bare } = en; entries[k] = bare; } });
-  const cleanGroups = sanitizeGroups(groups);
+  const cleanGroups = pruneGroups(entries, remapped);
   D.plans.push({ id: uid(), name, exercises: entries, rests, ...(cleanGroups ? { groups: cleanGroups } : {}), updatedAt: Date.now() });
   persist();
   closeModal();
@@ -7915,10 +7944,27 @@ function toggleSsPick(i) {
   openSsBuilder();
 }
 
-// The builder. Two modes in one modal: with no gid it ASSEMBLES a group from
-// the session's ungrouped blocks; with a gid it EDITS an existing one. Same
-// modal because they answer the same questions (who's in it, how many rounds,
-// where the rests go) and the owner asked for one builder, not two screens.
+// The builder. Two modes in one modal, switched entirely on whether `gid` is
+// given:
+//
+//   CREATE (no gid) — a tick list of the session's ungrouped blocks, plus the
+//     two rest defaults the new group will start with. Nothing is written
+//     until "Criar superset"; the ticks live in _ssPick (see the warning
+//     there about stale indices).
+//   EDIT (gid) — the group's current members, each with a remove ✕ and a "WU
+//     nas rodadas" toggle; the round counts; the same two rest defaults. Here
+//     everything applies IMMEDIATELY, including the rest fields (see
+//     setSsRestDefault), so there is no Salvar to forget.
+//
+// One modal rather than two screens because both answer the same three
+// questions — who is in it, how many rounds, where the rests go — and the
+// owner asked for "a builder menu", singular. The cost is that every block
+// below carries an `editing ?` branch, which is why the mode is resolved once
+// here at the top rather than re-tested inline.
+//
+// Re-entered on every tick and every toggle (each handler calls back into
+// this function), so it must be cheap and must not reset anything the user is
+// part-way through — the reason startSsBuilder() exists as a separate door.
 function openSsBuilder(gid) {
   const editing = !!gid;
   const idxs = editing ? groupIdxsOf(gid) : [];
