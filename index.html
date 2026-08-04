@@ -8221,8 +8221,9 @@ function openSwapEx(i) {
     <div style="font-size:13px;color:${DM};margin-bottom:12px">Substituir <strong style="color:${TX}">${esc(ex.exName)}</strong>${S.gymName?` — mostrando apenas o que está disponível em ${esc(S.gymName)}`:''}</div>
     <input id="sw-search" type="text" placeholder="Buscar por nome..."
       style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:9px 12px;outline:none;margin-bottom:10px;box-sizing:border-box">
-    <div id="sw-list" style="max-height:300px;overflow-y:auto;margin-bottom:14px"></div>
-    ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
+    <div id="sw-list" style="max-height:300px;overflow-y:auto;margin-bottom:10px"></div>
+    ${B(BG3,TX,'+ Nova variação',`openSwapVariant(${i})`)}
+    ${B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
   const inp = document.getElementById('sw-search');
   if (inp) inp.addEventListener('input', function() { swRefreshList(i, this.value); });
   swRefreshList(i, '');
@@ -8252,16 +8253,150 @@ function swRefreshList(i, search) {
 // can't be reinterpreted for a different one. The replacement starts fresh
 // from its own library defaults + history-driven rows. A confirm guards the
 // case where real numbers were already typed in.
-function doSwapEx(i, newId) {
+// TROCAR and CORRIGIR are two different operations that were sharing one
+// button, and the difference is the difference between a convenience and a
+// data loss:
+//
+//   TROCAR   — "I'll do a different exercise instead." The numbers genuinely
+//              don't transfer (a bench press's load means nothing under an
+//              incline press), so rebuilding the rows from the new exercise's
+//              own history is correct. This is the original behaviour.
+//   CORRIGIR — "I did this work, I just logged it under the wrong exercise."
+//              Every number is right; only the label is wrong. Discarding the
+//              sets here destroys real training data.
+//
+// Reported from the first real session being registered: a wrong exercise had
+// been logged, the correct one was a variant that didn't exist yet, and the
+// only path offered swapping to an existing entry AND threw the sets away.
+//
+// So when the block holds data the confirm becomes a CHOICE, not a
+// destruction warning. With nothing typed there is nothing to lose and
+// nothing to ask — that path is unchanged.
+//
+// `mode`: undefined = ask when there's data · 'keep' · 'reset'.
+function doSwapEx(i, newId, mode) {
   const ne = D.exercises.find(e => e.id === newId); if (!ne || !S) return;
   const old = S.exercises[i];
-  const hasData = (old.sets||[]).some(s => hasReps(s) || hasKg(s));
-  if (hasData && !confirm(`Substituir "${old.exName}" por "${ne.name}"?\n\nAs séries já preenchidas serão descartadas.`)) return;
-  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound, regime: ne.regime||'weighted', ...(isTimed(ne) ? { tracking: TRACK_TIME } : {}), rest: seedRestFor(ne.id, S.planId), sets: [] };
-  o.sets = buildSetsFromMemory(o);
+  const hasData = (old.sets||[]).some(s => hasReps(s) || hasKg(s) || s.completed === true);
+  if (hasData && !mode) { openSwapChoice(i, newId); return; }
+
+  const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound,
+              regime: ne.regime||'weighted', ...(isTimed(ne) ? { tracking: TRACK_TIME } : {}),
+              rest: seedRestFor(ne.id, S.planId, old._planEid), sets: [] };
+
+  // Everything that belongs to the SESSION rather than to the exercise has to
+  // survive either mode. Superset membership especially: correcting a member's
+  // exercise must not silently drop it out of its group (it did — the fresh
+  // object carried no ss, so the block left the group and the round table lost
+  // a column). Plan provenance, the day's note and the fold state are the same
+  // kind of fact: they describe this block in this workout, not which lift it is.
+  ['ss','ssMem','ssWu','note','_collapsed','_planEid','_planNote'].forEach(k => {
+    if (old[k] !== undefined) o[k] = old[k];
+  });
+
+  // Machine and load prefs are re-derived from the NEW exercise: a machine row
+  // is bound to one exId by the data model, so carrying the old one over would
+  // attach another exercise's equipment. Stored kg are unit-blind totals, so
+  // re-seeding the plate-input preference is safe even when the sets are kept.
+  const lim = lastInstanceFor(ne.id, S.gymId);
+  if (lim) { o.instanceId = lim.id; o.instanceName = lim.name; }
+  seedLoadPrefs(o, lim);
+
+  if (mode === 'keep') {
+    // The sets are the user's own record of what they did — carried verbatim,
+    // and marked edited so nothing renders dim as if it were an unconfirmed
+    // suggestion. Only the render-time scaffolding is dropped, since the
+    // chips/placeholders belong to the old exercise's history.
+    o.sets = (old.sets||[]).map(s => ({ intent: s.intent, reps: s.reps, kg: s.kg,
+      ...(s.completed !== undefined ? { completed: s.completed } : {}),
+      repsEdited: true, kgEdited: true }));
+  } else {
+    o.sets = buildSetsFromMemory(o);
+  }
   S.exercises[i] = o;
   closeModal();
   render();
+}
+
+// "+ Nova variação" from inside the swap list. The gap this closes: the
+// correct exercise may simply not exist yet — the owner's case was needing a
+// variant of what they'd logged — and until now the only way out was to leave
+// the session, create it in the Biblioteca, come back and swap, losing the
+// sets on the way.
+//
+// Inherits from the CURRENT exercise rather than from its movement's anchor,
+// which is both stronger and simpler: "uma variação deste exercício" means it
+// shares this exercise's muscle, pattern, movement, compound and accessories.
+// An avulso with no movement therefore still produces a properly classified
+// variant, which the movement-anchored createVariant() cannot do.
+function openSwapVariant(i) {
+  const ex = S.exercises[i]; if (!ex) return;
+  const lib = D.exercises.find(e => e.id === ex.exId);
+  _newVarEquip = lib?.equipment || null;
+  const chip = (k, label) => `<button id="av-eq-${k}" onclick="setVarEquip('${k}')" style="padding:5px 10px;border-radius:99px;border:1px solid ${BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newVarEquip===k?'#0a2e2e':BG3};color:${_newVarEquip===k?'#4dd0c4':DM}">${label}</button>`;
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">Nova variação</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:14px">Herda a classificação de <strong style="color:${TX}">${esc(ex.exName)}</strong>${lib?.movement && MOVEMENTS[lib.movement] ? ` (movimento: ${esc(MOVEMENTS[lib.movement].pt)})` : ''}.</div>
+    <input id="sv-name" type="text" placeholder="Ex.: Supino inclinado com halteres"
+      style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;outline:none;margin-bottom:12px;box-sizing:border-box">
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Equipamento</div>
+    <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:16px">
+      ${Object.entries(EQUIPMENT_LABELS).map(([k,l]) => chip(k,l)).join('')}
+    </div>
+    ${B(CG,TX,'Criar e usar aqui',`createSwapVariant(${i})`)}
+    ${B(BG3,DM,'Voltar',`openSwapEx(${i})`,';margin-bottom:0')}`);
+  setTimeout(() => document.getElementById('sv-name')?.focus(), 50);
+}
+
+function createSwapVariant(i) {
+  const ex = S.exercises[i]; if (!ex || !S) return;
+  const name = (document.getElementById('sv-name')?.value||'').trim(); if (!name) return;
+  // Same duplicate discipline as every other create path: an existing
+  // same-named exercise is REUSED, never forked — split ids are split
+  // histories. It still routes through the swap, so the sets are kept.
+  const clash = findByName(name);
+  if (clash) { doSwapEx(i, clash.id, 'keep'); return; }
+  const lib = D.exercises.find(e => e.id === ex.exId);
+  const nv = {
+    id: newUserExId(), name, origin: ORIGIN_USER,
+    type: lib?.type || ex.type || 'hypertrophy',
+    compound: lib ? lib.compound : null,
+    regime: lib?.regime || ex.regime || 'weighted',
+    mainMuscle: lib?.mainMuscle || 'undefined',
+    movementPattern: lib?.movementPattern || 'undefined',
+    ...(lib?.movement ? { movement: lib.movement } : {}),
+    accessoryMuscles: [...(lib?.accessoryMuscles||[])],
+    ...(lib?.tracking === TRACK_TIME ? { tracking: TRACK_TIME } : {}),
+    ...(_newVarEquip && EQUIPMENT_LABELS[_newVarEquip] ? { equipment: _newVarEquip } : {}),
+    updatedAt: Date.now(),
+  };
+  D.exercises.push(nv);
+  persist();
+  // 'keep' by construction: creating a variant to correct a mis-logged
+  // exercise is the correction case, never the do-something-else case.
+  doSwapEx(i, nv.id, 'keep');
+}
+
+// The three-way choice, shown only when there is something to lose. Spells out
+// the consequences it can actually predict — a regime or measurement change
+// makes the kept numbers mean something different, and saying so is cheaper
+// than letting the user discover it in Histórico.
+function openSwapChoice(i, newId) {
+  const ne = D.exercises.find(e => e.id === newId); if (!ne) return;
+  const old = S.exercises[i];
+  const oldRegime = old.regime||'weighted', newRegime = ne.regime||'weighted';
+  const warn = [];
+  if (oldRegime !== newRegime) warn.push(`o regime muda de ${REGIME_LABELS[oldRegime]||oldRegime} para ${REGIME_LABELS[newRegime]||newRegime}`);
+  if (isTimed(old) !== isTimed(ne)) warn.push(isTimed(ne) ? 'as séries passam a ser medidas em segundos' : 'as séries passam a ser medidas em repetições');
+  showModal(`
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(old.exName)} → ${esc(ne.name)}</div>
+    <div style="font-size:13px;color:${DM};margin-bottom:14px">Este bloco já tem séries preenchidas. O que fazer com elas?</div>
+    ${warn.length ? `<div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:8px;padding:9px 11px;margin-bottom:14px;font-size:12px;color:#e6c84a">Atenção: ${warn.join('; ')}.</div>` : ''}
+    ${B(CG,TX,'Manter as séries',`doSwapEx(${i},'${ne.id}','keep')`)}
+    <div style="font-size:11px;color:${DM};margin:-4px 0 12px">Use quando o treino foi este — só o exercício estava registrado errado.</div>
+    ${B(BG3,TX,'Limpar e recomeçar',`doSwapEx(${i},'${ne.id}','reset')`)}
+    <div style="font-size:11px;color:${DM};margin:-4px 0 12px">Use quando você vai fazer o outro exercício de verdade.</div>
+    ${B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
 }
 
 

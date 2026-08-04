@@ -3170,6 +3170,91 @@
     T.D.plans = keepPlans; T.D.sessions = keepSess; T.S = keepS;
   }
 
+  // ── swap: correct vs replace (first-real-session feedback) ─────────────────
+  //
+  // "Trocar" was one button doing two jobs. Replacing an exercise you're about
+  // to do differently SHOULD rebuild the rows; correcting an exercise you
+  // logged under the wrong name must keep every number. The owner hit the
+  // second while registering a real workout and lost the sets.
+  g('swap: correct vs replace');
+  {
+    const keepS = T.S;
+    const inc = T.D.exercises.find(e => e.movement === 'incline-press');
+    const mkSession = () => {
+      T.S = { planId:null, planName:null, date:T.today(), gymId:null, gymName:null, exercises:[
+        { exId:'bench-press', exName:'Supino reto', type:'hypertrophy', regime:'weighted', note:'nota do dia',
+          sets:[{intent:'work',reps:8,kg:60,completed:true},{intent:'work',reps:8,kg:62}] } ] };
+    };
+
+    mkSession();
+    const before = JSON.stringify(T.S.exercises[0].sets.map(s => [s.reps, s.kg, s.completed]));
+    W.doSwapEx(0, inc.id);                       // data present -> must ASK, not act
+    t('a swap with data asks instead of discarding', T.S.exercises[0].exId === 'bench-press');
+    W.closeModal();
+
+    mkSession();
+    W.doSwapEx(0, inc.id, 'keep');
+    t('"manter" repoints the exercise', T.S.exercises[0].exId === inc.id);
+    t('...and keeps every logged number exactly',
+       JSON.stringify(T.S.exercises[0].sets.map(s => [s.reps, s.kg, s.completed])) === before,
+       JSON.stringify(T.S.exercises[0].sets.map(s => [s.reps, s.kg, s.completed])));
+    t('...and keeps the day\'s note, which belongs to the session not the lift',
+       T.S.exercises[0].note === 'nota do dia');
+
+    mkSession();
+    W.doSwapEx(0, inc.id, 'reset');
+    t('"limpar" still rebuilds from the new exercise, the original behaviour',
+       T.S.exercises[0].exId === inc.id &&
+       JSON.stringify(T.S.exercises[0].sets.map(s => [s.reps, s.kg, s.completed])) !== before);
+
+    mkSession();
+    T.S.exercises[0].sets = [{ intent:'work', reps:'', kg:'' }];   // nothing typed
+    W.doSwapEx(0, inc.id);
+    t('with nothing typed there is nothing to ask — straight swap',
+       T.S.exercises[0].exId === inc.id);
+
+    // A correction inside a superset must not eject the block from its group.
+    // It did: doSwapEx built a fresh object that carried no ss, so the member
+    // silently left and the round table lost a column.
+    T.S = { planId:null, planName:null, date:T.today(), gymId:null, gymName:null, exercises:[
+      { exId:'bench-press', exName:'A', type:'hypertrophy', regime:'weighted', sets:[{intent:'work',reps:8,kg:60}] },
+      { exId:'barbell-curl', exName:'B', type:'hypertrophy', regime:'weighted', sets:[{intent:'work',reps:8,kg:20}] } ] };
+    const sgid = W.makeSuperset([0,1], { between:0, round:60 });
+    W.doSwapEx(1, inc.id, 'reset');
+    t('correcting a superset member keeps it in its group',
+       T.S.exercises[1].ss === sgid && !!T.S.exercises[1].ssMem, T.S.exercises[1].ss);
+    t('...so the group still renders as one unit',
+       JSON.stringify(W.sessionUnits().map(u => u.kind)) === '["group"]');
+
+    // Creating the variant that doesn't exist yet, without leaving the session.
+    mkSession();
+    const nName = 'Supino variação de teste ' + T.D.exercises.length;
+    const libBefore = T.D.exercises.length;
+    // Driven the way the modal does: the create fn reads the name field, so
+    // the field is what the test supplies.
+    const nv = (() => {
+      const el = W.document.createElement('input'); el.id = 'sv-name'; el.value = nName;
+      W.document.body.appendChild(el);
+      W.createSwapVariant(0);
+      el.remove();
+      return T.D.exercises.find(e => e.name === nName);
+    })();
+    t('a variant can be created from inside the swap', !!nv && T.D.exercises.length === libBefore + 1);
+    t('...in the user id namespace, marked as the user\'s own',
+       !!nv && nv.id.startsWith('u_') && nv.origin === T.ORIGIN_USER);
+    // Inherits from the block being corrected (mkSession put Supino reto back),
+    // NOT from whatever it was swapped to earlier in this group — which is the
+    // whole point of inheriting from the exercise rather than from a movement.
+    t('...inheriting the corrected exercise\'s full classification',
+       !!nv && nv.mainMuscle === 'chest' && nv.movementPattern === 'press' && nv.movement === 'bench-press',
+       nv && [nv.mainMuscle, nv.movementPattern, nv.movement].join('/'));
+    t('...and the session keeps its sets, because creating a variant IS the correction case',
+       JSON.stringify(T.S.exercises[0].sets.map(s => [s.reps, s.kg, s.completed])) === before &&
+       T.S.exercises[0].exId === (nv && nv.id));
+
+    T.S = keepS;
+  }
+
   // ── wrap-up ────────────────────────────────────────────────────────────────
   g('wrap-up');
   // Persist the restored (clean) state: several tests persist() mid-run
