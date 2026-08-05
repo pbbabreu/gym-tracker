@@ -4077,7 +4077,10 @@ function openExerciseDetail(exId) {
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:8px')}`);
 }
 
-const REGIME_LABELS = { weighted: 'Carga', assisted: 'Assistido', bodyweight: 'Corporal' };
+// All four regimes — bw-plus included, or every consumer's `|| r` fallback
+// prints the raw internal key at the user ("o regime muda de bw-plus para
+// Carga"; the progress chart's regime dropdown had the same latent leak).
+const REGIME_LABELS = { weighted: 'Carga', assisted: 'Assistido', bodyweight: 'Corporal', [REGIME_BW_PLUS]: 'Corporal + carga' };
 
 // The stats + chart + caption for ONE regime's series — split out so the
 // regime dropdown can swap it in place (#prog-body) without rebuilding the
@@ -8248,11 +8251,6 @@ function swRefreshList(i, search) {
   c.scrollTop = 0;
 }
 
-// The swap is DESTRUCTIVE for the block being replaced, same reasoning as
-// setExType/setExRegime: entered numbers were for the OLD exercise and
-// can't be reinterpreted for a different one. The replacement starts fresh
-// from its own library defaults + history-driven rows. A confirm guards the
-// case where real numbers were already typed in.
 // TROCAR and CORRIGIR are two different operations that were sharing one
 // button, and the difference is the difference between a convenience and a
 // data loss:
