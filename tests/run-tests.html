@@ -132,6 +132,10 @@
     // NOTE - still no backticks anywhere in this block.
     isGrouped, roundSetIdxs, soloSetIdxs, roundCountFor, groupCfg, groupIdxsOf,
     roundCollapsed, groupsKey, entriesKey, sanitizeGroups, sanitizeSecs, pruneGroups,
+    // Conta tab: version marker + the sync-state derivation
+    APP_VERSION, syncStateInfo,
+    get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
+    get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
   })`);
 
   // The starter count is read from library.json rather than hardcoded — the
@@ -3253,6 +3257,46 @@
        T.S.exercises[0].exId === (nv && nv.id));
 
     T.S = keepS;
+  }
+
+  // ── Conta tab (status: login · sync · version) ─────────────────────────────
+  g('conta tab');
+  {
+    const keepStatus = T.syncStatusVar, keepStreak = T.syncFailStreak, keepTab = T.TAB, keepLM = T.D.lastModified;
+
+    t('APP_VERSION exists and is a date-based string', /^\d{4}-\d{2}-\d{2}[a-z]?$/.test(T.APP_VERSION), T.APP_VERSION);
+
+    T.TAB = 'account'; W.render();
+    const txt = W.document.getElementById('root').innerText;
+    t('the Conta tab renders its three cards', /SINCRONIZAÇÃO/.test(txt) && /LOGIN/.test(txt) && /VERSÃO/.test(txt));
+    t('...showing the exact APP_VERSION string', txt.includes(T.APP_VERSION));
+    t('...and the schema version beside it', txt.includes('dados v' + T.SCHEMA_VERSION));
+    t('...and the device data counts', /treino/.test(txt) && /exercícios/i.test(txt));
+    t('the tab bar now carries Conta', /Conta/.test(txt));
+
+    // The sync-state derivation, driven through its real inputs. The suite
+    // runs unconfigured (no session, no token), so that's the baseline.
+    t('unconfigured reads "Desativada"', W.syncStateInfo().label === 'Desativada');
+    // A fake ok-state: em dia vs aguardando envio is the lastModified
+    // comparison — the honest local answer to "local == nuvem?".
+    // An EXPLICIT driver choice is what wins in syncDriver() — setting the
+    // token alone doesn't re-resolve it (first probe got this wrong).
+    T.CFG.driver = 'gist'; T.CFG.token = 'fake'; T.CFG.gistId = 'fake';
+    T.syncStatusVar = { state:'ok', time: Date.now() };
+    T.D.lastModified = Date.now() - 60000;
+    t('synced + nothing newer locally = "Em dia"', /^Em dia/.test(W.syncStateInfo().label), W.syncStateInfo().label);
+    T.D.lastModified = Date.now() + 60000;
+    t('local edits after the last ok = "aguardando envio"', /aguardando envio/.test(W.syncStateInfo().label));
+    T.syncFailStreak = 3;
+    t('3+ failures outrank the ok state', /Falhando/.test(W.syncStateInfo().label));
+    T.syncFailStreak = 0;
+    T.schemaAhead = true;
+    t('a newer remote schema outranks everything', W.syncStateInfo().label === 'Congelada');
+    T.schemaAhead = false;
+
+    T.CFG.driver = ''; T.CFG.token = ''; T.CFG.gistId = '';
+    T.syncStatusVar = keepStatus; T.syncFailStreak = keepStreak; T.D.lastModified = keepLM;
+    T.TAB = keepTab; W.render();
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

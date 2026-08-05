@@ -1217,6 +1217,18 @@ function pruneGroups(entries, srcGroups) {
 //     as it sees v6 data. normalizeExerciseOrigin() (section 2) closes the
 //     narrow race where a v5 device pushes before ever reading v6.
 const SCHEMA_VERSION = 6;
+
+// Human-facing deploy marker, shown on the Conta tab — a different job from
+// SCHEMA_VERSION above (data compatibility) and from the service worker's
+// cache name (cache lifecycle). This one answers exactly one question, the
+// long-standing Backlog ask: "did the deploy reach this phone?"
+//
+// HAND-BUMPED ON EVERY PUSH — there is no build step in this project, so no
+// automation can stamp it; bumping is part of the pre-push routine alongside
+// the test suite (see CLAUDE.md). Date of the push plus a letter when the
+// same day ships more than once. A stale value here is worse than no value,
+// because it answers the deploy question wrongly with confidence.
+const APP_VERSION = '2026-08-03c';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -2906,7 +2918,7 @@ function render() {
 }
 
 function buildPage() {
-  const TABS = [['log','Treino'],['history','Histórico'],['library','Biblioteca'],['plans','Planos'],['weight','Peso']];
+  const TABS = [['log','Treino'],['history','Histórico'],['library','Biblioteca'],['plans','Planos'],['weight','Peso'],['account','Conta']];
   const tabBar = `
     <div style="position:sticky;top:0;z-index:50;background:${BG};border-bottom:1px solid ${BD};display:flex;position:relative">
       ${TABS.map(([id,lbl]) => `
@@ -2921,6 +2933,7 @@ function buildPage() {
              : TAB==='history' ? buildHistory()
              : TAB==='library' ? buildLibrary()
              : TAB==='plans'   ? buildPlans()
+             : TAB==='account' ? buildAccount()
              :                   buildWeight();
   return `<div style="min-height:100vh">${tabBar}<div id="sync-banner">${syncProblemBanner()}</div><div style="padding:16px">${body}</div></div>`;
 }
@@ -8399,9 +8412,18 @@ function openSwapChoice(i, newId) {
 
 
 // ╔══════════════════════════════════════════════════════════════════════════════
-// ║  20. BACKUP & SYNC MODAL
+// ║  20. BACKUP & SYNC — Conta TAB (status) + modal (actions)
 // ║
-// ║  Sections in one modal:
+// ║  Two surfaces over the same state, with one job each:
+// ║    · The CONTA TAB (buildAccount, below) INFORMS — app version, login
+// ║      state, and whether what's on this device matches what's online.
+// ║      Read-only by design; its buttons only sync or open the modal.
+// ║    · The MODAL (openBackup) ACTS — login/logout, driver flip, export,
+// ║      import, snapshots, factory reset.
+// ║  Keeping the acting surface a modal left a tested flow untouched; the
+// ║  tab was added on the owner's ask for an at-a-glance status place.
+// ║
+// ║  Modal sections:
 // ║    · Conta — Supabase login (magic link) / logged-in state / driver flip
 // ║    · GitHub Gist (legacy) — token + gistId; hidden entirely on devices
 // ║      that never configured it, so family installs never see PATs
@@ -8409,6 +8431,99 @@ function openSwapChoice(i, newId) {
 // ║    · Import — paste JSON to restore data
 // ║    · Snapshots locais — daily rolling snapshots, restore buttons
 // ╚══════════════════════════════════════════════════════════════════════════════
+
+// One honest answer to "is what I see on this device the same as what's
+// online?", derived from state the sync machinery already keeps — nothing
+// here fires a network request just to render.
+//
+// The em-dia comparison leans on an existing invariant: remoteSave() runs
+// after every persist(), so when the last round-trip succeeded AND nothing
+// was modified after it (D.lastModified <= the ok-stamp), local == remote by
+// construction — the LWW merge saw to it. A lastModified NEWER than the last
+// ok means edits are still waiting for a push (normally a transient blip;
+// offline, it sticks and says so). In-memory only: after a fresh load the
+// state reads "waiting" for the seconds until the boot pull resolves, which
+// is simply true.
+function syncStateInfo() {
+  const configured = syncConfigured();
+  if (_remoteSchemaAhead)          return { color:'#e6c84a', label:'Congelada',
+    detail:'Os dados na nuvem vêm de uma versão mais nova do app. Recarregue para atualizar — nada é enviado até lá.' };
+  if (!configured)                 return { color:DM, label:'Desativada',
+    detail: syncDriver()==='supabase' ? 'Entre com sua conta para sincronizar entre aparelhos.' : 'Configure o token do GitHub em Backup & Sync.' };
+  if (_syncStatus?.state==='syncing') return { color:'#e6c84a', label:'Sincronizando…', detail:'Enviando/recebendo agora.' };
+  if (_syncFailStreak >= 3)        return { color:CR, label:`Falhando (${_syncFailStreak} tentativas)`,
+    detail:'As últimas tentativas não completaram. Verifique a conexão — e, no driver Gist, o token.' };
+  if (_syncStatus?.state==='error')return { color:'#e6c84a', label:'Erro na última tentativa',
+    detail: navigator.onLine===false ? 'Sem conexão — tenta de novo quando a rede voltar.' : 'A próxima alteração tenta de novo automaticamente.' };
+  if (_syncStatus?.state==='ok') {
+    return (D.lastModified||0) > _syncStatus.time
+      ? { color:'#e6c84a', label:'Alterações aguardando envio',
+          detail:'Há edições locais depois da última sincronização — o envio dispara sozinho em instantes.' }
+      : { color:CG, label:`Em dia · ${fmtTime(_syncStatus.time)}`,
+          detail:'O que está neste aparelho é o que está na nuvem.' };
+  }
+  return { color:DM, label:'Aguardando a primeira sincronização…',
+    detail:'Ela roda sozinha ao abrir o app conectado.' };
+}
+
+// The Conta tab's "↻ Sincronizar agora": the same fetch+merge+push-back cycle
+// the resume-pull listener runs — remotePull() alone doesn't push, and a
+// user tapping "sync now" means BOTH directions.
+async function syncNow() {
+  const ok = await remotePull();
+  if (ok) await remoteSave();
+  render();
+}
+
+function buildAccount() {
+  const drv = syncDriver();
+  const st  = syncStateInfo();
+  const card = inner => `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;padding:14px 16px;margin-bottom:12px">${inner}</div>`;
+  const h = t => `<div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">${t}</div>`;
+  const dtLbl = ts => { const d = new Date(ts); return `${fmt(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'))} · ${fmtTime(ts)}`; };
+
+  const loginBlock = drv === 'gist'
+    ? `<div style="font-size:14px">Sincronização via <strong>GitHub Gist</strong> <span style="color:${DM};font-size:12px">(legado)</span></div>
+       <div style="font-size:12px;color:${DM};margin-top:4px">${CFG.token ? 'Token configurado neste aparelho.' : 'Token não configurado.'}</div>`
+    : sbSession
+    ? `<div style="font-size:14px;display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:99px;background:${CG};flex-shrink:0"></span>Conectado como <strong>${esc(sbSession.user?.email||'')}</strong></div>
+       <div style="font-size:12px;color:${DM};margin-top:4px">Backup na nuvem e compartilhamento de planos ativos.</div>`
+    : `<div style="font-size:14px;display:flex;align-items:center;gap:8px"><span style="width:8px;height:8px;border-radius:99px;background:${DM};flex-shrink:0"></span>Não conectado</div>
+       <div style="font-size:12px;color:${DM};margin-top:4px">A biblioteca e o registro de treinos funcionam sem conta — entrar adiciona backup entre aparelhos e envio de planos.</div>`;
+
+  // Counts of what THIS DEVICE holds — the concrete half of "o que está no
+  // app": what a successful sync is keeping safe.
+  const catalogN = D.exercises.filter(e => isGlobalEx(e)).length;
+  const counts = [
+    [D.sessions.length, 'treino', 'treinos'], [D.plans.length, 'plano', 'planos'],
+    [D.weights.length, 'peso', 'pesos'], [D.gyms.length, 'academia', 'academias'],
+    [D.machines.length, 'máquina', 'máquinas'],
+  ].map(([n, s, p]) => `${n} ${n===1?s:p}`).join(' · ');
+
+  return `
+    <div style="font-size:20px;font-weight:700;margin-bottom:16px">Conta</div>
+
+    ${card(`${h('Sincronização')}
+      <div style="font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span style="width:9px;height:9px;border-radius:99px;background:${st.color};flex-shrink:0"></span>${st.label}
+      </div>
+      <div style="font-size:12px;color:${DM};line-height:1.5;margin-bottom:10px">${st.detail}</div>
+      <div style="font-size:12px;color:${DM};border-top:.5px solid ${BD};padding-top:10px;line-height:1.7">
+        Neste aparelho: <strong style="color:${TX}">${counts}</strong><br>
+        Exercícios: <strong style="color:${TX}">${D.exercises.length}</strong> (${catalogN} do catálogo)<br>
+        Última alteração local: ${D.lastModified ? dtLbl(D.lastModified) : '—'}
+      </div>
+      ${syncConfigured() && !_remoteSchemaAhead ? `<div style="margin-top:12px">${Bs(BG3,TX,'↻ Sincronizar agora','syncNow()',';width:100%;justify-content:center')}</div>` : ''}`)}
+
+    ${card(`${h('Login')}${loginBlock}`)}
+
+    ${card(`${h('Versão')}
+      <div style="font-size:14px">App <strong>${APP_VERSION}</strong> <span style="color:${DM}">· dados v${SCHEMA_VERSION}</span></div>
+      <div style="font-size:12px;color:${DM};margin-top:4px;line-height:1.5">Confira aqui se uma atualização chegou neste aparelho — o número muda a cada versão publicada.</div>`)}
+
+    ${B(BG3,TX,'⚙ Backup, login e restauração','openBackup()')}
+    <div style="font-size:11px;color:${DM};margin-top:-2px;line-height:1.5">Entrar/sair, exportar e importar dados, snapshots locais e o reset ficam em Backup & Sync.</div>`;
+}
 
 function openBackup() {
   const date     = today();
