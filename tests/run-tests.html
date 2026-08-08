@@ -134,6 +134,9 @@
     roundCollapsed, groupsKey, entriesKey, sanitizeGroups, sanitizeSecs, pruneGroups,
     // Conta tab: version marker + the sync-state derivation
     APP_VERSION, syncStateInfo,
+    // PR detection + session duration (2026-08-07; epley1RM is already
+    // exported with the core utilities above)
+    computeSessionPRs, fmtDuration,
     get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
     get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
   })`);
@@ -459,13 +462,15 @@
     W.cancelSession();
     T.gymId = null;
 
-    // swap candidates — the classification system as substitution engine
+    // swap candidates — the classification system as substitution engine.
+    // Tier entries are { e, unavail } since 2026-08-07 (unavailable
+    // exercises are dimmed and kept, not filtered — the add picker's rule).
     T.S = { gymId: null, exercises: [] };
     let tiers = W.swapCandidates({ exId: 'bench-press' }, '');
-    t('same muscle+pattern tier finds the other chest presses', tiers.samePattern.some(e => e.id === 'incline-press-machine'));
-    t('same muscle tier finds chest non-press', tiers.sameMuscle.some(e => e.id === 'pec-deck-fly'));
-    t('unrelated exercises land in others', tiers.others.some(e => e.id === 'zercher-squat'));
-    t('never suggests itself', !tiers.samePattern.concat(tiers.sameMuscle, tiers.others).some(e => e.id === 'bench-press'));
+    t('same muscle+pattern tier finds the other chest presses', tiers.samePattern.some(x => x.e.id === 'incline-press-machine'));
+    t('same muscle tier finds chest non-press', tiers.sameMuscle.some(x => x.e.id === 'pec-deck-fly'));
+    t('unrelated exercises land in others', tiers.others.some(x => x.e.id === 'zercher-squat'));
+    t('never suggests itself', !tiers.samePattern.concat(tiers.sameMuscle, tiers.others).some(x => x.e.id === 'bench-press'));
     tiers = W.swapCandidates({ exId: 'bench-press' }, 'incline');
     // "incline" matches chest presses (tier 1 — machine + dumbbell variants)
     // and the biceps Incline deficit curl (others) — search filters within
@@ -473,24 +478,34 @@
     // rather than exact counts, so promoting more incline variants can't
     // break this (the de-hardcoding rule content growth keeps teaching).
     t('search narrows candidates within each tier',
-      tiers.samePattern.some(e => e.id === 'incline-press-machine')
-      && tiers.samePattern.some(e => e.id === 'dumbbell-incline-press')
-      && tiers.samePattern.every(e => e.mainMuscle === 'chest' && e.movementPattern === 'press')
+      tiers.samePattern.some(x => x.e.id === 'incline-press-machine')
+      && tiers.samePattern.some(x => x.e.id === 'dumbbell-incline-press')
+      && tiers.samePattern.every(x => x.e.mainMuscle === 'chest' && x.e.movementPattern === 'press')
       // sameMuscle holds chest-but-NOT-press matches. It was empty until
       // incline flyes were promoted; asserting 0 was pinning the catalog's
       // size, not the ranking. Assert the SHAPE instead.
-      && tiers.sameMuscle.every(e => e.mainMuscle === 'chest' && e.movementPattern !== 'press')
+      && tiers.sameMuscle.every(x => x.e.mainMuscle === 'chest' && x.e.movementPattern !== 'press')
       // `others` collects matches from OTHER muscles. Pinning it to one id
       // broke as soon as a second incline curl was promoted; what matters
       // is that nothing chest lands here (those belong to the tiers above).
-      && tiers.others.every(e => e.mainMuscle !== 'chest')
-      && tiers.others.some(e => e.id === 'incline-deficit-curl'));
-    // gym filter removes unavailable-there suggestions entirely
+      && tiers.others.every(x => x.e.mainMuscle !== 'chest')
+      && tiers.others.some(x => x.e.id === 'incline-deficit-curl'));
+    // Unavailable-at-this-gym: KEPT, flagged, and sorted after the available
+    // ones — hiding them blocked the correction case (stale tags can hide
+    // the very exercise the user actually did).
     const inclineEx = T.D.exercises.find(e => e.id === 'incline-press-machine');
     inclineEx.gyms = ['somewhere-else'];
     T.S = { gymId: 'g1', exercises: [] };
     tiers = W.swapCandidates({ exId: 'bench-press' }, '');
-    t('unavailable-at-this-gym exercises are not suggested', !tiers.samePattern.some(e => e.id === 'incline-press-machine'));
+    {
+      const entry = tiers.samePattern.find(x => x.e.id === 'incline-press-machine');
+      t('unavailable-at-this-gym exercises stay in the list, flagged', !!entry && entry.unavail === true);
+      const firstUnavail = tiers.samePattern.findIndex(x => x.unavail);
+      const lastAvail    = tiers.samePattern.map(x => x.unavail).lastIndexOf(false);
+      t('...sorted after every available candidate in their tier',
+         firstUnavail === -1 || lastAvail === -1 || firstUnavail > lastAvail);
+      t('...and available ones carry no flag', tiers.samePattern.some(x => x.unavail === false));
+    }
     delete inclineEx.gyms;
     // undefined main muscle → nothing rankable
     T.D.exercises.push({ id: 'tmp-undef', name: 'Mistério', type: 'hypertrophy', compound: true, regime: 'weighted', mainMuscle: 'undefined', movementPattern: 'undefined', accessoryMuscles: [], updatedAt: 1 });
@@ -3297,6 +3312,101 @@
     T.CFG.driver = ''; T.CFG.token = ''; T.CFG.gistId = '';
     T.syncStatusVar = keepStatus; T.syncFailStreak = keepStreak; T.D.lastModified = keepLM;
     T.TAB = keepTab; W.render();
+  }
+
+  // ── PR detection & session duration (2026-08-07) ───────────────────────────
+  g('PRs & session duration');
+  {
+    const keepSess = T.D.sessions, keepS = T.S;
+    const mkRec = (id, date, exs) => ({ id, date, exercises: exs, updatedAt: 1 });
+    const wEx = (sets, extra) => ({ exId: 'pr-ex', exName: 'PR Ex', type: 'hypertrophy', regime: 'weighted', sets, ...(extra||{}) });
+
+    // First-ever log is a BASELINE, not a record
+    T.D.sessions = [];
+    t('first-ever log of an exercise sets no PRs',
+       W.computeSessionPRs(mkRec('n1', '2026-08-07', [wEx([{intent:'work',reps:8,kg:60}])])).length === 0);
+
+    // Beating history sets kg and e1RM PRs, with prev values carried
+    T.D.sessions = [mkRec('h1', '2026-08-01', [wEx([{intent:'work',reps:8,kg:60}])])];
+    let prs = W.computeSessionPRs(mkRec('n2', '2026-08-07', [wEx([{intent:'work',reps:8,kg:62.5}])]));
+    t('a heavier session sets a kg PR with the previous best attached',
+       prs.some(p => p.kind === 'kg' && p.value === 62.5 && p.prev === 60), JSON.stringify(prs));
+    t('...and an e1RM PR (more weight, same reps)', prs.some(p => p.kind === 'e1rm'));
+
+    // e1RM can PR without a kg PR — more reps at a lighter weight
+    prs = W.computeSessionPRs(mkRec('n3', '2026-08-07', [wEx([{intent:'work',reps:12,kg:58}])]));
+    t('more reps at lighter weight PRs e1RM but not kg',
+       prs.some(p => p.kind === 'e1rm') && !prs.some(p => p.kind === 'kg'), JSON.stringify(prs));
+
+    // Matching (not beating) sets nothing
+    t('equalling the record is not a PR',
+       W.computeSessionPRs(mkRec('n4', '2026-08-07', [wEx([{intent:'work',reps:8,kg:60}])])).length === 0);
+
+    // Uncounted work doesn't score: completed:false excluded both sides
+    prs = W.computeSessionPRs(mkRec('n5', '2026-08-07', [wEx([{intent:'work',reps:8,kg:100,completed:false}])]));
+    t('an unchecked (not-counted) set can never claim a PR', prs.length === 0);
+
+    // Retro-registration: the pool is sessions up to the REC's date
+    T.D.sessions = [mkRec('h1', '2026-08-01', [wEx([{intent:'work',reps:8,kg:60}])]),
+                    mkRec('h2', '2026-08-06', [wEx([{intent:'work',reps:8,kg:80}])])];
+    prs = W.computeSessionPRs(mkRec('n6', '2026-08-03', [wEx([{intent:'work',reps:8,kg:70}])]));
+    t('a retro-registered session compares only against what existed by its date',
+       prs.some(p => p.kind === 'kg' && p.prev === 60), JSON.stringify(prs));
+    t('...so the later 80 kg session does not block its PR', prs.some(p => p.kind === 'kg' && p.value === 70));
+
+    // Re-editing excludes the session itself from its own pool
+    T.D.sessions = [mkRec('h1', '2026-08-01', [wEx([{intent:'work',reps:8,kg:60}])]),
+                    mkRec('self', '2026-08-07', [wEx([{intent:'work',reps:8,kg:90}])])];
+    prs = W.computeSessionPRs(mkRec('self', '2026-08-07', [wEx([{intent:'work',reps:8,kg:65}])]));
+    t('re-editing a session never competes against its own previous copy',
+       prs.some(p => p.kind === 'kg' && p.value === 65 && p.prev === 60), JSON.stringify(prs));
+
+    // Assisted: LOWER counterweight is the record; 0 is real data
+    T.D.sessions = [mkRec('h1', '2026-08-01', [{ exId:'as-ex', exName:'A', type:'hypertrophy', regime:'assisted', sets:[{intent:'work',reps:8,kg:30}] }])];
+    prs = W.computeSessionPRs(mkRec('n7', '2026-08-07', [{ exId:'as-ex', exName:'A', type:'hypertrophy', regime:'assisted', sets:[{intent:'work',reps:8,kg:0}] }]));
+    t('assisted PRs on LESS counterweight, and 0 counts as real', prs.some(p => p.kind === 'assist' && p.value === 0 && p.prev === 30));
+
+    // Timed: longest hold; regimes with load also track top held kg
+    T.D.sessions = [mkRec('h1', '2026-08-01', [{ exId:'pl', exName:'P', type:'hypertrophy', regime:'bodyweight', tracking:'time', sets:[{intent:'work',reps:60,kg:''}] }])];
+    prs = W.computeSessionPRs(mkRec('n8', '2026-08-07', [{ exId:'pl', exName:'P', type:'hypertrophy', regime:'bodyweight', tracking:'time', sets:[{intent:'work',reps:75,kg:''}] }]));
+    t('a timed exercise PRs on hold duration', prs.some(p => p.kind === 'secs' && p.value === 75 && p.prev === 60));
+
+    // Mode-blind pool: a strength session's kg counts against hypertrophy PRs
+    T.D.sessions = [mkRec('h1', '2026-08-01', [{ ...wEx([{intent:'work',reps:3,kg:100}]), type:'strength' }])];
+    prs = W.computeSessionPRs(mkRec('n9', '2026-08-07', [wEx([{intent:'work',reps:8,kg:90}])]));
+    t('PR pool is mode-blind on kg (100 kg strength blocks a 90 kg hypertrophy "PR")',
+       !prs.some(p => p.kind === 'kg'), JSON.stringify(prs));
+    t('...but e1RM can still PR across modes (8×90 out-1RMs 3×100)', prs.some(p => p.kind === 'e1rm'));
+
+    // Duplicate entries (superset a→b→a): best across ALL blocks of the combo
+    T.D.sessions = [mkRec('h1', '2026-08-01', [wEx([{intent:'work',reps:8,kg:60}])])];
+    prs = W.computeSessionPRs(mkRec('n10', '2026-08-07', [wEx([{intent:'work',reps:8,kg:55}]), wEx([{intent:'work',reps:8,kg:64}])]));
+    t('duplicate entries merge — the combo PRs once, on its best block',
+       prs.filter(p => p.kind === 'kg').length === 1 && prs.find(p => p.kind === 'kg').value === 64);
+
+    // ── the save path stores prs + duration, and the whitelist holds ────────
+    T.D.sessions = [mkRec('h1', T.today(), [wEx([{intent:'work',reps:8,kg:60}])])];
+    T.S = { planId:null, planName:null, date:T.today(), startedAt: Date.now() - 50*60000,
+            gymId:null, gymName:null, exercises:[wEx([{intent:'work',reps:8,kg:70,completed:true}])] };
+    W.doSaveSession('none');
+    const saved = T.D.sessions[T.D.sessions.length - 1];
+    t('a save stores its PRs on the record', !!saved.prs && saved.prs.some(p => p.kind === 'kg' && p.value === 70));
+    t('a save stores startedAt and stamps endedAt once', !!saved.startedAt && !!saved.endedAt && saved.endedAt >= saved.startedAt);
+    const endedFirst = saved.endedAt;
+    // Re-edit: duration must not stretch, PRs recompute (and can retract)
+    W.editSess(saved.id);
+    T.S.exercises[0].sets[0].kg = 58;   // correction: it wasn't a PR after all
+    W.doSaveSession('none');
+    const resaved = T.D.sessions.find(s => s.id === saved.id);
+    t('re-saving preserves endedAt verbatim (a correction is not more training time)', resaved.endedAt === endedFirst);
+    t('a correction that undoes the record also removes the stored PR', !('prs' in resaved));
+    W.cancelSession && T.S && (T.S = null);
+
+    // Duration formatting
+    t('fmtDuration: under an hour reads minutes', T.fmtDuration(52*60000) === '52 min');
+    t('fmtDuration: over an hour reads 1h05', T.fmtDuration(65*60000) === '1h05');
+
+    T.D.sessions = keepSess; T.S = keepS;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

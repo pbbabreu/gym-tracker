@@ -2455,7 +2455,9 @@ function buildSetsFromMemory(ex) {
 // ║
 // ║  Volume is calculated using actual load, not entered kg.
 // ║
-// ║  The analytics block below (epley1RM / exerciseProgress / weekStartOf /
+// ║  The analytics block below (epley1RM / fmtDuration / computeSessionPRs
+// ║  — PR detection, run at every save and stored on the record — /
+// ║  exerciseProgress / weekStartOf /
 // ║  weeklyMuscleVolume) feeds the two read-only views: the per-exercise
 // ║  progress chart (openProgress, section 13) and the weekly muscle-volume
 // ║  table (openVolume, section 12).
@@ -2534,6 +2536,116 @@ function volEx(sets, regime, timed) {
 // for the weighted regime (assisted "kg" is a counterweight, bodyweight
 // has no kg at all), so only exerciseProgress()'s weighted branch uses it.
 const epley1RM = (kg, reps) => kg * (1 + reps / 30);
+
+// Workout duration for Histórico — "52 min" under an hour, "1h05" over it.
+// Minutes are the honest resolution for a gym session; seconds would imply
+// a precision the start/end stamps don't carry (startedAt is "opened the
+// session", not "touched the first weight").
+const fmtDuration = ms => {
+  const min = Math.round(ms / 60000);
+  return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h${String(min % 60).padStart(2, '0')}`;
+};
+
+// ── PR detection ─────────────────────────────────────────────────────────────
+//
+// Compares a session being saved against ALL-TIME bests and returns the
+// records it sets: [{ exId, exName, kind, value, prev }].
+//
+// The comparison pool is sessions that come BEFORE this one in calendar
+// terms (date <= rec.date, self excluded by id) — not "everything saved so
+// far". That makes the answer stable under retro-registration: logging
+// yesterday's workout today compares it against what existed up to
+// yesterday, and re-editing an old session can never claim a PR over
+// sessions that hadn't happened yet. Same-date sessions stay in the pool
+// (their true order within the day is unknowable once updatedAt mutates;
+// counting them as "existing bests" errs toward fewer, truer PRs).
+//
+// Each (exercise, regime) pair tracks the metrics that are honest for it —
+// the progress chart's own rule:
+//   weighted        → top working kg, plus estimated 1RM (which is also how
+//                     "more reps at a weight" registers: 8×80 out-1RMs 3×90)
+//   bw-plus         → top ADDED kg (e1RM would need the bodyweight at both
+//                     points in time — skipped rather than guessed)
+//   assisted        → LOWEST counterweight (falling is progress; 0 is real)
+//   bodyweight      → most reps in one set
+//   timed exercises → longest hold, plus top held kg for weighted/bw-plus
+// Type (Força/Hipertrofia) deliberately does NOT split the pool: a heavier
+// lift is a heavier lift whatever mode it was trained in, and e1RM is what
+// lets a hypertrophy session out-record a strength one honestly.
+// Machines don't split it either (v1 scope): a PR is per exercise, not per
+// apparatus — the calibrated/descriptive distinction stays a suggestion-
+// engine concern.
+//
+// A first-ever log sets no PRs: with no prior history for the combo there
+// is no record to beat — it is the baseline the next session gets measured
+// against. Counted work sets only, both sides (isCountedWork).
+function computeSessionPRs(rec) {
+  const comboOf = e => `${e.exId}:${e.regime || 'weighted'}:${trackingOf(e)}`;
+
+  // Best value per metric for one entry list, merged across duplicate
+  // entries of the same combo (the superset a→b→a shape logs one combo in
+  // several blocks; its record is the best across all of them).
+  const bestsOf = entries => {
+    const out = {}; // combo → { kg?, e1rm?, reps?, secs?, assist? }
+    entries.forEach(e => {
+      const combo = comboOf(e), regime = e.regime || 'weighted', timed = isTimed(e);
+      const b = out[combo] = out[combo] || {};
+      (e.sets || []).forEach(s => {
+        if (!isCountedWork(s)) return;
+        const reps = Number(s.reps), kg = Number(s.kg);
+        if (timed) {
+          if (hasReps(s) && reps > 0) b.secs = Math.max(b.secs ?? 0, reps);
+          if ((regime === 'weighted' || regime === REGIME_BW_PLUS) && hasKg(s))
+            b.kg = Math.max(b.kg ?? -Infinity, kg);
+          return;
+        }
+        if (regime === 'weighted') {
+          if (hasKg(s)) b.kg = Math.max(b.kg ?? -Infinity, kg);
+          if (hasKg(s) && hasReps(s) && reps > 0) b.e1rm = Math.max(b.e1rm ?? 0, epley1RM(kg, reps));
+        } else if (regime === REGIME_BW_PLUS) {
+          if (hasKg(s)) b.kg = Math.max(b.kg ?? -Infinity, kg);
+        } else if (regime === 'assisted') {
+          if (hasKg(s)) b.assist = Math.min(b.assist ?? Infinity, kg);
+        } else { // bodyweight
+          if (hasReps(s) && reps > 0) b.reps = Math.max(b.reps ?? 0, reps);
+        }
+      });
+    });
+    return out;
+  };
+
+  const mine = bestsOf(rec.exercises || []);
+  const pool = D.sessions.filter(s => s.id !== rec.id && s.date <= rec.date);
+  const prior = {}; // combo → merged bests across the pool
+  pool.forEach(s => {
+    const b = bestsOf(s.exercises || []);
+    Object.keys(b).forEach(combo => {
+      const p = prior[combo] = prior[combo] || {};
+      ['kg', 'e1rm', 'reps', 'secs'].forEach(k => { if (b[combo][k] != null) p[k] = Math.max(p[k] ?? -Infinity, b[combo][k]); });
+      if (b[combo].assist != null) p.assist = Math.min(p.assist ?? Infinity, b[combo].assist);
+    });
+  });
+
+  const prs = [];
+  Object.keys(mine).forEach(combo => {
+    const p = prior[combo];
+    if (!p) return; // first-ever log of this combo — a baseline, not a record
+    const m = mine[combo];
+    const exId = combo.split(':')[0];
+    const exName = (rec.exercises || []).find(e => e.exId === exId)?.exName || exId;
+    const add = (kind, value, prev) => prs.push({ exId, exName, kind, value, prev });
+    if (m.kg    != null && p.kg    != null && m.kg    > p.kg   + 1e-9) add('kg',    m.kg,    p.kg);
+    if (m.e1rm  != null && p.e1rm  != null && m.e1rm  > p.e1rm + 1e-9) add('e1rm',  Math.round(m.e1rm * 10) / 10, Math.round(p.e1rm * 10) / 10);
+    if (m.reps  != null && p.reps  != null && m.reps  > p.reps)        add('reps',  m.reps,  p.reps);
+    if (m.secs  != null && p.secs  != null && m.secs  > p.secs)        add('secs',  m.secs,  p.secs);
+    if (m.assist!= null && p.assist!= null && m.assist < p.assist - 1e-9) add('assist', m.assist, p.assist);
+  });
+  return prs;
+}
+
+// PT labels for the PR kinds, shared by Histórico's summary line.
+const PR_KIND_LABELS = { kg: 'carga', e1rm: '1RM est.', reps: 'reps', secs: 'tempo', assist: 'assistência' };
+const fmtPrVal = (kind, v) => kind === 'secs' ? fmtSecs(v) : kind === 'reps' ? `${v}` : `${v} kg`;
 
 // Per-session progress points for one exercise, oldest → newest (charts
 // read left-to-right in time), capped to the most recent `cap` sessions.
@@ -3747,8 +3859,10 @@ function buildExBlock(ex, i) {
 // ║  12. TAB: HISTORY (Histórico)
 // ║
 // ║  Sorted list of saved sessions, newest first — each collapsed row shows
-// ║  plan name, date, gym tag, counted-set count and volume; tappable to
-// ║  expand into per-exercise set detail.
+// ║  plan name, a 🏆 PR count when the session set records, date, gym tag,
+// ║  duration (only when trustworthy — logged the day it happened, 1min–8h),
+// ║  counted-set count and volume; tappable to expand into per-exercise set
+// ║  detail, topped by the PR summary block when there are records.
 // ║  Actions: Edit (loads the session back into the Log tab), Criar plano
 // ║  (extracts it into a plan — openPlanFromSession, section 19), Delete.
 // ║  Header buttons: 📊 Volume (weekly muscle-volume table, below) and
@@ -3820,7 +3934,17 @@ function buildHistory() {
            </div>`
         : u.html.join('')).join('');
 
-      detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${exRowsHTML}
+      // PR summary — one block at the top of the expanded view rather than
+      // per-exercise chips, because prs key by exercise while a superset can
+      // hold the same exercise in several blocks; a summary has no ambiguity
+      // about which block "owns" the record.
+      const prBlock = (s.prs||[]).length ? `
+        <div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:10px;padding:10px 12px;margin-bottom:14px">
+          <div style="font-size:12px;font-weight:700;color:#e6c84a;margin-bottom:4px">🏆 Recordes deste treino</div>
+          ${s.prs.map(pr => `<div style="font-size:12px;color:${TX};padding:2px 0">${esc(pr.exName)} — ${PR_KIND_LABELS[pr.kind]||pr.kind}: <span style="color:${DM}">${fmtPrVal(pr.kind, pr.prev)}</span> → <strong style="color:#e6c84a">${fmtPrVal(pr.kind, pr.value)}</strong></div>`).join('')}
+        </div>` : '';
+
+      detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${prBlock}${exRowsHTML}
         <div style="display:flex;gap:8px;margin-top:12px">
           ${Bs(BG3,TX,'Editar',`editSess('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
           ${Bs(BG3,TX,'Criar plano',`openPlanFromSession('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
@@ -3832,8 +3956,22 @@ function buildHistory() {
     return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:9px;overflow:hidden">
       <div onclick="toggleExp('${s.id}')" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">
         <div>
-          <div style="font-weight:600">${esc(s.planName||'Treino livre')}</div>
-          <div style="font-size:13px;color:${DM}">${fmt(s.date)}${s.gymName?` · ${esc(s.gymName)}`:''}</div>
+          <div style="font-weight:600">${esc(s.planName||'Treino livre')}${(s.prs||[]).length ? ` <span title="Recordes pessoais neste treino" style="font-size:12px;color:#e6c84a">🏆 ${s.prs.length} PR${s.prs.length>1?'s':''}</span>` : ''}</div>
+          <div style="font-size:13px;color:${DM}">${fmt(s.date)}${s.gymName?` · ${esc(s.gymName)}`:''}${(() => {
+            // Duration shows only when it can be TRUSTED: the session must
+            // have been logged the day it happened (a workout registered
+            // after the fact measures typing time, not training time — the
+            // startedAt calendar day must equal the session's date) and the
+            // span must be plausible (1 min–8 h; a live-session mirror
+            // restored days later would otherwise show a 40-hour workout).
+            // The stamps are stored regardless — only the display guards.
+            if (!s.startedAt || !s.endedAt) return '';
+            // Same en-CA idiom as today() — the one locale whose format is
+            // exactly the YYYY-MM-DD these date strings compare in.
+            const day = new Date(s.startedAt).toLocaleDateString('en-CA');
+            const ms = s.endedAt - s.startedAt;
+            return (day === s.date && ms >= 60000 && ms <= 8*3600000) ? ` · ${fmtDuration(ms)}` : '';
+          })()}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:13px;color:${DM}">${ws} série${ws!==1?'s':''} · ${s.exercises.length} ex.</div>
@@ -6309,7 +6447,7 @@ function startPlan(id) {
   const gm = currentGym(); // gymName is a snapshot, same pattern as planName — history survives a gym deletion
   _restTimer = null; _machineNudgeDone = false;
   S = {
-    planId: p.id, planName: p.name, date: today(),
+    planId: p.id, planName: p.name, date: today(), startedAt: Date.now(),
     gymId: gm?.id || null, gymName: gm?.name || null,
     // Sanitized on the way in for the same reason imported plans are: a plan
     // can arrive from another device or another user, and a malformed group
@@ -6358,7 +6496,12 @@ function startPlan(id) {
   render();
 }
 
-function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; _machineNudgeDone=false; render(); }
+// startedAt stamps the wall-clock start of the workout for Histórico's
+// duration display. It rides the live-session mirror (all of S does), so an
+// interrupted-and-restored session keeps its true start — and the display
+// side guards against the two ways this number goes wrong (retro-registered
+// sessions and mirrors restored days later); see buildHistory().
+function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), startedAt:Date.now(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; _machineNudgeDone=false; render(); }
 function cancelSession() {
   // Guard the wipe when the session holds real input — Cancelar discards S
   // AND its live-session stash (render() clears the mirror once S is null),
@@ -7191,7 +7334,22 @@ function doSaveSession(mode) {
   const usedGids = new Set(exercises.map(e => e.ss).filter(Boolean));
   const savedGroups = sanitizeGroups(Object.fromEntries(
     Object.entries(S.groups || {}).filter(([g]) => usedGids.has(g))));
-  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises, ...(savedGroups ? { groups: savedGroups } : {}), updatedAt:Date.now() };
+  // Duration bookkeeping: endedAt is stamped ONCE, at the first save — a
+  // re-edit (editSess spread S.startedAt/S.endedAt in from the record) must
+  // carry both verbatim, or every correction would stretch the workout.
+  // Legacy sessions have neither; the spread pattern keeps them absent.
+  const rec = { id:S._editId||uid(), date:S.date, planId:S.planId, planName:S.planName, gymId:S.gymId||null, gymName:S.gymName||null, exercises,
+    ...(S.startedAt ? { startedAt: S.startedAt, endedAt: S.endedAt || Date.now() } : {}),
+    ...(savedGroups ? { groups: savedGroups } : {}), updatedAt:Date.now() };
+  // PR detection — recomputed at EVERY save (a correction can create or
+  // retract a record), against sessions that come before this one in
+  // calendar terms, never against itself. Stored on the record rather than
+  // derived at render: a PR is a historical fact ("this was a record when it
+  // happened"), and deriving it later would silently unbadge a session the
+  // day a newer one surpasses it. Absent when empty — rec is a whitelist, so
+  // a stale prs from a previous save of the same session cannot linger.
+  const prs = computeSessionPRs(rec);
+  if (prs.length) rec.prs = prs;
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
   persist(); S=null; _restTimer=null; _machineNudgeDone=false; TAB='history'; render();
@@ -8205,11 +8363,21 @@ function rmEx(i)              { S.exercises.splice(i,1); render(); }
 // gym" — so candidates are ranked by how equivalent they are for training
 // purposes: same mainMuscle + same movementPattern first, then same
 // mainMuscle, then everything else — this ranking is exactly what the
-// muscle-classification system was built to enable. When the session has a
-// gym context (S.gymId), unavailable-there exercises are filtered out of
-// the suggestions entirely (an unavailable suggestion is noise, not help).
+// muscle-classification system was built to enable.
+//
+// Gym-unavailable exercises are DIMMED AND KEPT, not filtered out — the add
+// picker's rule, adopted here on 2026-08-07. The original "an unavailable
+// suggestion is noise, not help" filter had a failure mode the swap/correct
+// split exposed: availability tags can be stale, and a swap is often a
+// CORRECTION ("I logged the wrong exercise") — hiding the one exercise the
+// user actually did, because its tag says it lives elsewhere, blocks the fix
+// exactly when it matters. Within each tier the available candidates list
+// first; rows carry the same "indisponível" badge the picker uses and stay
+// tappable (a warning, never a block — the availability doctrine).
+//
 // An exercise with an Undefined main muscle can't be matched meaningfully,
 // so everything lands in the "others" bucket — searchable, just unranked.
+// Tier entries are { e, unavail } — the row renderer needs the flag.
 function swapCandidates(sessionEx, search) {
   const lib = D.exercises.find(e => e.id === sessionEx.exId);
   const muscle  = lib?.mainMuscle, pattern = lib?.movementPattern;
@@ -8218,15 +8386,18 @@ function swapCandidates(sessionEx, search) {
   const tiers = { samePattern: [], sameMuscle: [], others: [] };
   D.exercises.forEach(e => {
     if (e.id === sessionEx.exId) return;                       // can't swap to itself
-    if (S?.gymId && !availableAtGym(e, S.gymId)) return;       // unavailable here = not a suggestion
     // Bilingual search, same rule as everywhere else (name/name_en/aliases,
     // accent-folded) — typing the English name you remember must keep
     // finding the now-PT-named exercise.
     if (q && !exerciseMatchesSearch(e, q)) return;
-    if (canRank && e.mainMuscle === muscle && e.movementPattern === pattern && pattern !== 'other') tiers.samePattern.push(e);
-    else if (canRank && e.mainMuscle === muscle) tiers.sameMuscle.push(e);
-    else tiers.others.push(e);
+    const entry = { e, unavail: !!(S?.gymId && !availableAtGym(e, S.gymId)) };
+    if (canRank && e.mainMuscle === muscle && e.movementPattern === pattern && pattern !== 'other') tiers.samePattern.push(entry);
+    else if (canRank && e.mainMuscle === muscle) tiers.sameMuscle.push(entry);
+    else tiers.others.push(entry);
   });
+  // Stable partition: available first within each tier, original relative
+  // order preserved on both sides (sort() is stable per spec).
+  Object.values(tiers).forEach(t => t.sort((a, b) => a.unavail - b.unavail));
   return tiers;
 }
 
@@ -8249,10 +8420,10 @@ function swRefreshList(i, search) {
   const c = document.getElementById('sw-list'); if (!c) return;
   const ex = S.exercises[i];
   const tiers = swapCandidates(ex, search);
-  const row = e => `
-    <button onclick="doSwapEx(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
+  const row = ({ e, unavail }) => `
+    <button onclick="doSwapEx(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;${unavail?'opacity:.5':''}">
       <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(e.name)}</span>
-      <div style="display:flex;gap:4px;flex-shrink:0">${e.regime?regimePill(e.regime):''}${musclePill(e.mainMuscle,e.movementPattern)}</div>
+      <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${e.regime?regimePill(e.regime):''}${musclePill(e.mainMuscle,e.movementPattern)}</div>
     </button>`;
   const section = (lbl, list) => list.length
     ? `<div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:8px 0 6px">${lbl}</div>${list.map(row).join('')}`
