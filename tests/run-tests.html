@@ -3470,8 +3470,10 @@
     T.timerCfgVar = { preset: 'custom', hypertrophy: {wuwu:60,wuw:180,ww:180}, strength: {wuwu:60,wuw:180,ww:300}, alerts: { volume: 50, vibrate: true, notify: true } };
     beepGain = null; notifyCalled = false; vibrateCalls = [];
     W.signalRestDone();
-    t('signalRestDone: all three prefs on -> vibrates, beeps at the mapped gain, and notifies',
-       vibrateCalls.length === 1 && Math.abs(beepGain - T.gainForVolume(50)) < 1e-9 && notifyCalled === true);
+    // Beep + notification fire; the buzz rides the NOTIFICATION rather than a
+    // separate navigator.vibrate() call — see the no-double-buzz check below.
+    t('signalRestDone: all three prefs on -> beeps at the mapped gain and notifies',
+       Math.abs(beepGain - T.gainForVolume(50)) < 1e-9 && notifyCalled === true);
 
     T.timerCfgVar.alerts = { volume: 0, vibrate: false, notify: false };
     beepGain = null; notifyCalled = false; vibrateCalls = [];
@@ -3485,7 +3487,38 @@
     t('signalRestDone: volume 0 mutes the beep specifically, independent of vibrate staying on',
        beepGain === null && vibrateCalls.length === 1);
 
+    // ONE buzz per expiry, never two. The notification carries its own
+    // vibrate pattern, so calling navigator.vibrate() alongside it would
+    // fire the motor twice for a single rest ending.
+    T.timerCfgVar.alerts = { volume: 0, vibrate: true, notify: true };
+    vibrateCalls = []; notifyCalled = false;
+    W.signalRestDone();
+    t('signalRestDone: vibrate + notify does NOT double-buzz (the notification owns the pattern)',
+       vibrateCalls.length === 0 && notifyCalled === true);
+    T.timerCfgVar.alerts = { volume: 0, vibrate: true, notify: false };
+    vibrateCalls = [];
+    W.signalRestDone();
+    t('...but with notification off, the direct vibrate call is what buzzes', vibrateCalls.length === 1);
+
     W.playBeep = realBeep; W.fireRestNotification = realNotify; W.navigator.vibrate = realVibrate; W.Notification = realNotification;
+
+    // A SUSPENDED AudioContext has a frozen clock — every note scheduled
+    // against it is queued at a moment that never arrives, so the beep is
+    // silent with no error raised. Browsers suspend the context while a tab
+    // is backgrounded, which is precisely when the visibilitychange
+    // catch-up re-fires the expiry signal, so playBeep MUST resume first.
+    {
+      const ctx = new (W.AudioContext || W.webkitAudioContext)();
+      await ctx.suspend();
+      t('a suspended AudioContext really does freeze its clock (the premise of the fix)',
+         ctx.state === 'suspended' && ctx.currentTime === 0);
+      await ctx.close();
+      const src = W.playBeep.toString();
+      t('playBeep resumes a suspended context before scheduling',
+         /state\s*===\s*'suspended'/.test(src) && /resume\(\)/.test(src));
+      t('...and schedules INSIDE the resume callback, not against the still-frozen clock',
+         /resume\(\)\.then\(/.test(src));
+    }
 
     // Settings UI + save round-trip, driven through the real modal like the
     // duration fields already are — DOM is the source of truth until Salvar.

@@ -7592,6 +7592,11 @@ const TIMER_PRESETS = {
 // explicitly asks (see toggleNotifyPill()).
 const DEFAULT_ALERTS = { volume: 70, vibrate: true, notify: false };
 
+// One pattern, two consumers (navigator.vibrate and the notification's own
+// vibrate option) — named so the two can never drift into buzzing
+// differently for the same event.
+const REST_VIBRATE_PATTERN = [200, 100, 200, 100, 400];
+
 // 0–100 slider → 0–0.8 peak gain. The old hardcoded value was a flat 0.15
 // (the "quite low" the owner reported); the new default of 70% lands at
 // gain ≈0.56, roughly 3.7× louder, with headroom left below 1.0 so the top
@@ -7753,10 +7758,17 @@ const fmtRest = secs => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2
 let _audioCtx = null;
 function signalRestDone() {
   const prefs = timerCfg().alerts || DEFAULT_ALERTS;
-  if (prefs.vibrate !== false) { try { navigator.vibrate?.([200, 100, 200, 100, 400]); } catch(e) {} }
+  const willNotify = shouldFireNotification(prefs);
+  // ONE buzz, not two. The notification carries its own vibrate pattern, so
+  // calling navigator.vibrate() as well would fire the motor twice for a
+  // single expiry — and it's the notification's copy that survives the case
+  // this feature is for, since a hidden page's own vibrate() call is
+  // routinely ignored while a system notification's is not. So: notification
+  // handles the buzz when it's firing, direct call handles it otherwise.
+  if (prefs.vibrate !== false && !willNotify) { try { navigator.vibrate?.(REST_VIBRATE_PATTERN); } catch(e) {} }
   const gain = gainForVolume(prefs.volume);
   if (gain > 0) playBeep(gain);
-  if (shouldFireNotification(prefs)) fireRestNotification(prefs);
+  if (willNotify) fireRestNotification(prefs);
 }
 
 // The beep itself, factored out of signalRestDone() so the settings modal's
@@ -7765,13 +7777,32 @@ function signalRestDone() {
 function playBeep(gain) {
   try {
     _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    [0, 0.25].forEach(t0 => {
-      const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
-      o.frequency.value = 880; o.connect(g); g.connect(_audioCtx.destination);
-      g.gain.setValueAtTime(gain, _audioCtx.currentTime + t0);
-      g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + t0 + 0.2);
-      o.start(_audioCtx.currentTime + t0); o.stop(_audioCtx.currentTime + t0 + 0.22);
-    });
+    // RESUME FIRST, and this is load-bearing rather than defensive: browsers
+    // suspend an AudioContext whose tab is backgrounded, and a suspended
+    // context has a FROZEN clock — currentTime stops advancing, so every
+    // scheduled note below is queued at a moment that never arrives and the
+    // beep is silent forever, with no error thrown anywhere.
+    //
+    // That failure lands exactly on the path this feature exists to serve:
+    // rest expires while the app is backgrounded → visibilitychange fires
+    // the catch-up → signalRestDone() → here, with the context still
+    // suspended from being hidden. Without the resume, the "you missed an
+    // expiry, here it is now" recovery would have been silent for audio
+    // while vibration and notification worked — the most confusing possible
+    // outcome. resume() returns a promise, so the notes are scheduled in
+    // its .then(): scheduling them synchronously against a still-frozen
+    // clock would reintroduce the same bug.
+    const schedule = () => {
+      [0, 0.25].forEach(t0 => {
+        const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
+        o.frequency.value = 880; o.connect(g); g.connect(_audioCtx.destination);
+        g.gain.setValueAtTime(gain, _audioCtx.currentTime + t0);
+        g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + t0 + 0.2);
+        o.start(_audioCtx.currentTime + t0); o.stop(_audioCtx.currentTime + t0 + 0.22);
+      });
+    };
+    if (_audioCtx.state === 'suspended') _audioCtx.resume().then(schedule).catch(() => {});
+    else schedule();
   } catch(e) {}
 }
 
@@ -7785,7 +7816,7 @@ function fireRestNotification(prefs) {
     icon: './icon-192.png',
     tag: 'gym-rest-timer',              // replaces rather than stacks across repeated expiries
     renotify: true,
-    vibrate: prefs.vibrate !== false ? [200, 100, 200, 100, 400] : [],
+    vibrate: prefs.vibrate !== false ? REST_VIBRATE_PATTERN : [],
   })).catch(e => {});
 }
 
@@ -7911,7 +7942,11 @@ async function toggleNotifyPill() {
   // Only 'default' (never asked) can prompt — browsers give JS no way to
   // re-prompt after an explicit denial, so a 'denied' permission here just
   // falls through to the else branch below without ever calling this.
-  if (perm === 'default') perm = await Notification.requestPermission();
+  // Wrapped because this is invoked from an inline onclick, which discards
+  // the returned promise: a rejection (some browsers reject rather than
+  // resolve 'denied', e.g. in insecure contexts) would surface as an
+  // unhandled rejection instead of just leaving the pill off.
+  if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch(e) { perm = Notification.permission; } }
   if (perm === 'granted') { el.dataset.on = 'true'; el.style.background = CG; el.style.color = TX; }
   else setOff();
   const caveatEl = document.getElementById('notify-caveat');
