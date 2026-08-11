@@ -895,10 +895,12 @@ let _pickType = 'hypertrophy', _pickRegime = 'weighted';
 let _restTimer = null; // { endsAt, total, label, done }
 let _restTimerInterval = null;
 
-// Rest durations (seconds) per type × transition, per-DEVICE (localStorage,
-// like the gym selection): rest preferences belong to whoever holds the
-// phone, and a settings sync would need a sixth collection + schema bump —
-// deliberately not worth it for six numbers. Loaded lazily via timerCfg().
+// Rest durations (seconds) per type × transition, PLUS the expiry-alert
+// prefs (volume/vibrate/notify, added 2026-08-11 — see DEFAULT_ALERTS) —
+// one object, both per-DEVICE (localStorage, like the gym selection): rest
+// preferences belong to whoever holds the phone, and a settings sync would
+// need a sixth collection + schema bump — deliberately not worth it for a
+// handful of numbers and three flags. Loaded lazily via timerCfg().
 let _timerCfg = null;
 
 // In-app plan shares addressed to me, unclaimed — refreshed in the
@@ -1228,7 +1230,7 @@ const SCHEMA_VERSION = 6;
 // the test suite (see CLAUDE.md). Date of the push plus a letter when the
 // same day ships more than once. A stale value here is worse than no value,
 // because it answers the deploy question wrongly with confidence.
-const APP_VERSION = '2026-08-07';
+const APP_VERSION = '2026-08-11';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -7578,16 +7580,49 @@ const TIMER_PRESETS = {
   pesado:      { label: 'Pesado',      hypertrophy: { wuwu: 90, wuw: 180, ww: 240 }, strength: { wuwu: 90, wuw: 300, ww: 300 } },
 };
 
+// Expiry-ALERT preferences (owner, 2026-08-11: the beep "is quite low" and
+// wants volume/vibration/notification all user-configurable) — a sibling of
+// the duration config above, not a fourth preset: presets are about WHEN to
+// rest, this is about HOW you're told rest is over, and the two vary
+// independently (someone might want Rápido timings with a loud beep, or
+// Recomendado with vibration off). Stored in the same gym:timers blob,
+// same per-device reasoning as the durations ("rest preferences belong to
+// whoever holds the phone"). `notify` defaults OFF — unlike volume/vibrate
+// it needs an OS permission grant, so it can never be on until the user
+// explicitly asks (see toggleNotifyPill()).
+const DEFAULT_ALERTS = { volume: 70, vibrate: true, notify: false };
+
+// 0–100 slider → 0–0.8 peak gain. The old hardcoded value was a flat 0.15
+// (the "quite low" the owner reported); the new default of 70% lands at
+// gain ≈0.56, roughly 3.7× louder, with headroom left below 1.0 so the top
+// of the range doesn't clip. Pulled out as its own function so the
+// settings modal's "Testar" button can preview a choice through the exact
+// same math signalRestDone() will use later, not an approximation of it.
+const gainForVolume = v => Math.max(0, Math.min(100, Number(v) || 0)) / 100 * 0.8;
+
+// Whether signalRestDone() should attempt a system notification. TWO gates,
+// checked independently, because either can be true without the other: the
+// preference alone isn't enough (opt-in, never silently on), and a granted
+// permission alone isn't enough (the user's own toggle still rules — and a
+// permission can also be revoked later in browser settings without this
+// app hearing about it, so it's read fresh here rather than cached).
+const shouldFireNotification = prefs => !!(prefs?.notify && typeof Notification !== 'undefined' && Notification.permission === 'granted');
+
 function timerCfg() {
   if (_timerCfg) return _timerCfg;
   try {
     const raw = LS.get('gym:timers');
     if (raw) {
       const p = JSON.parse(raw);
-      if (p?.hypertrophy?.ww && p?.strength?.ww) { _timerCfg = p; return _timerCfg; }
+      if (p?.hypertrophy?.ww && p?.strength?.ww) {
+        // `alerts` is absent on any config stored before 2026-08-11 — merge
+        // defaults rather than let a later `prefs.volume` read undefined.
+        p.alerts = { ...DEFAULT_ALERTS, ...(p.alerts || {}) };
+        _timerCfg = p; return _timerCfg;
+      }
     }
   } catch(e) {}
-  _timerCfg = JSON.parse(JSON.stringify({ preset: 'recomendado', ...TIMER_PRESETS.recomendado })); // deep copy — custom edits must never mutate the preset table
+  _timerCfg = JSON.parse(JSON.stringify({ preset: 'recomendado', ...TIMER_PRESETS.recomendado, alerts: DEFAULT_ALERTS })); // deep copy — custom edits must never mutate the preset table
   return _timerCfg;
 }
 
@@ -7679,30 +7714,79 @@ function restTimerTick() {
 
 const fmtRest = secs => `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
 
-// Expiry signal — best-effort on every front, silent where unsupported.
-// Vibration reality check (verified 2026-07-29): only Blink engines ship it
-// — Chrome/Edge/Samsung Internet on Android. Firefox REMOVED the Vibration
-// API outright in v129 (Aug 2024, all platforms — abuse by scam pages), so
-// on Firefox/Android `navigator.vibrate` is undefined and the ?. call is a
-// deliberate no-op; iOS never had it. For Firefox users the BEEP is the
-// only expiry channel (and it needs media volume up). The beep's
-// AudioContext is created lazily HERE because browsers only allow audio
-// after a user gesture — the ✓ tap that started the timer was one. A
-// pocket-proof alert (system notification via the SW) is a real future
-// feature, not a bug fix — see Backlog.
+// Expiry signal — best-effort on every front, silent where unsupported, and
+// user-configurable since 2026-08-11 (owner: the beep "is quite low" and
+// wants volume/vibration/notification, ideally reaching a backgrounded or
+// locked phone). Three independent channels, each gated by its own DEFAULT_ALERTS
+// preference (timerCfg().alerts):
+//
+//   VIBRATE — same hardware reality as before: Blink-only (Chrome/Edge/
+//   Samsung Internet on Android). Firefox REMOVED the Vibration API
+//   outright in v129 (Aug 2024, all platforms); iOS never had it.
+//   `navigator.vibrate?.()` is a silent no-op wherever it's missing,
+//   independent of the preference.
+//
+//   BEEP — volume is now the user's own (gainForVolume), replacing the flat
+//   0.15 that read as too quiet. The AudioContext is created lazily HERE
+//   because browsers only allow audio after a user gesture — the ✓ tap
+//   that started the timer was one.
+//
+//   NOTIFICATION — opt-in, gated by shouldFireNotification() (preference
+//   AND live permission). Routed through the service worker registration
+//   rather than `new Notification()` directly — the standard PWA pattern,
+//   required on some platforms — which is what lets the alert surface while
+//   the tab isn't focused: a backgrounded tab (switched away from, not yet
+//   suspended) can still show a system-level banner even though its own
+//   beep may go unheard and its countdown isn't visible to look at.
+//
+//   HONEST CEILING, stated here because it's the one thing none of the
+//   three can promise: a phone locked long enough for the OS to fully
+//   suspend the tab's JS stops this whole function from running in real
+//   time — there is no code executing to make any of these three calls.
+//   The visibilitychange resume-catch-up (`restTimerTick()`'s early call
+//   from the listener) is what recovers from that: it re-runs this
+//   function the moment the user returns, so a missed expiry is late, not
+//   silently lost. Genuine locked-screen delivery needs Web Push — a
+//   message triggered from a SERVER, not a client-side timer — which is a
+//   distinct, much bigger project (new backend infra, not a bug fix) and
+//   is tracked separately in the Backlog rather than half-promised here.
 let _audioCtx = null;
 function signalRestDone() {
-  try { navigator.vibrate?.([200, 100, 200, 100, 400]); } catch(e) {}
+  const prefs = timerCfg().alerts || DEFAULT_ALERTS;
+  if (prefs.vibrate !== false) { try { navigator.vibrate?.([200, 100, 200, 100, 400]); } catch(e) {} }
+  const gain = gainForVolume(prefs.volume);
+  if (gain > 0) playBeep(gain);
+  if (shouldFireNotification(prefs)) fireRestNotification(prefs);
+}
+
+// The beep itself, factored out of signalRestDone() so the settings modal's
+// "Testar" button can preview a volume choice through the exact math a real
+// expiry will use, rather than a hand-kept approximation of it.
+function playBeep(gain) {
   try {
     _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     [0, 0.25].forEach(t0 => {
       const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
       o.frequency.value = 880; o.connect(g); g.connect(_audioCtx.destination);
-      g.gain.setValueAtTime(0.15, _audioCtx.currentTime + t0);
+      g.gain.setValueAtTime(gain, _audioCtx.currentTime + t0);
       g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + t0 + 0.2);
       o.start(_audioCtx.currentTime + t0); o.stop(_audioCtx.currentTime + t0 + 0.22);
     });
   } catch(e) {}
+}
+
+// The notification call, likewise factored out — both so signalRestDone()
+// reads as three symmetric one-liners (vibrate / playBeep / this) and so
+// the suite has something to spy on that isn't navigator.serviceWorker's
+// own real (getter-only, environment-dependent) accessor.
+function fireRestNotification(prefs) {
+  navigator.serviceWorker?.ready.then(reg => reg.showNotification('Descanso concluído 💪', {
+    body: _restTimer?.label ? `${_restTimer.label} — hora da próxima série` : 'Hora da próxima série',
+    icon: './icon-192.png',
+    tag: 'gym-rest-timer',              // replaces rather than stacks across repeated expiries
+    renotify: true,
+    vibrate: prefs.vibrate !== false ? [200, 100, 200, 100, 400] : [],
+  })).catch(e => {});
 }
 
 function skipRestTimer() { _restTimer = null; render(); }
@@ -7742,6 +7826,7 @@ function restTimerHTML() {
 
 function openTimerSettings() {
   const cfg = timerCfg();
+  const alerts = cfg.alerts || DEFAULT_ALERTS;
   const presetPill = (key, label) => `<button onclick="applyTimerPreset('${key}')" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${cfg.preset === key ? CG : BG3};color:${cfg.preset === key ? TX : DM}">${label}</button>`;
   const num = (id, val) => `<input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
     style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 6px;text-align:center;outline:none;box-sizing:border-box">`;
@@ -7752,14 +7837,95 @@ function openTimerSettings() {
       <div><div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">Aquec.→Trab.</div>${num(p + '-wuw', v.wuw)}</div>
       <div><div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">Trab.→Trab.</div>${num(p + '-ww', v.ww)}</div>
     </div>`;
+
+  // ── Alert prefs section — volume/vibrate/notify (owner ask, 2026-08-11) ──
+  // Vibrate is a plain on/off pill; Notification is ALSO a pill but reflects
+  // the browser's real permission state, not just the stored preference
+  // (see toggleNotifyPill()) — a device that had it granted then revoked in
+  // browser settings must not show it stuck "on". Both use the same
+  // data-on-attribute + in-place-restyle pattern the duration fields'
+  // sibling, applyTimerPreset(), already established, and for the same
+  // reason: rebuilding the whole modal on a toggle tap would blow away
+  // whatever's mid-edit in the duration number inputs above.
+  const notifSupported = typeof Notification !== 'undefined';
+  const notifPerm = notifSupported ? Notification.permission : 'unsupported';
+  const notifOn = alerts.notify === true && notifPerm === 'granted';
+  const alertPillHTML = (id, label, on, onclick) => `<button id="${id}" data-on="${on}" onclick="${onclick}" style="padding:7px 14px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${on?CG:BG3};color:${on?TX:DM}">${label}</button>`;
+  const notifCaveat = notifPerm === 'denied'
+    ? 'Bloqueado pelo navegador — ative nas configurações do site para usar.'
+    : 'Ajuda quando o app está em segundo plano; não garante entrega com a tela bloqueada por muito tempo.';
+
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">Descanso entre séries</div>
     <div style="font-size:12px;color:${DM};margin-bottom:12px">Padrões deste aparelho, em segundos por transição — o timer dispara ao marcar ✓ numa série. Um valor 0 desliga o timer daquela transição. Exercícios (Biblioteca) e planos podem sobrescrever por exercício; no treino, o ⏱ de cada exercício ajusta na hora.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">${Object.entries(TIMER_PRESETS).map(([k, p]) => presetPill(k, p.label)).join('')}${presetPill('custom', 'Personalizado')}</div>
     ${grid('Hipertrofia', 'tm-h', cfg.hypertrophy)}
     ${grid('Força', 'tm-s', cfg.strength)}
-    ${B(CG, TX, 'Salvar', 'saveTimerSettings()', ';margin-top:16px')}
+
+    <div style="font-size:12px;font-weight:700;margin:18px 0 6px">ALERTA DE FIM</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <span style="font-size:12px;color:${DM};flex-shrink:0">Volume</span>
+      <input id="alert-volume" type="range" min="0" max="100" step="10" value="${alerts.volume}"
+        oninput="document.getElementById('vol-label').textContent = this.value + '%'"
+        style="flex:1;accent-color:${CG}">
+      <span id="vol-label" style="font-size:12px;color:${TX};min-width:34px;text-align:right;flex-shrink:0">${alerts.volume}%</span>
+    </div>
+    ${Bs(BG3,TX,'🔊 Testar','testAlertSound()',';margin-bottom:12px')}
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+      ${alertPillHTML('alert-vibrate', 'Vibrar', alerts.vibrate !== false, "toggleAlertPill('alert-vibrate')")}
+      ${notifSupported ? alertPillHTML('alert-notify', 'Notificação', notifOn, 'toggleNotifyPill()') : ''}
+    </div>
+    ${notifSupported ? `<div id="notify-caveat" style="font-size:11px;color:${DM};margin-bottom:12px;line-height:1.5">${notifCaveat}</div>` : ''}
+
+    ${B(CG, TX, 'Salvar', 'saveTimerSettings()', ';margin-top:4px')}
     ${B(BG3, TX, 'Cancelar', 'closeModal()', ';margin-bottom:0')}`);
+}
+
+// Plain on/off pill (Vibrar) — flips its data-on flag and restyles IN
+// PLACE, deliberately not via a full openTimerSettings() rebuild, which
+// would discard any unsaved duration edits sitting in the number inputs
+// above. saveTimerSettings() reads the final data-on value at Salvar time —
+// the same "DOM is the source of truth until Salvar" rule the duration
+// fields already follow.
+function toggleAlertPill(id) {
+  const el = document.getElementById(id); if (!el) return;
+  const on = el.dataset.on !== 'true';
+  el.dataset.on = String(on);
+  el.style.background = on ? CG : BG3;
+  el.style.color = on ? TX : DM;
+}
+
+// The notify pill can't use the generic toggle above: turning it ON for the
+// first time must request OS permission, and the RESULT of that request —
+// not the tap itself — decides whether it actually ends up on. Turning OFF
+// never touches permission at all; that's a browser-level grant, separate
+// from this app's own opt-in flag, and revoking it is the user's call to
+// make in their browser settings, not something a tap here should attempt.
+async function toggleNotifyPill() {
+  const el = document.getElementById('alert-notify'); if (!el) return;
+  const turningOn = el.dataset.on !== 'true';
+  const setOff = () => { el.dataset.on = 'false'; el.style.background = BG3; el.style.color = DM; };
+  if (!turningOn) { setOff(); return; }
+  if (typeof Notification === 'undefined') return; // pill isn't rendered when unsupported — defensive only
+  let perm = Notification.permission;
+  // Only 'default' (never asked) can prompt — browsers give JS no way to
+  // re-prompt after an explicit denial, so a 'denied' permission here just
+  // falls through to the else branch below without ever calling this.
+  if (perm === 'default') perm = await Notification.requestPermission();
+  if (perm === 'granted') { el.dataset.on = 'true'; el.style.background = CG; el.style.color = TX; }
+  else setOff();
+  const caveatEl = document.getElementById('notify-caveat');
+  if (caveatEl) caveatEl.textContent = perm === 'denied'
+    ? 'Bloqueado pelo navegador — ative nas configurações do site para usar.'
+    : 'Ajuda quando o app está em segundo plano; não garante entrega com a tela bloqueada por muito tempo.';
+}
+
+// "Testar" — plays the beep at whatever volume the slider currently shows,
+// even unsaved, through the exact function a real expiry calls (playBeep),
+// so what the user hears while dragging the slider is honestly what
+// they'll get later, not an approximation of it.
+function testAlertSound() {
+  playBeep(gainForVolume(document.getElementById('alert-volume')?.value));
 }
 
 // Preset tap = fill the editable inputs with that preset's numbers (the
@@ -7795,7 +7961,17 @@ function saveTimerSettings() {
   const matchesPreset = TIMER_PRESETS[chosen]
     && JSON.stringify(TIMER_PRESETS[chosen].hypertrophy) === JSON.stringify(h)
     && JSON.stringify(TIMER_PRESETS[chosen].strength) === JSON.stringify(s);
-  _timerCfg = { preset: matchesPreset ? chosen : 'custom', hypertrophy: h, strength: s };
+  // Alert prefs read the same way the durations above do: DOM is the source
+  // of truth at Salvar time. Elements can be absent (Notification pill when
+  // unsupported) — each falls back to its own DEFAULT_ALERTS value rather
+  // than crashing or silently zeroing a setting the user never touched.
+  const volEl = document.getElementById('alert-volume'), vibEl = document.getElementById('alert-vibrate'), notifEl = document.getElementById('alert-notify');
+  const alerts = {
+    volume:  volEl ? Math.max(0, Math.min(100, parseInt(volEl.value, 10) || 0)) : DEFAULT_ALERTS.volume,
+    vibrate: vibEl ? vibEl.dataset.on === 'true' : DEFAULT_ALERTS.vibrate,
+    notify:  notifEl ? notifEl.dataset.on === 'true' : false,
+  };
+  _timerCfg = { preset: matchesPreset ? chosen : 'custom', hypertrophy: h, strength: s, alerts };
   LS.set('gym:timers', JSON.stringify(_timerCfg));
   openTimerSettings.__pendingPreset = null;
   closeModal();

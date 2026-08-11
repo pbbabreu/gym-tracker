@@ -137,6 +137,8 @@
     // PR detection + session duration (2026-08-07; epley1RM is already
     // exported with the core utilities above)
     computeSessionPRs, fmtDuration,
+    // Rest-timer alert prefs (2026-08-11): volume/vibrate/notify
+    DEFAULT_ALERTS, gainForVolume, shouldFireNotification,
     get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
     get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
   })`);
@@ -3407,6 +3409,134 @@
     t('fmtDuration: over an hour reads 1h05', T.fmtDuration(65*60000) === '1h05');
 
     T.D.sessions = keepSess; T.S = keepS;
+  }
+
+  // ── rest-timer alert prefs: volume/vibrate/notify (2026-08-11) ─────────────
+  g('rest-timer alert prefs');
+  {
+    const keepCfg = T.timerCfgVar;
+
+    // gainForVolume — pure mapping, no side effects
+    t('gainForVolume: 0% is silent', T.gainForVolume(0) === 0);
+    t('gainForVolume: 100% hits the 0.8 ceiling, not 1.0 (headroom against clipping)', Math.abs(T.gainForVolume(100) - 0.8) < 1e-9);
+    t('gainForVolume: the 70% default lands around 0.56 (~3.7x the old flat 0.15)', Math.abs(T.gainForVolume(70) - 0.56) < 1e-9);
+    t('gainForVolume: clamps a value above 100', T.gainForVolume(150) === T.gainForVolume(100));
+    t('gainForVolume: clamps a negative value to 0', T.gainForVolume(-20) === 0);
+    t('gainForVolume: a non-numeric input reads as 0, not NaN', T.gainForVolume('') === 0 && T.gainForVolume(undefined) === 0);
+
+    // shouldFireNotification — both gates independently, against a stubbed
+    // Notification (never trust the REAL browser permission for this
+    // origin, which the test can't control and shouldn't depend on).
+    const realNotification = W.Notification;
+    W.Notification = { permission: 'granted' };
+    t('shouldFireNotification: preference on + permission granted = fire', T.shouldFireNotification({ notify: true }) === true);
+    t('shouldFireNotification: permission granted but preference off = do not fire', T.shouldFireNotification({ notify: false }) === false);
+    W.Notification = { permission: 'denied' };
+    t('shouldFireNotification: preference on but permission denied = do not fire (revoked since the toggle was set)', T.shouldFireNotification({ notify: true }) === false);
+    W.Notification = { permission: 'default' };
+    t('shouldFireNotification: never asked yet = do not fire', T.shouldFireNotification({ notify: true }) === false);
+    W.Notification = realNotification;
+
+    // timerCfg().alerts — defaults, and merges partial/absent alerts on a
+    // config stored before 2026-08-11 rather than reading undefined.
+    T.timerCfgVar = null;
+    W.localStorage.setItem('gym:timers', JSON.stringify({ preset: 'recomendado', hypertrophy: { wuwu: 60, wuw: 180, ww: 180 }, strength: { wuwu: 60, wuw: 180, ww: 300 } }));
+    let cfg = W.timerCfg();
+    t('a pre-2026-08-11 stored config (no alerts key at all) merges in the full defaults',
+       JSON.stringify(cfg.alerts) === JSON.stringify(T.DEFAULT_ALERTS), JSON.stringify(cfg.alerts));
+    T.timerCfgVar = null;
+    W.localStorage.setItem('gym:timers', JSON.stringify({ preset: 'custom', hypertrophy: { wuwu: 60, wuw: 180, ww: 180 }, strength: { wuwu: 60, wuw: 180, ww: 300 }, alerts: { volume: 20 } }));
+    cfg = W.timerCfg();
+    t('a PARTIAL stored alerts object keeps its own value and fills in the rest',
+       cfg.alerts.volume === 20 && cfg.alerts.vibrate === true && cfg.alerts.notify === false, JSON.stringify(cfg.alerts));
+    T.timerCfgVar = null;
+    W.localStorage.removeItem('gym:timers');
+    cfg = W.timerCfg();
+    t('a fresh device (nothing stored) gets DEFAULT_ALERTS exactly',
+       JSON.stringify(cfg.alerts) === JSON.stringify(T.DEFAULT_ALERTS));
+
+    // signalRestDone() gating — spy on the three channel functions rather
+    // than the real Audio/Vibration/ServiceWorker APIs, which are either
+    // unspoofable (real hardware) or getter-only accessors in some browsers
+    // (navigator.serviceWorker) — see fireRestNotification()'s own comment
+    // for why it exists as a separate function.
+    const realBeep = W.playBeep, realNotify = W.fireRestNotification, realVibrate = W.navigator.vibrate;
+    let beepGain = null, notifyCalled = false, vibrateCalls = [];
+    W.playBeep = g => { beepGain = g; };
+    W.fireRestNotification = () => { notifyCalled = true; };
+    W.navigator.vibrate = pattern => { vibrateCalls.push(pattern); return true; };
+    W.Notification = { permission: 'granted' };
+
+    T.timerCfgVar = { preset: 'custom', hypertrophy: {wuwu:60,wuw:180,ww:180}, strength: {wuwu:60,wuw:180,ww:300}, alerts: { volume: 50, vibrate: true, notify: true } };
+    beepGain = null; notifyCalled = false; vibrateCalls = [];
+    W.signalRestDone();
+    t('signalRestDone: all three prefs on -> vibrates, beeps at the mapped gain, and notifies',
+       vibrateCalls.length === 1 && Math.abs(beepGain - T.gainForVolume(50)) < 1e-9 && notifyCalled === true);
+
+    T.timerCfgVar.alerts = { volume: 0, vibrate: false, notify: false };
+    beepGain = null; notifyCalled = false; vibrateCalls = [];
+    W.signalRestDone();
+    t('signalRestDone: all three prefs off -> none of the three channels fire',
+       vibrateCalls.length === 0 && beepGain === null && notifyCalled === false);
+
+    T.timerCfgVar.alerts = { volume: 0, vibrate: true, notify: false };
+    beepGain = null; vibrateCalls = [];
+    W.signalRestDone();
+    t('signalRestDone: volume 0 mutes the beep specifically, independent of vibrate staying on',
+       beepGain === null && vibrateCalls.length === 1);
+
+    W.playBeep = realBeep; W.fireRestNotification = realNotify; W.navigator.vibrate = realVibrate; W.Notification = realNotification;
+
+    // Settings UI + save round-trip, driven through the real modal like the
+    // duration fields already are — DOM is the source of truth until Salvar.
+    T.timerCfgVar = null;
+    W.localStorage.removeItem('gym:timers');
+    W.openTimerSettings();
+    const modalTxt = W.document.getElementById('modal-ov').innerText;
+    t('the modal renders the ALERTA DE FIM section with a Testar button', /ALERTA DE FIM/.test(modalTxt) && /Testar/.test(modalTxt));
+    W.document.getElementById('alert-volume').value = '30';
+    W.toggleAlertPill('alert-vibrate'); // default true -> tap once = false
+    t('toggling the Vibrar pill flips its data-on flag in place (no modal rebuild, no lost edits)',
+       W.document.getElementById('alert-vibrate').dataset.on === 'false' && W.document.getElementById('alert-volume').value === '30');
+    W.saveTimerSettings();
+    cfg = W.timerCfg();
+    t('Salvar persists the volume slider value', cfg.alerts.volume === 30, cfg.alerts.volume);
+    t('...and the toggled vibrate flag', cfg.alerts.vibrate === false);
+    t('...defaulting notify to false when the pill was never rendered/touched (permission not granted in this pass)', cfg.alerts.notify === false);
+
+    // testAlertSound() previews through playBeep with the LIVE (possibly
+    // unsaved) slider value, not the last-saved one.
+    W.openTimerSettings();
+    W.document.getElementById('alert-volume').value = '100';
+    let previewGain = null;
+    W.playBeep = g => { previewGain = g; };
+    W.testAlertSound();
+    W.playBeep = realBeep;
+    t('Testar reads the CURRENT slider position, even before Salvar',
+       previewGain !== null && Math.abs(previewGain - T.gainForVolume(100)) < 1e-9);
+    W.closeModal();
+
+    // The notify pill's OWN handler — not the generic toggle — since
+    // turning it on has to consult (mocked) permission first.
+    T.timerCfgVar = null; W.localStorage.removeItem('gym:timers');
+    W.openTimerSettings();
+    W.Notification = { permission: 'granted' };
+    await W.toggleNotifyPill();
+    t('toggleNotifyPill: permission already granted -> turns on immediately, no prompt needed',
+       W.document.getElementById('alert-notify').dataset.on === 'true');
+    await W.toggleNotifyPill();
+    t('...tapping again turns it back off, no permission call involved either way',
+       W.document.getElementById('alert-notify').dataset.on === 'false');
+    W.Notification = { permission: 'denied' };
+    await W.toggleNotifyPill();
+    t('toggleNotifyPill: a DENIED permission can never be turned on from here — browsers give JS no re-prompt path',
+       W.document.getElementById('alert-notify').dataset.on === 'false');
+    t('...and the caveat line explains why, instead of leaving the tap looking ignored',
+       /Bloqueado pelo navegador/.test(W.document.getElementById('notify-caveat').textContent));
+    W.closeModal();
+    W.Notification = realNotification;
+
+    T.timerCfgVar = keepCfg;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────

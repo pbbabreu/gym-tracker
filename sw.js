@@ -5,7 +5,13 @@
 // v4: vendor/supabase.js joined ASSETS — it must be in the install-time
 // cache or the first OFFLINE load after an online one would boot the app
 // without window.supabase (login/account sync silently absent).
-const CACHE = 'gym-tracker-v4';
+// v5: notificationclick handler added (rest-timer alerts, 2026-08-11) — the
+// bump forces every installed device to pick up this file's new listener;
+// without it, a device whose SW was already active would keep running the
+// old script (SW updates are lazy — a new sw.js is only fetched/installed
+// on its own schedule) and the tap-a-notification-to-return behavior below
+// would silently never reach existing installs.
+const CACHE = 'gym-tracker-v5';
 // Relative (not root-absolute) paths on purpose: this app is hosted at a
 // GitHub Pages *project* site (pbbabreu.github.io/gym-tracker/), not the
 // domain root. Root-absolute paths like '/index.html' resolve against the
@@ -44,5 +50,19 @@ self.addEventListener('fetch', e => {
       }
       return resp;
     }).catch(() => caches.match(e.request))
+  );
+});
+
+// Rest-timer notifications (index.html's signalRestDone(), 2026-08-11) are
+// shown via this registration so they can surface while the tab isn't
+// focused — tapping one should return to the app, the standard PWA
+// pattern: focus an already-open tab if one exists, otherwise open one.
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  e.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const c of list) { if ('focus' in c) return c.focus(); }
+      if (self.clients.openWindow) return self.clients.openWindow('./');
+    })
   );
 });
