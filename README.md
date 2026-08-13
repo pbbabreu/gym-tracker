@@ -49,7 +49,7 @@ python -m http.server 8742        # from the repo root
 ```
 
 - Develop against `http://localhost:8742/` — `file://` breaks reloads and service workers.
-- **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (693 checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
+- **Tests:** open `http://localhost:8742/tests/run-tests.html` — a self-contained regression suite (724 checks) that loads the real app in an iframe and asserts against the shipped functions. Run it before every push. It wipes the origin's storage: local server only, never the live origin.
 - **Version marker:** `APP_VERSION` in `index.html` (shown on the Conta tab) is hand-bumped on every push that changes `index.html` — there is no build step to stamp it. Date + letter for same-day pushes. Its whole job is answering "did the deploy reach this device?", so a push without the bump makes it lie.
 - Service-worker gotcha: if an edit doesn't seem to take effect, the SW may be serving cache — unregister it and hard-reload (the test runner does this automatically).
 - `supabase/` holds the canonical database SQL (01 = per-user storage, 02 = sharing tables, 03 = generated catalog seed, 04 = machines-collection migration); `.github/workflows/keepalive.yml` pings the project weekly so the free tier never pauses.
