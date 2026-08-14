@@ -875,6 +875,10 @@ let _newEquip = null;
 // field is omitted entirely for rep exercises while the toggle always shows
 // one side selected. See trackingOf() for what 'time' switches off.
 let _newTracking = TRACK_REPS;
+// Execução unilateral (2026-08-13) — a property of the exercise, editable in
+// the modal AND per-session on the block; deliberately NOT a separate
+// variation (owner: "não sendo necessária uma variação nova só para isso").
+let _newUnilateral = false;
 // Classification working state — see MUSCLE_GROUPS/MOVEMENT_PATTERNS
 // (section 2). Unlike _newCompound, these are mandatory-with-an-escape-
 // valve rather than nullable, so no _touched flag is needed: every save
@@ -1230,7 +1234,7 @@ const SCHEMA_VERSION = 6;
 // the test suite (see CLAUDE.md). Date of the push plus a letter when the
 // same day ships more than once. A stale value here is worse than no value,
 // because it answers the deploy question wrongly with confidence.
-const APP_VERSION = '2026-08-11';
+const APP_VERSION = '2026-08-13';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -2042,8 +2046,12 @@ async function loadData() {
 // ║  buildSetsFromMemory()):
 // ║    Compound + weighted  → 3 WU sets at 25 / 55 / 85% of suggested weight
 // ║    Compound + assisted  → 3 WU sets at 175 / 145 / 115% (more assist = easier)
-// ║    Isolation + weighted → 1 WU set at 50% of suggested weight (6 reps —
-// ║                           the "closest to work weight" step, not 10)
+// ║    Isolation + weighted → 1 WU set at 50% of suggested weight, 10 reps
+// ║                           (owner correction 2026-08-13: at HALF the work
+// ║                           weight the light-step rep count is the honest
+// ║                           one — the old "treat it as the final ramp step"
+// ║                           logic prescribed 6, pairing the heaviest-step
+// ║                           reps with a light-step load)
 // ║    Isolation + assisted → 1 WU set at 150% (the complement of 50%, same
 // ║                           inversion the compound ramp uses)
 // ║    Bodyweight           → no warm-ups
@@ -2052,7 +2060,16 @@ async function loadData() {
 // ║  hand (see toggleCompleted()).
 // ╚══════════════════════════════════════════════════════════════════════════════
 
-const memKey = (exId, type, regime) => `${exId}:${type}:${regime||'weighted'}`;
+// The identity of a progression history: which numbers may be compared with
+// which. `unilateral` joined it 2026-08-13 (owner: an exercise can be done
+// one side at a time WITHOUT being a separate variation) — and it splits
+// history for the same reason regime does: a single-leg 40 kg and a two-leg
+// 80 kg on the same machine are not the same working weight, and blending
+// them would feed suggestions, graduation and PRs numbers that are true of
+// neither. One flag on the session block, one extra key segment here — every
+// matcher downstream (suggestions, the same-session duplicate heads-up)
+// inherits the split from this single point.
+const memKey = (exId, type, regime, unilateral) => `${exId}:${type}:${regime||'weighted'}${unilateral ? ':u' : ''}`;
 
 const isCountedWork = s => s.intent === 'work' && s.completed !== false;
 
@@ -2103,6 +2120,7 @@ function lastModesFor(exId) {
     // loadMode/barKg ride along (barbell plate-input preference, 2026-07-30)
     // so the NEXT session opens in the same input units as the last one.
     if (e) return { type: e.type || 'hypertrophy', regime: e.regime || 'weighted',
+                    unilateral: !!e.unilateral,
                     loadMode: e.loadMode || null, barKg: e.barKg || null };
   }
   return null;
@@ -2196,8 +2214,8 @@ function lastInstanceFor(exId, gymId) {
   return anywhere;
 }
 
-function getRecentWorkHistory(exId, type, regime, n=3, instanceId=null) {
-  const key = memKey(exId, type, regime);
+function getRecentWorkHistory(exId, type, regime, n=3, instanceId=null, unilateral=false) {
+  const key = memKey(exId, type, regime, unilateral);
   // The bottom rung of the resolution ladder (owner requirement 2026-07-29:
   // "I feel much stronger in different machines, even if the movement is in
   // theory the same"): when the current session block names a MACHINE,
@@ -2215,7 +2233,7 @@ function getRecentWorkHistory(exId, type, regime, n=3, instanceId=null) {
         // first one found, so a repeated exercise's full contribution counts
         // toward suggestions/graduation instead of silently losing everything
         // past the first occurrence.
-        const matches = (sess.exercises||[]).filter(e => memKey(e.exId, e.type, e.regime||'weighted') === key
+        const matches = (sess.exercises||[]).filter(e => memKey(e.exId, e.type, e.regime||'weighted', e.unilateral) === key
           && (!wantInstance || e.instanceId === wantInstance));
         const ws = matches.flatMap(ex => (ex.sets||[]).filter(s => isCountedWork(s) && (hasReps(s)||hasKg(s))));
         if (ws.length) out.push(ws.map(s => ({reps:s.reps, kg:s.kg})));
@@ -2241,8 +2259,8 @@ function bumpWeight(kg, isAssisted) {
 
 // The progression algorithm. See the section banner above for why
 // "graduated" requires the full target work-set count, not just one set.
-function computeSuggestion(exId, type, regime, profile, instanceId=null) {
-  const history = getRecentWorkHistory(exId, type, regime, 3, instanceId);
+function computeSuggestion(exId, type, regime, profile, instanceId=null, unilateral=false) {
+  const history = getRecentWorkHistory(exId, type, regime, 3, instanceId, unilateral);
   if (!history.length) return null;
 
   const isAsst = regime === 'assisted';
@@ -2349,9 +2367,14 @@ const WU_REPS = [10, 8, 6];
 // estimate instead, since there's no history to suggest one — see
 // estimateWarmups() for why). Reps ramp down (10-8-6) as the sets get
 // heavier/closer to work weight — more reps to prime lightly-loaded early
-// sets, fewer as it gets harder. A single isolation warm-up takes the LAST
-// step (6) since it plays the same role as the final, closest-to-work step
-// of the compound ramp, not the first. Isolation's multiplier mirrors the
+// sets, fewer as it gets harder. A single isolation warm-up takes the FIRST
+// step (10): its load is 50% of work weight, so the rep count follows the
+// LOAD, not the set's position in a ramp it isn't part of. (Owner
+// correction, gym floor 2026-08-13 — the original code reasoned "it plays
+// the role of the final, closest-to-work step" and prescribed 6, which
+// paired the heaviest-step reps with a light-step load. This was also the
+// answer to the 2026-08-11 "suggested ranges appeared wrong" report.)
+// Isolation's multiplier mirrors the
 // compound ramp's assisted inversion (less counterweight = harder): 0.5
 // weighted's complement is 1.5, the same "2 − x" relationship the compound
 // mults already use (0.25↔1.75, 0.55↔1.45, 0.85↔1.15) — BUT that complement
@@ -2361,7 +2384,7 @@ const WU_REPS = [10, 8, 6];
 // for bodyweight regime (no adjustable resistance to warm up into).
 function buildWarmupSets(regime, isComp, baseKg, ctx = {}) {
   if (regime === 'bodyweight' || baseKg == null) return [];
-  const wuReps = idx => isComp ? WU_REPS[idx] : WU_REPS[WU_REPS.length - 1];
+  const wuReps = idx => isComp ? WU_REPS[idx] : WU_REPS[0];
   const mkSet = (kg, idx) => ({ intent: 'warmup', reps: wuReps(idx), kg,
     lastReps:null, lastKg:null, sugReps:null, sugKg:null });
   const effMults = isComp ? [0.25, 0.55, 0.85] : [0.5];
@@ -2417,7 +2440,7 @@ function buildSetsFromMemory(ex) {
   const regime  = ex.regime || 'weighted';
   const isComp  = ex.compound !== false;
   const profile = profileFor(ex.type, regime, trackingOf(ex));
-  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile, calibratedInstanceId(ex));
+  const sug     = computeSuggestion(ex.exId, ex.type, regime, profile, calibratedInstanceId(ex), !!ex.unilateral);
   ex._sug       = sug; // cached for buildExBlock()'s stall banner — see its comment
   const sets    = [];
 
@@ -2582,7 +2605,7 @@ const fmtDuration = ms => {
 // is no record to beat — it is the baseline the next session gets measured
 // against. Counted work sets only, both sides (isCountedWork).
 function computeSessionPRs(rec) {
-  const comboOf = e => `${e.exId}:${e.regime || 'weighted'}:${trackingOf(e)}`;
+  const comboOf = e => `${e.exId}:${e.regime || 'weighted'}:${trackingOf(e)}${e.unilateral ? ':u' : ''}`;
 
   // Best value per metric for one entry list, merged across duplicate
   // entries of the same combo (the superset a→b→a shape logs one combo in
@@ -2814,6 +2837,8 @@ const numField = (id, label, val, step, onchange = '') => `
 const typePill = t => t === 'strength'
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#2d1010;color:#e57373">Força</span>`
   : `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0d2744;color:#64b5f6">Hipert.</span>`;
+
+const uniPill = () => `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0a2e2e;color:#4dd0c4">Unilateral</span>`;
 
 const regimePill = r => r === REGIME_BW_PLUS
   ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#0a2438;color:#7fb8e0">Corporal + carga</span>`
@@ -3670,7 +3695,7 @@ function buildExBlock(ex, i) {
   // info icon here are purely a same-session heads-up so it's obvious at a
   // glance this isn't accidental duplication, not a restriction.
   const isDuplicated = S.exercises.filter(e =>
-    memKey(e.exId, e.type, e.regime||'weighted') === memKey(ex.exId, ex.type, ex.regime||'weighted')
+    memKey(e.exId, e.type, e.regime||'weighted', e.unilateral) === memKey(ex.exId, ex.type, ex.regime||'weighted', ex.unilateral)
   ).length > 1;
 
   // Reads the suggestion buildSetsFromMemory() already cached on the
@@ -3792,6 +3817,7 @@ function buildExBlock(ex, i) {
             <button onclick="setExRegime(${i},'assisted')"   style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isAs?CA:BG3};color:${isAs?TX:DM}">Assist.</button>
             <button onclick="setExRegime(${i},'bodyweight')" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
             <button onclick="setExRegime(${i},'${REGIME_BW_PLUS}')" title="Peso corporal + carga adicional (cinto, colete)" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${isBWP?'#0a2438':BG3};color:${isBWP?'#7fb8e0':DM}">BW+</button>
+            <button onclick="setExUnilateral(${i})" title="Um lado por vez — o histórico unilateral não se mistura com o bilateral" style="padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:11px;cursor:pointer;font-family:inherit;background:${ex.unilateral?'#0a2e2e':BG3};color:${ex.unilateral?'#4dd0c4':DM}">Uni</button>
           </div>
           <!-- Machine chip — which SPECIFIC apparatus this is being done on.
                Numbers are machine-calibrated (owner: "much stronger in
@@ -3910,7 +3936,7 @@ function buildHistory() {
         }).join('');
         return `<div style="margin-bottom:14px">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap">
-            <span style="font-weight:600">${esc(ex.exName)}</span>${typePill(ex.type)}${ex.regime?regimePill(ex.regime):''}${ex.instanceName?`<span style="font-size:11px;color:${DM}">🔧 ${esc(ex.instanceName)}</span>`:''}
+            <span style="font-weight:600">${esc(ex.exName)}</span>${typePill(ex.type)}${ex.regime?regimePill(ex.regime):''}${ex.unilateral?uniPill():''}${ex.instanceName?`<span style="font-size:11px;color:${DM}">🔧 ${esc(ex.instanceName)}</span>`:''}
           </div>${ex.note ? `<div style="font-size:12px;color:#4dd0c4;margin:-2px 0 6px;line-height:1.4">📝 ${esc(ex.note)}</div>` : ''}${lines}
         </div>`;
       });
@@ -4200,7 +4226,7 @@ function openExerciseDetail(exId) {
     ${ex.name_en && nameKey(ex.name_en) !== nameKey(ex.name)
       ? `<div style="font-size:12px;color:${DM};margin-bottom:8px">${esc(ex.name_en)}</div>` : '<div style="height:6px"></div>'}
     <div style="display:flex;gap:5px;flex-wrap:wrap;margin-bottom:6px">
-      ${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${musclePill(ex.mainMuscle,ex.movementPattern)}${originPill(ex)}
+      ${ex.regime?regimePill(ex.regime):''}${compPill(ex.compound!=null?ex.compound:null)}${ex.unilateral?uniPill():''}${musclePill(ex.mainMuscle,ex.movementPattern)}${originPill(ex)}
       ${ex.movement ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${TX}">${esc(MOVEMENTS[ex.movement]?.pt || ex.movement)}</span>` : ''}
       ${ex.equipment ? `<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${BG3};color:${DM}">${esc(EQUIPMENT_LABELS[ex.equipment] || ex.equipment)}</span>` : ''}
     </div>
@@ -4419,7 +4445,8 @@ function restoreDeletedExercise(id) {
 //
 // Deliberately untouched: user-created exercises (id unknown to the seed)
 // and the user-owned fields on seeded ones — type/regime/compound (the
-// "Modo padrão" trio), rest timings, gym tags, ★ favorite. A user's RENAME
+// "Modo padrão" trio), rest timings, gym tags, ★ favorite, unilateral
+// (2026-08-13 — a user's execution choice, never the catalog's to reset). A user's RENAME
 // of a seeded exercise IS overwritten — which is exactly why this is a
 // button with a confirm listing every rename, not a background migration.
 // A rename that collides with a user-created copy of the same exercise
@@ -5099,6 +5126,7 @@ function buildPlanPayload(p) {
     // training prescription — the coach-sends-a-plan case wants them.
     .map(e => ({ id:e.id, name:e.name, type:e.type, compound:e.compound, regime:e.regime,
       mainMuscle:e.mainMuscle, movementPattern:e.movementPattern, accessoryMuscles:e.accessoryMuscles||[],
+      ...(e.unilateral ? { unilateral: true } : {}),
       ...(e.rest ? { rest: e.rest } : {}) }));
   // Superset grouping DOES travel, on the same argument that lets `rests`
   // travel and keeps gym tags off: it is training prescription, not local
@@ -5213,6 +5241,9 @@ function normalizeExerciseDef(imp, originHint) {
   // whereas a rep exercise mis-imported as timed would silently suppress
   // its graduation and 1RM.
   const tracking = imp.tracking === TRACK_TIME ? TRACK_TIME : null;
+  // Only the literal boolean survives — same rule as stretchEmphasis: an
+  // absent/garbage value means bilateral, the default, stored as absence.
+  const unilateral = imp.unilateral === true;
   // A movement slug only survives if this app's shipped vocabulary knows it
   // AND its category anchor matches the (already-normalized) classification —
   // a mismatched pair means either a corrupted file or a newer vocabulary
@@ -5230,7 +5261,7 @@ function normalizeExerciseDef(imp, originHint) {
     ...(movement ? { movement } : {}), ...(name_en ? { name_en } : {}), ...(aliases.length ? { aliases } : {}),
     ...(equipment ? { equipment } : {}), ...(cues_pt.length ? { cues_pt } : {}), ...(cues_en.length ? { cues_en } : {}),
     ...(errors_pt.length ? { errors_pt } : {}), ...(errors_en.length ? { errors_en } : {}),
-    ...(stretchEmphasis ? { stretchEmphasis } : {}), ...(tracking ? { tracking } : {}),
+    ...(stretchEmphasis ? { stretchEmphasis } : {}), ...(tracking ? { tracking } : {}), ...(unilateral ? { unilateral } : {}),
     ...(rest ? { rest } : {}), updatedAt: Date.now() };
 }
 
@@ -5581,6 +5612,12 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
       <button id="ex-tk-reps" onclick="exF('tracking','${TRACK_REPS}')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newTracking===TRACK_TIME?BG3:CG};color:${_newTracking===TRACK_TIME?DM:TX}">Repetições</button>
       <button id="ex-tk-time" onclick="exF('tracking','${TRACK_TIME}')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newTracking===TRACK_TIME?'#0a2e2e':BG3};color:${_newTracking===TRACK_TIME?'#4dd0c4':DM}">Tempo (seg)</button>
     </div>
+    <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Execução</label>
+    <div style="font-size:11px;color:${DM};margin-bottom:6px">Unilateral = um lado por vez. Muda como o histórico é comparado (as cargas de um lado só não competem com as bilaterais) — sem precisar de uma variação separada. Ajustável também no treino, no bloco do exercício.</div>
+    <div style="display:flex;gap:6px;margin-bottom:20px">
+      <button id="ex-uni-bi"  onclick="exF('unilateral','0')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newUnilateral?BG3:CG};color:${_newUnilateral?DM:TX}">Bilateral</button>
+      <button id="ex-uni-uni" onclick="exF('unilateral','1')" style="flex:1;padding:9px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${_newUnilateral?'#0a2e2e':BG3};color:${_newUnilateral?'#4dd0c4':DM}">Unilateral</button>
+    </div>
     <label style="font-size:12px;color:${DM};margin-bottom:6px;display:block">Grupo muscular principal</label>
     <select id="ex-muscle" onchange="exF('muscle', this.value)"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:14px;box-sizing:border-box">
@@ -5687,6 +5724,13 @@ function exF(field, val) {
     const r = document.getElementById('ex-tk-reps'), t = document.getElementById('ex-tk-time');
     if (r) { r.style.background = _newTracking===TRACK_TIME?BG3:CG;      r.style.color = _newTracking===TRACK_TIME?DM:TX; }
     if (t) { t.style.background = _newTracking===TRACK_TIME?'#0a2e2e':BG3; t.style.color = _newTracking===TRACK_TIME?'#4dd0c4':DM; }
+  } else if (field === 'unilateral') {
+    // Same two-state pattern as tracking: bilateral IS the default rather
+    // than an absence, so the stored field is omitted when false.
+    _newUnilateral = val === '1';
+    const bi = document.getElementById('ex-uni-bi'), un = document.getElementById('ex-uni-uni');
+    if (bi) { bi.style.background = _newUnilateral?BG3:CG;        bi.style.color = _newUnilateral?DM:TX; }
+    if (un) { un.style.background = _newUnilateral?'#0a2e2e':BG3; un.style.color = _newUnilateral?'#4dd0c4':DM; }
   }
 }
 
@@ -5701,7 +5745,7 @@ function readModalRest() {
 function openNewEx()  {
   _newType='hypertrophy'; _newCompound=true; _newRegime='weighted';
   _newMuscle='undefined'; _newPattern='undefined'; _newAccessory=[]; _newGyms=[];
-  _newEquip=null; _newTracking=TRACK_REPS;
+  _newEquip=null; _newTracking=TRACK_REPS; _newUnilateral=false;
   _newRest={ wuwu:'', wuw:'', ww:'' };
   showModal(exModalBody('Novo exercício','','saveNewEx()'));
 }
@@ -5730,6 +5774,7 @@ function openEditEx(id) {
   // back unchanged (see _newEquip's declaration for the future-class case).
   _newEquip = ex.equipment || null;
   _newTracking = trackingOf(ex);
+  _newUnilateral = !!ex.unilateral;
   _newRest = { wuwu: ex.rest?.wuwu ?? '', wuw: ex.rest?.wuw ?? '', ww: ex.rest?.ww ?? '' };
   showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
 }
@@ -5763,7 +5808,7 @@ function saveNewEx() {
   D.exercises.push({ id:newUserExId(), name, type:_newType, compound:_newCompound, regime:_newRegime, origin:ORIGIN_USER,
     mainMuscle:_newMuscle, movementPattern:_newPattern, accessoryMuscles:[..._newAccessory],
     gyms:[..._newGyms], ...(_newEquip ? { equipment:_newEquip } : {}),
-    ...(_newTracking===TRACK_TIME ? { tracking:TRACK_TIME } : {}), ...(rest ? { rest } : {}), updatedAt:Date.now() });
+    ...(_newTracking===TRACK_TIME ? { tracking:TRACK_TIME } : {}), ...(_newUnilateral ? { unilateral:true } : {}), ...(rest ? { rest } : {}), updatedAt:Date.now() });
   persist(); closeModal(); render();
 }
 function saveEditEx() {
@@ -5800,6 +5845,7 @@ function saveEditEx() {
     // honest meaning of the correction rather than a hazard — the same
     // trade the equipment-class flip already makes.
     if (_newTracking === TRACK_TIME) ex.tracking = TRACK_TIME; else delete ex.tracking;
+    if (_newUnilateral) ex.unilateral = true; else delete ex.unilateral;
     const rest = readModalRest();
     if (rest) ex.rest = rest; else delete ex.rest; // all-blank inputs mean "back to inheriting"
     ex.updatedAt=Date.now();
@@ -6308,7 +6354,7 @@ function addPickedEx(exId) {
   // regime: the session must keep rendering (and tallying) correctly even
   // if the library entry is later retracked or deleted. Written only when
   // timed, so rep-based blocks stay byte-identical to before.
-  const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}), rest: seedRestFor(exId, S.planId), sets:[] };
+  const o = { exId, exName:ex.name, type:_pickType, compound:ex.compound, regime:_pickRegime, ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}), ...(ex.unilateral ? { unilateral: true } : {}), rest: seedRestFor(exId, S.planId), sets:[] };
   // Auto-attach the machine used last time (at this gym, when known) BEFORE
   // building the set rows — the suggestion math prefers same-machine
   // history, so the attachment has to exist when it runs.
@@ -6482,6 +6528,7 @@ function startPlan(id) {
       // plan's group order/rest-override keys reference.
       const o  = { exId, exName:ex?ex.name:'(removido)', type:(lm?lm.type:ex?.type)||'hypertrophy', compound:ex?.compound, regime:(lm?lm.regime:ex?.regime)||'weighted',
                    ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}),
+                   ...((lm ? lm.unilateral : ex?.unilateral) ? { unilateral: true } : {}),
                    ...(en.ss ? { ss: en.ss, ssMem: en.ssMem || en.eid } : {}),
                    ...(en.ssWu ? { ssWu: true } : {}),
                    rest: seedRestFor(exId, p.id, en.eid), sets:[], _planEid:en.eid,
@@ -6730,7 +6777,7 @@ function remachineEx(i) {
   if (!touched) { ex.sets = []; ex.sets = buildSetsFromMemory(ex); }
   else {
     const profile = profileFor(ex.type, ex.regime||'weighted', trackingOf(ex));
-    ex._sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex));
+    ex._sug = computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex), !!ex.unilateral);
   }
 }
 
@@ -7174,6 +7221,7 @@ function resolveSlotTo(i, exId) {
   const lm = lastModesFor(exId);
   const o = { exId, exName: ex.name, type:(lm?lm.type:ex.type)||'hypertrophy', compound:ex.compound, regime:(lm?lm.regime:ex.regime)||'weighted',
     ...(isTimed(ex) ? { tracking: TRACK_TIME } : {}),
+    ...((lm ? lm.unilateral : ex.unilateral) ? { unilateral: true } : {}),
     rest: seedRestFor(exId, S.planId, ph._planEid), sets: [],
     fromMovement: ph.movement,
     ...(ph._planEid ? { _planEid: ph._planEid } : {}),
@@ -7373,7 +7421,7 @@ function editSess(id) {
     const profile = profileFor(ex.type, ex.regime||'weighted', trackingOf(ex));
     return {
       ...ex,
-      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex)),
+      _sug: computeSuggestion(ex.exId, ex.type, ex.regime||'weighted', profile, calibratedInstanceId(ex), !!ex.unilateral),
       sets: ex.sets.map(set=>({...set,repsEdited:true,kgEdited:true})),
     };
   }), _editId:s.id };
@@ -8505,6 +8553,7 @@ function openSsMember(i) {
       <button onclick="setExType(${i},'strength');openSsMember(${i})" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${isS?'#A32D2D':BG3};color:${isS?TX:DM}">Força</button>
       <button onclick="setExType(${i},'hypertrophy');openSsMember(${i})" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${!isS?CB:BG3};color:${!isS?TX:DM}">Hipert.</button>
       <button onclick="toggleMemberWu(${i});openSsMember(${i})" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${ex.ssWu?CB:BG3};color:${ex.ssWu?TX:DM}">Aquecer nas rodadas</button>
+      <button onclick="setExUnilateral(${i});openSsMember(${i})" title="Um lado por vez — histórico separado do bilateral" style="padding:5px 11px;border-radius:99px;border:none;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;background:${ex.unilateral?'#0a2e2e':BG3};color:${ex.unilateral?'#4dd0c4':DM}">Unilateral</button>
     </div>
 
     ${Bs(BG3,TX,'🔧 ' + (ex.instanceName ? esc(ex.instanceName) : equipChipLabel(ex.exId)), `closeModal();openMachinePicker(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
@@ -8564,6 +8613,11 @@ function setGapRest(gid, r, slot, val, allRounds) {
 // anymore anyway.
 function setExType(i,t)       { S.exercises[i].type=t;   S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
 function setExRegime(i,r)     { S.exercises[i].regime=r; S.exercises[i].sets=buildSetsFromMemory(S.exercises[i]); render(); }
+// Unilateral toggles with the SAME destructive rebuild as type/regime, for
+// the same reason: it changes which history the rows are prefilled from
+// (memKey splits on it — single-side loads never blend with bilateral ones),
+// so numbers typed under the other mode don't mean the same thing here.
+function setExUnilateral(i)   { const ex=S.exercises[i]; if (ex.unilateral) delete ex.unilateral; else ex.unilateral=true; ex.sets=buildSetsFromMemory(ex); render(); }
 function moveEx(i,dir)        { const j=i+dir; if(!S||j<0||j>=S.exercises.length)return; [S.exercises[i],S.exercises[j]]=[S.exercises[j],S.exercises[i]]; render(); }
 function rmEx(i)              { S.exercises.splice(i,1); render(); }
 
@@ -8675,6 +8729,7 @@ function doSwapEx(i, newId, mode) {
 
   const o = { exId: ne.id, exName: ne.name, type: ne.type||'hypertrophy', compound: ne.compound,
               regime: ne.regime||'weighted', ...(isTimed(ne) ? { tracking: TRACK_TIME } : {}),
+              ...(ne.unilateral ? { unilateral: true } : {}),
               rest: seedRestFor(ne.id, S.planId, old._planEid), sets: [] };
 
   // Everything that belongs to the SESSION rather than to the exercise has to

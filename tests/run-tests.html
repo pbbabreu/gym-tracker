@@ -139,6 +139,9 @@
     computeSessionPRs, fmtDuration,
     // Rest-timer alert prefs (2026-08-11): volume/vibrate/notify
     DEFAULT_ALERTS, gainForVolume, shouldFireNotification,
+    // Unilateral flag + isolation warm-up correction (2026-08-13)
+    memKey, WU_REPS, buildWarmupSets, getRecentWorkHistory, lastModesFor,
+    get newUnilateral() { return _newUnilateral; }, set newUnilateral(v) { _newUnilateral = v; },
     get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
     get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
   })`);
@@ -197,7 +200,9 @@
     t('compound assisted: 175/145/115% (inverted)', eq(W.buildWarmupSets('assisted', true, 20).map(s => s.kg), [35, 29, 23]));
     const iso = W.buildWarmupSets('weighted', false, 100);
     t('isolation weighted: single 50% set', eq(iso.map(s => s.kg), [50]));
-    t('isolation warm-up takes the LAST rep step (6)', iso[0].reps === 6);
+    // 10 since 2026-08-13 (owner correction): the rep count follows the 50%
+    // LOAD, not the set's position in a ramp it isn't part of.
+    t('isolation warm-up prescribes the light-step reps (10)', iso[0].reps === 10);
     t('isolation assisted: 150% complement', eq(W.buildWarmupSets('assisted', false, 20).map(s => s.kg), [30]));
     t('bodyweight: no warm-ups', W.buildWarmupSets('bodyweight', true, 100).length === 0);
     t('null base: no warm-ups', W.buildWarmupSets('weighted', true, null).length === 0);
@@ -2439,7 +2444,7 @@
     t('assistance never reaches the bodyweight', aw.every(k => k < 90) && aw[0] > aw[1] && aw[1] > aw[2]);
     t('tiny effective loads cap 2.5 short of bodyweight', kgs(W.buildWarmupSets('assisted', true, 88, { bodyKg: 90 })).every(k => k <= 87.5));
     const iso = W.buildWarmupSets('assisted', false, 55, { bodyKg: 90 });
-    t('isolation assisted: one warm-up at half the effective load, 6 reps', iso.length === 1 && iso[0].kg === 72.5 && iso[0].reps === 6);
+    t('isolation assisted: one warm-up at half the effective load, 10 reps', iso.length === 1 && iso[0].kg === 72.5 && iso[0].reps === 10);
     t('no bodyweight logged → the legacy complement fallback, explicitly', eq(kgs(W.buildWarmupSets('assisted', true, 55, {})), [96.5, 80, 63]));
 
     // Context builder: barbell blocks feed the floor, weights feed bodyKg.
@@ -3570,6 +3575,78 @@
     W.Notification = realNotification;
 
     T.timerCfgVar = keepCfg;
+  }
+
+  // ── unilateral flag & isolation warm-up reps (2026-08-13) ──────────────────
+  g('unilateral & isolation warm-up');
+  {
+    const keepSess = T.D.sessions, keepS = T.S;
+
+    // The isolation warm-up correction: at 50% of work weight the rep count
+    // follows the LOAD (10, the light step), not the set's position in a
+    // ramp it isn't part of. Reported from the gym as "6 where it should be
+    // 10" — which also closes the 2026-08-11 "ranges appeared wrong" mystery.
+    let wu = W.buildWarmupSets('weighted', false, 40);
+    t('isolation warm-up prescribes 10 reps at its 50% load', wu.length === 1 && wu[0].reps === 10 && wu[0].kg === 20, JSON.stringify(wu));
+    wu = W.buildWarmupSets('weighted', true, 100);
+    t('the compound ramp is untouched: 10-8-6 across 25/55/85%',
+       wu.length === 3 && wu.map(s=>s.reps).join() === '10,8,6' && wu.map(s=>s.kg).join() === '25,55,85');
+    wu = W.buildWarmupSets('assisted', false, 30);
+    t('isolation assisted warm-up also reads 10 reps now', wu.length === 1 && wu[0].reps === 10);
+
+    // memKey: unilateral is part of a history's identity, exactly as regime is
+    t('memKey splits unilateral from bilateral', T.memKey('x','hypertrophy','weighted',true) !== T.memKey('x','hypertrophy','weighted',false));
+    t('...and absent === false (legacy sessions are bilateral)', T.memKey('x','hypertrophy','weighted',undefined) === T.memKey('x','hypertrophy','weighted',false));
+
+    // History separation end to end: same exercise, one bilateral session and
+    // one unilateral session — each mode's suggestion sees only its own past.
+    T.D.sessions = [
+      { id:'bi', date:'2026-08-01', updatedAt:1, exercises:[{ exId:'leg-ext', exName:'E', type:'hypertrophy', regime:'weighted', sets:[{intent:'work',reps:10,kg:80}] }] },
+      { id:'un', date:'2026-08-02', updatedAt:2, exercises:[{ exId:'leg-ext', exName:'E', type:'hypertrophy', regime:'weighted', unilateral:true, sets:[{intent:'work',reps:10,kg:40}] }] },
+    ];
+    const hBi = W.getRecentWorkHistory('leg-ext','hypertrophy','weighted',3,null,false);
+    const hUn = W.getRecentWorkHistory('leg-ext','hypertrophy','weighted',3,null,true);
+    t('bilateral history sees only the 80 kg session', hBi.length === 1 && hBi[0][0].kg === 80, JSON.stringify(hBi));
+    t('unilateral history sees only the 40 kg session', hUn.length === 1 && hUn[0][0].kg === 40, JSON.stringify(hUn));
+    t('lastModesFor remembers the flag from the most recent session', T.lastModesFor('leg-ext').unilateral === true);
+
+    // PRs never blend the two modes: a 45 kg single-side is a PR over the
+    // 40 kg single-side past, untroubled by the 80 kg bilateral history.
+    let prs = W.computeSessionPRs({ id:'n1', date:'2026-08-13', exercises:[{ exId:'leg-ext', exName:'E', type:'hypertrophy', regime:'weighted', unilateral:true, sets:[{intent:'work',reps:10,kg:45}] }] });
+    t('a unilateral PR competes only against unilateral history', prs.some(p => p.kind==='kg' && p.value===45 && p.prev===40), JSON.stringify(prs));
+    prs = W.computeSessionPRs({ id:'n2', date:'2026-08-13', exercises:[{ exId:'leg-ext', exName:'E', type:'hypertrophy', regime:'weighted', sets:[{intent:'work',reps:10,kg:60}] }] });
+    t('...and a 60 kg bilateral is rightly NOT a PR against the 80 kg bilateral past', !prs.some(p => p.kind==='kg'));
+
+    // The session-block toggle is destructive like type/regime (different
+    // history, different numbers) and round-trips through save.
+    T.S = { planId:null, planName:null, date:T.today(), gymId:null, gymName:null, exercises:[
+      { exId:'leg-ext', exName:'E', type:'hypertrophy', regime:'weighted', compound:false, sets:[{intent:'work',reps:'',kg:''}] } ] };
+    W.setExUnilateral(0);
+    t('the block toggle sets the flag and rebuilds rows from the unilateral memory',
+       T.S.exercises[0].unilateral === true && T.S.exercises[0].sets.some(s => s.intent==='work'));
+    W.doSaveSession('none');
+    const saved = T.D.sessions[T.D.sessions.length-1];
+    t('the flag survives the save into history (blocklist strip, whitelist rec)',
+       saved.exercises[0].unilateral === true);
+    W.setExUnilateral && (T.S = null);
+
+    // Library modal round-trip: the field is stored only when true, and an
+    // imported/shared definition is normalized to the literal boolean.
+    const norm = W.normalizeExerciseDef({ id:'zz-uni', name:'Z', unilateral: true });
+    t('normalizeExerciseDef accepts unilateral: true', norm.unilateral === true);
+    const norm2 = W.normalizeExerciseDef({ id:'zz-uni2', name:'Z', unilateral: 'yes' });
+    t('...and drops anything that is not the literal boolean', !('unilateral' in norm2));
+
+    // Plan-share definition snapshot carries it
+    T.D.plans = T.D.plans || [];
+    const ex0 = T.D.exercises[0];
+    ex0.unilateral = true;
+    const pl = { id:'pshare', name:'P', exercises:[{ eid:'e1', exId: ex0.id }], rests:{}, updatedAt:1 };
+    const payload = W.buildPlanPayload(pl);
+    t('a shared plan\'s definition snapshot carries unilateral', payload.exercises.find(e=>e.id===ex0.id).unilateral === true);
+    delete ex0.unilateral;
+
+    T.D.sessions = keepSess; T.S = keepS;
   }
 
   // ── wrap-up ────────────────────────────────────────────────────────────────
