@@ -452,7 +452,13 @@ const SEED_CLASSIFICATION = {
 // D.exercises can be hydrated from a source that predates this feature.
 function backfillExerciseClassification() {
   D.exercises.forEach(ex => {
-    const seed = SEED_CLASSIFICATION[ex.id];
+    // hasKey, not a bare lookup — the same guard isKnownGlobalId() carries,
+    // and for the same reason: ex.id can arrive from a backup restore, and
+    // SEED_CLASSIFICATION['toString'] inherits a truthy FUNCTION from
+    // Object.prototype. That function then reaches `[...seed[2]]` below,
+    // which spreads undefined and throws — inside a backfill that runs on
+    // every load, i.e. a blank app on every device the row reaches.
+    const seed = hasKey(SEED_CLASSIFICATION, ex.id) ? SEED_CLASSIFICATION[ex.id] : null;
     // Movement backfill runs INDEPENDENTLY of the muscle/pattern one below:
     // every already-classified install still lacks `movement` the first time
     // the movement layer loads on it, so gating this behind the mainMuscle
@@ -603,7 +609,11 @@ const ORIGINS = [ORIGIN_GLOBAL, ORIGIN_USER, ORIGIN_SHARED];
 // a shared plan carrying it lands `shared` rather than `global`. That errs
 // toward NOT claiming official status we can't verify, and the adoption
 // flow is exactly the thing that later corrects it.
-const isKnownGlobalId = id => typeof id === 'string' && !!SEED_CLASSIFICATION[id];
+// hasKey rather than a bare lookup: the id can come from an imported plan,
+// and `SEED_CLASSIFICATION['constructor']` inherits a truthy value from
+// Object.prototype — which would stamp someone's invented exercise as an
+// official catalog entry (and hand it to ⟳ Nomes to overwrite).
+const isKnownGlobalId = id => hasKey(SEED_CLASSIFICATION, id);
 
 // Display/logic accessor with a derived fallback. The fallback is a repair
 // path for malformed data, NOT the mechanism: after schema 6 every exercise
@@ -959,6 +969,79 @@ const fmtTime = ts => ts ? new Date(ts).toLocaleTimeString('pt-BR',{hour:'2-digi
 const esc     = s  => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const round   = (v,step) => Math.round(v/step)*step;
 
+// ── Escaping for the onclick="fn('VALUE')" sink ───────────────────────────────
+//
+// esc() is correct for TEXT and for plain attribute VALUES, and it is NOT
+// enough here — this is the one context in this file where two parsers run
+// in sequence over the same bytes:
+//
+//     <button onclick="delEx('VALUE')">
+//                      └── HTML attribute value ──┘
+//                       └── JS string literal ──┘
+//
+// The HTML parser decodes character references in the attribute FIRST, and
+// only then does the JS engine parse what came out. So HTML-escaping an
+// apostrophe to &#39; achieves nothing: it is decoded straight back to ' and
+// closes the JS string. (This is why adding ' to esc() would be false
+// comfort rather than a fix — it would read as protection at a sink it
+// cannot protect.)
+//
+// The order that actually works is the reverse of the decode order:
+// backslash-escape for the INNER layer (JS) first, then HTML-escape the
+// result for the OUTER layer. `\` itself goes first, or the backslash we add
+// for the quote could itself be escaped away.
+//
+// Used for every value interpolated into a handler argument. Ids are also
+// validated at every entry point (safeId, below) — this is the second line,
+// and it is the one that holds for data that never passed through a
+// validated entry point at all: mergeCollection() unions whatever the remote
+// holds, so a row poisoned before the validator existed (or a hand-edited
+// Gist) comes back with its id intact. A safe sink doesn't care where the
+// string came from, which is the whole point of having one.
+// CR/LF are escaped too, and not for injection reasons: a raw newline inside
+// a single-quoted JS string literal is a SYNTAX ERROR, so a value carrying
+// one yields a handler that never fires. That fails closed (inert, not
+// injectable) but it would leave a pathological legacy row un-clickable AND
+// un-deletable — the user could never clean it up. Emitted as \n escapes the
+// value round-trips intact and the handler still works.
+//
+// U+2028/U+2029 are deliberately NOT handled: ES2019 made them legal inside
+// string literals, so they no longer break the handler, and writing them into
+// this file is its own hazard — they are line terminators to the JS parser,
+// so a raw one inside the regex literal that matched them would break the
+// whole script. Not worth reintroducing the blank-page failure mode to guard
+// a case the language stopped caring about.
+const escJs   = s  => esc(String(s ?? '')
+  .replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+  .replace(/\r/g,'\\r').replace(/\n/g,'\\n'));
+
+// ── Id validation at the trust boundary ───────────────────────────────────────
+//
+// Every id this app MINTS is already within this charset by construction:
+// uid() is base36 (`[a-z0-9]`), newUserExId() prefixes `u_`, and catalog
+// slugs are lowercase-slug-validated by tools/build-library.py before they
+// can ship. So constraining imported ids to the same shape costs legitimate
+// data nothing, and it is the same rule applyImportedPlan() already applies
+// to the superset markers `ss`/`ssMem` — this closes the gap where two
+// sibling fields on the same untrusted object were held to two different
+// standards.
+//
+// Rejecting rather than sanitizing is deliberate: a caller that gets `null`
+// mints a fresh id, which keeps the entry importable, whereas a stripped id
+// could silently collide with a real one.
+//
+// The prototype keys are excluded even though they pass the charset, because
+// an id is used as an object KEY in several lookups (SEED_CLASSIFICATION,
+// idMap): `SEED_CLASSIFICATION['constructor']` is truthy for reasons that
+// have nothing to do with the catalog, which would mislabel a user's
+// exercise as official.
+const ID_RE   = /^[A-Za-z0-9_-]{1,64}$/;
+const PROTO_KEYS = ['__proto__','constructor','prototype'];
+const safeId  = v => (typeof v === 'string' && ID_RE.test(v) && !PROTO_KEYS.includes(v)) ? v : null;
+// Own-property test for untrusted keys — `map[k]` alone inherits from
+// Object.prototype, so a key like 'toString' reads as a valid enum member.
+const hasKey  = (obj, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(obj, k);
+
 // "Was this field actually filled in" — NOT "is it truthy". A set's reps/kg
 // can legitimately be 0 (a real 0kg assisted set at full graduation, a
 // logged-but-failed 0-rep attempt) and 0 is falsy, indistinguishable from
@@ -1234,7 +1317,7 @@ const SCHEMA_VERSION = 6;
 // the test suite (see CLAUDE.md). Date of the push plus a letter when the
 // same day ships more than once. A stale value here is worse than no value,
 // because it answers the deploy question wrongly with confidence.
-const APP_VERSION = '2026-08-13';
+const APP_VERSION = '2026-08-13b';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -1553,7 +1636,12 @@ function payloadToGistFiles(payload) {
 // Gist side gets for free by only parsing known filenames.
 function sbRowsToRemote(rows) {
   const remote = { sessions:null, library:null, plans:null, weights:null, gyms:null, machines:null };
-  (rows||[]).forEach(r => { if (r && r.collection in remote) remote[r.collection] = r.content; });
+  // hasKey, not `in`: `in` walks the prototype chain, so a row whose
+  // collection is '__proto__' would pass the guard and REPLACE this object's
+  // prototype with remote JSON — after which every collection below resolves
+  // through attacker-chosen data. Unreachable while RLS holds (only the user
+  // writes their own rows), which is exactly why it should not depend on RLS.
+  (rows||[]).forEach(r => { if (r && hasKey(remote, r.collection)) remote[r.collection] = r.content; });
   return remote;
 }
 
@@ -2956,7 +3044,7 @@ function categoryCardsHTML(cats, handler) {
   return `<div style="margin-bottom:10px">
     <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">Categorias</div>
     ${cats.slice(0, 4).map(c => `
-      <button onclick="${handler}('${c.muscle}','${c.pattern}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:#0a2e2e;border:1px solid #14484a;border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;text-align:left">
+      <button onclick="${handler}('${escJs(c.muscle)}','${escJs(c.pattern)}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:#0a2e2e;border:1px solid #14484a;border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;text-align:left">
         <span style="flex:1;font-weight:600;font-size:13px">${esc(categoryLabel(c))} <span style="font-weight:400;color:${DM}">· ${esc(MUSCLE_GROUPS[c.muscle] || '')}</span></span>
         <span style="font-size:11px;color:#4dd0c4;flex-shrink:0">${c.count} exerc.</span>
         <span style="color:${DM};font-size:12px;flex-shrink:0">→</span>
@@ -3189,7 +3277,7 @@ function gymSelectorHTML() {
   return `<div style="margin-bottom:16px">
     <div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">Academia de hoje</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
-      ${D.gyms.map(gm => pill(esc(gm.name), _currentGymId===gm.id, `setCurrentGym('${gm.id}')`)).join('')}
+      ${D.gyms.map(gm => pill(esc(gm.name), _currentGymId===gm.id, `setCurrentGym('${escJs(gm.id)}')`)).join('')}
       ${pill('⚙', false, 'openGymManager()', true)}
     </div>
   </div>`;
@@ -3204,9 +3292,9 @@ function setCurrentGym(id) {
 function openGymManager() {
   const rows = D.gyms.map(gm => `
     <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:.5px solid ${BD}">
-      <input type="text" value="${esc(gm.name)}" onchange="renameGym('${gm.id}', this.value)"
+      <input type="text" value="${esc(gm.name)}" onchange="renameGym('${escJs(gm.id)}', this.value)"
         style="flex:1;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 10px;outline:none;min-width:0">
-      <button onclick="delGym('${gm.id}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
+      <button onclick="delGym('${escJs(gm.id)}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
     </div>`).join('');
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:6px">Academias</div>
@@ -3273,7 +3361,7 @@ function buildLogStartScreen() {
   if (D.plans.length) {
     plans = `<div style="font-size:11px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">Escolher plano</div>`;
     plans += D.plans.map(p => `
-      <button onclick="startPlan('${p.id}')" style="display:flex;align-items:center;justify-content:space-between;
+      <button onclick="startPlan('${escJs(p.id)}')" style="display:flex;align-items:center;justify-content:space-between;
         padding:13px 16px;background:${BG2};border:1px solid ${BD};border-radius:10px;cursor:pointer;
         width:100%;margin-bottom:8px;color:${TX};font-family:inherit">
         <span style="font-weight:600">${esc(p.name)}</span>
@@ -3348,7 +3436,7 @@ function buildSlotBlock(ex, i) {
         <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
           <span style="flex:1;min-width:0;font-size:12px;color:${TX}">sugerido: <strong>${esc(sugEx.name)}</strong>
             <span style="font-size:10px;color:${DM}">· ${sug.why === 'lembrado' ? 'lembrado nesta academia' : 'última vez aqui'}</span></span>
-          ${Bs(CG,TX,'Usar',`resolveSlotTo(${i},'${sugEx.id}')`,';flex-shrink:0;padding:6px 12px;font-size:12px')}
+          ${Bs(CG,TX,'Usar',`resolveSlotTo(${i},'${escJs(sugEx.id)}')`,';flex-shrink:0;padding:6px 12px;font-size:12px')}
         </div>` : '';
       })()}
       ${Bs(BG3,TX,'Escolher variação',`resolveSlot(${i})`,';width:100%;justify-content:center;margin-top:8px')}
@@ -3474,7 +3562,7 @@ function buildGroupBlock(gid, idxs) {
   const restRow = (r, slot, label) => {
     const secs = groupGapSecs(gid, r, slot);
     const isEnd = slot === 'end';
-    return `<div onclick="openGapRest('${gid}',${r},'${slot}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:${isEnd?'7px 0 2px':'3px 0 5px'};${isEnd?`border-top:1px dashed ${BD};margin-top:4px`:''}">
+    return `<div onclick="openGapRest('${escJs(gid)}',${r},'${escJs(slot)}')" style="display:flex;align-items:center;gap:8px;cursor:pointer;padding:${isEnd?'7px 0 2px':'3px 0 5px'};${isEnd?`border-top:1px dashed ${BD};margin-top:4px`:''}">
       <span style="font-size:11px;color:${secs?'#6fcf97':DM}">⏱ ${secs ? fmtSecs(secs) : 'sem descanso'}</span>
       <span style="font-size:10px;color:${DM}">${label}</span>
     </div>`;
@@ -3485,7 +3573,7 @@ function buildGroupBlock(gid, idxs) {
   const allDone = rounds > 0 && Array.from({ length: rounds }, (_, r) => roundIsDone(idxs, r)).every(Boolean);
 
   return `
-    <div id="ssblk-${gid}" style="background:${BG2};border:1px solid ${allDone?'#1a4a3a':CSB};border-radius:10px;margin-bottom:12px;overflow:hidden">
+    <div id="ssblk-${esc(gid)}" style="background:${BG2};border:1px solid ${allDone?'#1a4a3a':CSB};border-radius:10px;margin-bottom:12px;overflow:hidden">
       <div style="padding:10px 12px;border-bottom:1px solid ${BD};display:flex;align-items:flex-start;gap:8px">
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:14px;margin-bottom:4px">⛓ Superset <span style="font-weight:400;font-size:11px;color:${DM}">· ${members.length} exercícios · ${rounds} ${rounds===1?'rodada':'rodadas'}</span></div>
@@ -3493,12 +3581,12 @@ function buildGroupBlock(gid, idxs) {
             ${idxs.map(i => `<button onclick="openSsMember(${i})" style="padding:3px 8px;border-radius:99px;border:1px solid ${BD};background:${BG3};color:${DM};font-size:10px;font-weight:600;cursor:pointer;font-family:inherit;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(S.exercises[i].exName)}</button>`).join('')}
           </div>
         </div>
-        <button onclick="openSsBuilder('${gid}')" title="Editar superset" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px">⚙</button>
+        <button onclick="openSsBuilder('${escJs(gid)}')" title="Editar superset" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px">⚙</button>
       </div>
       ${soloSection}
       <div style="padding:6px 14px 12px">
         ${rounds ? roundBlocks : `<div style="font-size:12px;color:${DM};padding:8px 0">Nenhuma rodada ainda.</div>`}
-        ${B(BG3,TX,'+ Rodada',`addRound('${gid}')`,';margin-bottom:0;margin-top:10px')}
+        ${B(BG3,TX,'+ Rodada',`addRound('${escJs(gid)}')`,';margin-bottom:0;margin-top:10px')}
       </div>
     </div>`;
 }
@@ -3530,9 +3618,9 @@ function buildRoundHTML(gid, idxs, r, ctxs, restRow) {
 
     const head = `
       <div style="display:flex;align-items:center;gap:8px;padding:6px 0">
-        <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px;line-height:1">${open?'▾':'▸'}</button>
-        <button onclick="toggleRoundCollapse('${gid}',${r})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding:0">${label}</button>
-        ${groupCfg(gid).roundOrder?.[r] ? `<button onclick="applyRoundOrderToAll('${gid}',${r})" title="Usar esta ordem em todas as rodadas" style="flex-shrink:0;background:none;border:1px solid ${BD};border-radius:99px;color:${CST};font-size:9px;font-weight:700;cursor:pointer;padding:2px 7px;font-family:inherit">↕ todas</button>` : ''}
+        <button onclick="toggleRoundCollapse('${escJs(gid)}',${r})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:15px;cursor:pointer;padding:4px 6px;line-height:1">${open?'▾':'▸'}</button>
+        <button onclick="toggleRoundCollapse('${escJs(gid)}',${r})" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;text-align:left;padding:0">${label}</button>
+        ${groupCfg(gid).roundOrder?.[r] ? `<button onclick="applyRoundOrderToAll('${escJs(gid)}',${r})" title="Usar esta ordem em todas as rodadas" style="flex-shrink:0;background:none;border:1px solid ${BD};border-radius:99px;color:${CST};font-size:9px;font-weight:700;cursor:pointer;padding:2px 7px;font-family:inherit">↕ todas</button>` : ''}
         <span style="flex-shrink:0;font-size:12px;color:${done?'#6fcf97':DM}">${checked}/${sets.length} ✓</span>
       </div>`;
 
@@ -3550,10 +3638,10 @@ function buildRoundHTML(gid, idxs, r, ctxs, restRow) {
       // round header then offers "aplicar a todas", which is the owner's
       // "be asked if he wants to apply it to all blocks or just the one"
       // without a confirm on every single tap.
-      const arrow = (dir, off) => `<button onclick="moveInRound('${gid}',${r},'${ex.ssMem}',${dir})" ${off?'disabled':''} title="Mover nesta rodada" style="flex-shrink:0;background:none;border:none;color:${off?BD:DM};font-size:12px;cursor:${off?'default':'pointer'};padding:0 2px;line-height:1">${dir<0?'▲':'▼'}</button>`;
+      const arrow = (dir, off) => `<button onclick="moveInRound('${escJs(gid)}',${r},'${escJs(ex.ssMem)}',${dir})" ${off?'disabled':''} title="Mover nesta rodada" style="flex-shrink:0;background:none;border:none;color:${off?BD:DM};font-size:12px;cursor:${off?'default':'pointer'};padding:0 2px;line-height:1">${dir<0?'▲':'▼'}</button>`;
       const nameHTML = `<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
         ${present.length > 1 ? arrow(-1, k===0) + arrow(1, k===present.length-1) : ''}
-        <button onclick="openExerciseDetail('${ex.exId}')" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:600;font-size:13px;font-family:inherit;text-align:left;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
+        <button onclick="openExerciseDetail('${escJs(ex.exId)}')" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:600;font-size:13px;font-family:inherit;text-align:left;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
         ${ex.instanceName ? `<span style="flex-shrink:0;font-size:10px;color:#4dd0c4;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${esc(ex.instanceName)}</span>` : ''}
         <button onclick="openSsMember(${i})" title="Opções deste exercício" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:14px;cursor:pointer;padding:2px 4px;line-height:1">⋯</button>
       </div>`;
@@ -3805,7 +3893,7 @@ function buildExBlock(ex, i) {
         </div>
         <div style="flex:1;min-width:0">
           <div style="font-weight:700;font-size:15px;margin-bottom:6px;display:flex;align-items:center;gap:6px">
-            <button onclick="openExerciseDetail('${ex.exId}')" title="Ver dicas e detalhes" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:15px;font-family:inherit;text-align:left;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
+            <button onclick="openExerciseDetail('${escJs(ex.exId)}')" title="Ver dicas e detalhes" style="flex:1;min-width:0;background:none;border:none;color:${TX};font-weight:700;font-size:15px;font-family:inherit;text-align:left;padding:0;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.exName)}</button>
             ${isDuplicated ? `<button onclick="alert('Este exercício aparece mais de uma vez neste treino (mesmo tipo e regime). O histórico combina os dados das duas entradas para sugestões futuras, mas cada uma é salva separadamente, na ordem em que foram adicionadas.')" style="flex-shrink:0;background:none;border:1px solid ${CA};color:${CA};border-radius:99px;width:16px;height:16px;font-size:11px;font-weight:700;line-height:1;cursor:pointer;padding:0">i</button>` : ''}
             ${doneCheck}
           </div>
@@ -3974,15 +4062,15 @@ function buildHistory() {
 
       detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${prBlock}${exRowsHTML}
         <div style="display:flex;gap:8px;margin-top:12px">
-          ${Bs(BG3,TX,'Editar',`editSess('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
-          ${Bs(BG3,TX,'Criar plano',`openPlanFromSession('${s.id}')`,';flex:1;padding:10px;justify-content:center')}
-          ${Bs('#1a0808',CR,'Excluir',`delSess('${s.id}')`,`;flex:1;padding:10px;justify-content:center;border:1px solid #3a1010`)}
+          ${Bs(BG3,TX,'Editar',`editSess('${escJs(s.id)}')`,';flex:1;padding:10px;justify-content:center')}
+          ${Bs(BG3,TX,'Criar plano',`openPlanFromSession('${escJs(s.id)}')`,';flex:1;padding:10px;justify-content:center')}
+          ${Bs('#1a0808',CR,'Excluir',`delSess('${escJs(s.id)}')`,`;flex:1;padding:10px;justify-content:center;border:1px solid #3a1010`)}
         </div>
       </div>`;
     }
 
     return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:9px;overflow:hidden">
-      <div onclick="toggleExp('${s.id}')" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+      <div onclick="toggleExp('${escJs(s.id)}')" style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer">
         <div>
           <div style="font-weight:600">${esc(s.planName||'Treino livre')}${(s.prs||[]).length ? ` <span title="Recordes pessoais neste treino" style="font-size:12px;color:#e6c84a">🏆 ${s.prs.length} PR${s.prs.length>1?'s':''}</span>` : ''}</div>
           <div style="font-size:13px;color:${DM}">${fmt(s.date)}${s.gymName?` · ${esc(s.gymName)}`:''}${(() => {
@@ -4135,7 +4223,7 @@ function libCountNote() {
 // keep their jobs.
 function libExRow(ex) {
   return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:7px;padding:12px 14px;display:flex;align-items:center;gap:10px">
-    <div onclick="openExerciseDetail('${ex.id}')" title="Ver detalhes" style="flex:1;min-width:0;cursor:pointer">
+    <div onclick="openExerciseDetail('${escJs(ex.id)}')" title="Ver detalhes" style="flex:1;min-width:0;cursor:pointer">
       <div style="font-weight:600;font-size:14px;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.name)}</div>
       <div style="display:flex;gap:5px;flex-wrap:wrap">
         ${ex.regime?regimePill(ex.regime):''}
@@ -4144,8 +4232,8 @@ function libExRow(ex) {
         ${originPill(ex)}
       </div>
     </div>
-    ${Bs(BG3,TX,'Editar',`openEditEx('${ex.id}')`,';padding:6px 10px;font-size:12px')}
-    <button onclick="delEx('${ex.id}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
+    ${Bs(BG3,TX,'Editar',`openEditEx('${escJs(ex.id)}')`,';padding:6px 10px;font-size:12px')}
+    <button onclick="delEx('${escJs(ex.id)}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
   </div>`;
 }
 
@@ -4244,14 +4332,14 @@ function openExerciseDetail(exId) {
       <div style="font-size:10px;font-weight:700;color:${DM};text-transform:uppercase;letter-spacing:.06em;margin:14px 0 6px">Máquinas conhecidas</div>
       ${ms.map(m => `<div style="display:flex;align-items:center;gap:8px;font-size:12px;margin-bottom:4px">
         <span style="flex:1;min-width:0">🔧 ${esc(m.name)}${m.note ? ` <span style="color:#4dd0c4">— ${esc(m.note)}</span>` : ''}${[m.maker,m.model,m.location].filter(Boolean).length ? ` <span style="color:${DM}">(${[m.maker,m.model,m.location].filter(Boolean).map(esc).join(' · ')})</span>` : ''}</span>
-        <button onclick="openMachineEditor('${m.id}', null)" title="Editar equipamento" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:13px;cursor:pointer;padding:2px 6px;font-family:inherit">✎</button>
+        <button onclick="openMachineEditor('${escJs(m.id)}', null)" title="Editar equipamento" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:13px;cursor:pointer;padding:2px 6px;font-family:inherit">✎</button>
       </div>`).join('')}` : ''; })()}
     ${!cues.length && !errs.length ? `<div style="margin-top:14px;font-size:12px;color:${DM};line-height:1.5">Sem dicas cadastradas para este exercício ainda.</div>` : ''}
 
     <div style="display:flex;gap:8px;margin-top:18px">
-      ${Bs(BG3, ex.favorite?'#e6c84a':TX, ex.favorite?'★':'☆', `toggleFavorite('${ex.id}');openExerciseDetail('${ex.id}')`, ';flex:0 0 44px;justify-content:center;padding:10px')}
-      ${Bs(BG3,TX,'📈 Progresso',`closeModal();openProgress('${ex.id}')`,';flex:1;justify-content:center;padding:10px')}
-      ${Bs(BG3,TX,'Editar',`closeModal();openEditEx('${ex.id}')`,';flex:1;justify-content:center;padding:10px')}
+      ${Bs(BG3, ex.favorite?'#e6c84a':TX, ex.favorite?'★':'☆', `toggleFavorite('${escJs(ex.id)}');openExerciseDetail('${escJs(ex.id)}')`, ';flex:0 0 44px;justify-content:center;padding:10px')}
+      ${Bs(BG3,TX,'📈 Progresso',`closeModal();openProgress('${escJs(ex.id)}')`,';flex:1;justify-content:center;padding:10px')}
+      ${Bs(BG3,TX,'Editar',`closeModal();openEditEx('${escJs(ex.id)}')`,';flex:1;justify-content:center;padding:10px')}
     </div>
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0;margin-top:8px')}`);
 }
@@ -4274,7 +4362,7 @@ function progressBodyHTML(exId, regime, instance) {
   // unlike the regime select in the modal header, because a regime switch
   // must rebuild it: the bucket list is per-regime.
   const instSelect = prog.instances.length > 1 ? `
-    <select onchange="progInstSwitch('${exId}', '${prog.regime}', this.value)"
+    <select onchange="progInstSwitch('${escJs(exId)}', '${escJs(prog.regime)}', this.value)"
       style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:12px;padding:6px 8px;outline:none;margin-bottom:10px;box-sizing:border-box">
       ${prog.instances.map(b => `<option value="${esc(b.key)}" ${b.key === prog.instance ? 'selected' : ''}>🔧 ${esc(b.name)}</option>`).join('')}
     </select>` : '';
@@ -4309,7 +4397,7 @@ function openProgress(exId) {
   // Dropdown only when the exercise actually has history under more than
   // one regime — options ordered most-recent first, matching the default.
   const regimeSelect = prog.regimes.length > 1 ? `
-    <select onchange="progSwitch('${ex.id}', this.value)"
+    <select onchange="progSwitch('${escJs(ex.id)}', this.value)"
       style="margin-left:auto;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:12px;padding:5px 8px;outline:none">
       ${prog.regimes.map(r => `<option value="${r}" ${r === prog.regime ? 'selected' : ''}>${REGIME_LABELS[r] || r}</option>`).join('')}
     </select>` : '';
@@ -4407,7 +4495,7 @@ function renderDeletedList() {
         <div style="font-weight:600;font-size:14px;color:${TX};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(d.name)}</div>
         <div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">${d.regime?regimePill(d.regime):''}${musclePill(d.mainMuscle,d.movementPattern)}</div>
       </div>
-      ${Bs(CG,TX,'↩ Restaurar',`restoreDeletedExercise('${esc(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
+      ${Bs(CG,TX,'↩ Restaurar',`restoreDeletedExercise('${escJs(d.id)}')`,';padding:6px 10px;font-size:12px;flex-shrink:0')}
     </div>`).join('');
 }
 
@@ -4622,7 +4710,7 @@ function duplicatesBodyHTML() {
       const use = [u.sessions ? `${u.sessions} treino${u.sessions !== 1 ? 's' : ''}` : null,
                    u.plans ? `${u.plans} plano${u.plans !== 1 ? 's' : ''}` : null]
                   .filter(Boolean).join(' · ') || 'sem histórico';
-      return `<div onclick="setDupKeeper('${g.key}','${ex.id}')" style="display:flex;align-items:center;gap:8px;padding:7px 8px;margin-bottom:4px;border-radius:8px;cursor:pointer;background:${isKeeper ? '#0a2e24' : BG3};border:1px solid ${isKeeper ? '#1a4a3a' : BD}">
+      return `<div onclick="setDupKeeper('${escJs(g.key)}','${escJs(ex.id)}')" style="display:flex;align-items:center;gap:8px;padding:7px 8px;margin-bottom:4px;border-radius:8px;cursor:pointer;background:${isKeeper ? '#0a2e24' : BG3};border:1px solid ${isKeeper ? '#1a4a3a' : BD}">
         <span style="flex-shrink:0;width:16px;height:16px;border-radius:99px;border:1px solid ${isKeeper ? CG : BD};background:${isKeeper ? CG : 'transparent'}"></span>
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(ex.name)}</div>
@@ -4634,7 +4722,7 @@ function duplicatesBodyHTML() {
     return `<div style="margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid ${BD}">
       <div style="font-size:13px;font-weight:700;margin-bottom:6px">${esc(g.name)} <span style="font-weight:400;color:${DM}">— ${g.entries.length} cópias</span></div>
       ${rows}
-      ${Bs(CG,TX,`Unificar em "${esc(g.entries.find(e => e.id === keeper)?.name || '')}"`,`doMergeGroup('${g.key}')`,';width:100%;justify-content:center;padding:8px;margin-top:4px')}
+      ${Bs(CG,TX,`Unificar em "${esc(g.entries.find(e => e.id === keeper)?.name || '')}"`,`doMergeGroup('${escJs(g.key)}')`,';width:100%;justify-content:center;padding:8px;margin-top:4px')}
     </div>`;
   }).join('');
 }
@@ -4698,8 +4786,8 @@ function receivedSharesHTML() {
         <div style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.payload?.name||'Plano')}</div>
         <div style="font-size:11px;color:${DM};margin-top:1px">de ${esc(s.from_email)} · ${(s.payload?.exercises||[]).length} exerc.</div>
       </div>
-      ${Bs(CG,TX,'Importar',`importShare('${s.id}')`,';padding:6px 10px;font-size:12px')}
-      <button onclick="dismissShare('${s.id}')" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
+      ${Bs(CG,TX,'Importar',`importShare('${escJs(s.id)}')`,';padding:6px 10px;font-size:12px')}
+      <button onclick="dismissShare('${escJs(s.id)}')" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px;line-height:1;flex-shrink:0">×</button>
     </div>`).join('');
   return `<div style="background:${BG2};border:1px solid #1a4a3a;border-radius:10px;padding:12px 16px;margin-bottom:14px">
     <div style="font-size:12px;font-weight:700;color:#6fcf97;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Planos recebidos (${_receivedShares.length})</div>
@@ -4742,10 +4830,10 @@ function buildPlans() {
             <div style="padding:13px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:${hasList?`1px solid ${BD}`:'none'}">
               <span style="font-weight:700;font-size:16px">${esc(p.name)}</span>
               <div style="display:flex;gap:8px">
-                ${hasList && sb && sbSession ? Bs(BG3,TX,'✉',`openSharePlan('${p.id}')`) : ''}
+                ${hasList && sb && sbSession ? Bs(BG3,TX,'✉',`openSharePlan('${escJs(p.id)}')`) : ''}
                 ${hasList ? Bs(BG3,TX,'⬇','exportPlan(\''+p.id+'\')') : ''}
-                ${Bs(BG3,TX,'Editar',`openEditPlan('${p.id}')`)}
-                ${Bs(BG3,CR,'×',`delPlan('${p.id}')`)}
+                ${Bs(BG3,TX,'Editar',`openEditPlan('${escJs(p.id)}')`)}
+                ${Bs(BG3,CR,'×',`delPlan('${escJs(p.id)}')`)}
               </div>
             </div>
             ${hasList ? `<div style="padding:6px 16px 12px">${exList}</div>` : ''}
@@ -4853,7 +4941,7 @@ function peRefreshList() {
   const filtered = applyFilters(D.exercises, _peFMove, _peSearch, _peAlpha, false, _peFMuscle, _peFPattern);
   if (!filtered.length) { c.innerHTML=`<div style="text-align:center;color:${DM};padding:16px 0;font-size:13px">Nenhum exercício encontrado.</div>`; c.scrollTop=0; return; }
   c.innerHTML = filtered.map(ex => `
-    <button onclick="addExToPlan('${ex.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
+    <button onclick="addExToPlan('${escJs(ex.id)}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px">
       <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(ex.name)}</span>
       <div style="display:flex;gap:4px;flex-shrink:0">${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
       <span style="color:${DM};font-size:12px">+</span>
@@ -4880,7 +4968,7 @@ function refreshPlanExList() {
         <div>
           <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
           <input type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${_planRests[en.eid]?.[k] ?? ''}"
-            onchange="setPlanRest('${en.eid}','${k}',this.value)"
+            onchange="setPlanRest('${escJs(en.eid)}','${k}',this.value)"
             style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:7px 4px;text-align:center;outline:none;box-sizing:border-box">
         </div>`).join('')}
       </div>` : '';
@@ -4889,7 +4977,7 @@ function refreshPlanExList() {
     const noteRow = _planNoteEdit === en.eid ? `
       <div style="padding:4px 0 10px 24px">
         <input type="text" value="${esc(en.prescription?.note || '')}" placeholder="Ex.: pegada aberta, 3s excêntrica"
-          onchange="setPlanNote('${en.eid}', this.value)"
+          onchange="setPlanNote('${escJs(en.eid)}', this.value)"
           style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:8px 10px;outline:none;box-sizing:border-box">
       </div>` : '';
     // In pick mode the reorder arrows give way to a checkbox — the row can't
@@ -4900,13 +4988,13 @@ function refreshPlanExList() {
     const picked = _planSsPick.includes(en.eid);
     const lead = _planSsMode
       ? (en.ss ? `<span style="width:22px;flex-shrink:0"></span>`
-               : `<button onclick="togglePlanSsPick('${en.eid}')" style="flex-shrink:0;width:22px;height:22px;border-radius:5px;border:1px solid ${picked?CG:BD};background:${picked?CG:'transparent'};color:#fff;font-size:12px;font-weight:700;cursor:pointer;padding:0">${picked?'✓':''}</button>`)
+               : `<button onclick="togglePlanSsPick('${escJs(en.eid)}')" style="flex-shrink:0;width:22px;height:22px;border-radius:5px;border:1px solid ${picked?CG:BD};background:${picked?CG:'transparent'};color:#fff;font-size:12px;font-weight:700;cursor:pointer;padding:0">${picked?'✓':''}</button>`)
       : `<div style="display:flex;flex-direction:column;gap:2px">
           <button onclick="movePlanEx(${i},-1)" ${isFirst?'disabled':''} style="background:none;border:none;color:${isFirst?BD:DM};font-size:13px;cursor:${isFirst?'default':'pointer'};padding:1px 3px;line-height:1">▲</button>
           <button onclick="movePlanEx(${i},1)"  ${isLast?'disabled':''}  style="background:none;border:none;color:${isLast?BD:DM};font-size:13px;cursor:${isLast?'default':'pointer'};padding:1px 3px;line-height:1">▼</button>
         </div>`;
     const ssBadge = en.ss
-      ? `<button onclick="openPlanSsCfg('${en.ss}')" title="Superset" style="color:${CST};font-size:11px;font-weight:700;min-width:18px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit">⛓${planSsLetter(en.ss)}</button>`
+      ? `<button onclick="openPlanSsCfg('${escJs(en.ss)}')" title="Superset" style="color:${CST};font-size:11px;font-weight:700;min-width:18px;background:none;border:none;padding:0;cursor:pointer;font-family:inherit">⛓${planSsLetter(en.ss)}</button>`
       : `<span style="color:${DM};font-size:12px;min-width:18px">${i+1}.</span>`;
     return `<div style="border-bottom:.5px solid ${BD};${en.ss?`border-left:2px solid ${CS};padding-left:6px`:''}">
       <div style="display:flex;align-items:center;gap:6px;padding:7px 0">
@@ -4917,8 +5005,8 @@ function refreshPlanExList() {
              ${mv ? musclePill(mv.muscle, mv.pattern) : ''}`
           : `<span style="flex:1;font-size:14px">${esc(ex?ex.name:'(removido)')}</span>
              ${ex&&ex.regime?regimePill(ex.regime):''}${ex?musclePill(ex.mainMuscle,ex.movementPattern):''}`}
-        <button onclick="togglePlanNoteEdit('${en.eid}')" title="Observação neste plano" style="background:none;border:none;color:${en.prescription?.note||_planNoteEdit===en.eid?'#4dd0c4':DM};font-size:13px;cursor:pointer;padding:4px">📝</button>
-        <button onclick="togglePlanRestEdit('${en.eid}')" title="Descanso neste plano" style="background:none;border:none;color:${hasRest||_planRestEdit===en.eid?'#6fcf97':DM};font-size:14px;cursor:pointer;padding:4px">⏱</button>
+        <button onclick="togglePlanNoteEdit('${escJs(en.eid)}')" title="Observação neste plano" style="background:none;border:none;color:${en.prescription?.note||_planNoteEdit===en.eid?'#4dd0c4':DM};font-size:13px;cursor:pointer;padding:4px">📝</button>
+        <button onclick="togglePlanRestEdit('${escJs(en.eid)}')" title="Descanso neste plano" style="background:none;border:none;color:${hasRest||_planRestEdit===en.eid?'#6fcf97':DM};font-size:14px;cursor:pointer;padding:4px">⏱</button>
         <button onclick="rmPlanEx(${i})" style="background:none;border:none;color:${DM};font-size:20px;cursor:pointer;padding:4px">×</button>
       </div>
       ${restRow}
@@ -5002,7 +5090,7 @@ function openPlanSsCfg(gid) {
       const mv = !en.exId ? MOVEMENTS[en.movement] : null;
       return `<div style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:.5px solid ${BD}">
         <span style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ex ? ex.name : (mv?.pt || en.movement || '(removido)'))}</span>
-        <button onclick="togglePlanMemberWu('${en.eid}','${gid}')" style="flex-shrink:0;padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:10px;cursor:pointer;font-family:inherit;background:${en.ssWu?CB:BG3};color:${en.ssWu?TX:DM}">WU nas rodadas</button>
+        <button onclick="togglePlanMemberWu('${escJs(en.eid)}','${escJs(gid)}')" style="flex-shrink:0;padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:10px;cursor:pointer;font-family:inherit;background:${en.ssWu?CB:BG3};color:${en.ssWu?TX:DM}">WU nas rodadas</button>
       </div>`;
     }).join('')}</div>
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
@@ -5011,8 +5099,8 @@ function openPlanSsCfg(gid) {
       ${numField('pss-round','Após a rodada (s)', cfg.rest?.round ?? 120, 5)}
     </div>
     <div style="font-size:11px;color:${DM};margin-bottom:14px">Intervalos individuais por rodada são ajustados durante o treino.</div>
-    ${B(CG,TX,'Salvar',`savePlanSsCfg('${gid}')`)}
-    ${B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupPlanSs('${gid}')`)}
+    ${B(CG,TX,'Salvar',`savePlanSsCfg('${escJs(gid)}')`)}
+    ${B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupPlanSs('${escJs(gid)}')`)}
     ${B(BG3,DM,'Cancelar',`closeModal();showPlanEditorKeepingState()`,';margin-bottom:0')}`);
 }
 
@@ -5213,12 +5301,19 @@ function normalizeExerciseDef(imp, originHint) {
   const type     = imp.type==='strength' ? 'strength' : 'hypertrophy';
   const regime   = (imp.regime==='assisted'||imp.regime==='bodyweight'||imp.regime===REGIME_BW_PLUS) ? imp.regime : 'weighted';
   const compound = imp.compound===true || imp.compound===false ? imp.compound : null;
-  const mainMuscle = (typeof imp.mainMuscle === 'string' && MUSCLE_GROUPS[imp.mainMuscle]) ? imp.mainMuscle : 'undefined';
+  // hasKey, not a bare lookup, on every one of these enum tests: bracket
+  // access reaches Object.prototype, so 'constructor'/'toString' would read
+  // as valid members and be STORED as this exercise's classification —
+  // rendering as "[object Object]" and crediting a muscle group that does
+  // not exist in weeklyMuscleVolume(). The typeof guard above already
+  // covered the `undefined`-coerces-to-a-real-key case; this covers the
+  // inherited-key case, which is the same class of bug one level up.
+  const mainMuscle = hasKey(MUSCLE_GROUPS, imp.mainMuscle) ? imp.mainMuscle : 'undefined';
   const patternMap = MOVEMENT_PATTERNS[mainMuscle] || MOVEMENT_PATTERNS.undefined;
-  const movementPattern = (typeof imp.movementPattern === 'string' && patternMap[imp.movementPattern])
+  const movementPattern = hasKey(patternMap, imp.movementPattern)
     ? imp.movementPattern : (mainMuscle==='undefined'?'undefined':'other');
   const accessoryMuscles = Array.isArray(imp.accessoryMuscles)
-    ? imp.accessoryMuscles.filter(m => typeof m==='string' && m!=='undefined' && MUSCLE_GROUPS[m]) : [];
+    ? imp.accessoryMuscles.filter(m => m!=='undefined' && hasKey(MUSCLE_GROUPS, m)) : [];
   const rest = sanitizeRest(imp.rest); // same [0,3600]-integer discipline as every rest input
 
   // The bilingual/content layer (2026-07-29) — these used to be silently
@@ -5231,7 +5326,7 @@ function normalizeExerciseDef(imp, originHint) {
   const strList = v => Array.isArray(v)
     ? v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim().slice(0, 200)).slice(0, 12) : [];
   const name_en    = (typeof imp.name_en === 'string' && imp.name_en.trim()) ? imp.name_en.trim().slice(0, 120) : null;
-  const equipment  = (typeof imp.equipment === 'string' && EQUIPMENT_LABELS[imp.equipment]) ? imp.equipment : null;
+  const equipment  = hasKey(EQUIPMENT_LABELS, imp.equipment) ? imp.equipment : null;
   const aliases    = strList(imp.aliases), cues_pt = strList(imp.cues_pt), cues_en = strList(imp.cues_en);
   const errors_pt  = strList(imp.errors_pt), errors_en = strList(imp.errors_en);
   const stretchEmphasis = imp.stretchEmphasis === true;
@@ -5249,14 +5344,34 @@ function normalizeExerciseDef(imp, originHint) {
   // a mismatched pair means either a corrupted file or a newer vocabulary
   // than this app; both drop to "no movement" rather than storing a claim
   // the resolution ladder would silently mis-group on.
-  const movement = (typeof imp.movement === 'string' && MOVEMENTS[imp.movement]
+  const movement = (hasKey(MOVEMENTS, imp.movement)
     && MOVEMENTS[imp.movement].muscle === mainMuscle
     && MOVEMENTS[imp.movement].pattern === movementPattern) ? imp.movement : null;
 
   // An id-less definition is one this device is inventing storage for, so
   // it gets a user-namespaced id — never a bare uid() that could later
-  // collide with a catalog slug.
-  return { id: imp.id || newUserExId(), name: imp.name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles,
+  // collide with a catalog slug. A REJECTED id lands in the same branch:
+  // safeId() returns null for anything outside the minted-id charset, and
+  // the entry is imported under a fresh local id rather than being dropped
+  // (applyImportedPlan's idMap still remaps the sender's claimed id onto
+  // this one, so plan entries keep resolving).
+  //
+  // This is the fix for the stored-XSS path found 2026-08-13: `imp.id` was
+  // copied verbatim into ~20 onclick="fn('...')" attributes, where a payload
+  // closing the attribute injected markup that ran on sight — no tap needed
+  // — with the account's Supabase session sitting in localStorage on a
+  // SHARED github.io origin. Reproduced end to end before fixing.
+  //
+  // The name is capped for the same reason aliases and cues are (below):
+  // every push uploads whole collections, so an unbounded string from
+  // someone else's file rides in every sync payload on every device forever.
+  //
+  // typeof-guarded rather than String()-coerced: applyImportedPlan filters
+  // nameless entries before it gets here, but restoreDeletedExercise does
+  // NOT — it hands a catalog row straight over — and String(undefined) would
+  // store the literal text "undefined" as the exercise's name.
+  const name = (typeof imp.name === 'string') ? imp.name.trim().slice(0, 120) : '';
+  return { id: safeId(imp.id) || newUserExId(), name, type, compound, regime, mainMuscle, movementPattern, accessoryMuscles,
     origin, ...(sharedFrom ? { sharedFrom } : {}),
     ...(movement ? { movement } : {}), ...(name_en ? { name_en } : {}), ...(aliases.length ? { aliases } : {}),
     ...(equipment ? { equipment } : {}), ...(cues_pt.length ? { cues_pt } : {}), ...(cues_en.length ? { cues_en } : {}),
@@ -5284,8 +5399,16 @@ function applyImportedPlan(data, sharedFrom) {
   // sender exId → resolved local exId, for remapping the plan-level rests
   // map below (its keys are the SENDER's ids, which may resolve to
   // different local ids via the name-match fallback).
-  const idMap = {};
+  // Object.create(null), not {} — the keys are the SENDER's claimed ids, so
+  // `idMap['toString']` on a plain object returns an inherited function
+  // (truthy), and an entry would be stored with exId pointing at it. A
+  // null-prototype map has no inherited keys to collide with.
+  const idMap = Object.create(null);
   const exIds = data.exercises
+    // Bounded like every other list from an untrusted file (aliases, cues):
+    // one import must not be able to push thousands of entries into a
+    // library that then rides in every sync payload, on every device.
+    .slice(0, 300)
     // A plan file is untrusted input (from another user, possibly hand-
     // edited) — an entry with no usable name can't become a real library
     // exercise, so drop it rather than importing something invisible.
@@ -5323,23 +5446,34 @@ function applyImportedPlan(data, sharedFrom) {
   // one is dropped by the explicit field build).
   let entries;
   if (Array.isArray(data.entries)) {
-    entries = data.entries.map(en => {
+    entries = data.entries.slice(0, 300).map(en => {
       if (!en || typeof en !== 'object') return null;
-      const eid  = (typeof en.eid === 'string' && en.eid) ? en.eid : uid();
+      // safeId, not a bare typeof check: an eid reaches SIX onclick handler
+      // arguments in the plan editor (setPlanRest, setPlanNote,
+      // togglePlanSsPick, togglePlanNoteEdit, togglePlanRestEdit,
+      // togglePlanMemberWu), so an unvalidated one is arbitrary JS on the
+      // first tap. This field sat seven lines above `ss` — which HAS been
+      // charset-validated all along — and was held to a weaker standard;
+      // they are the same kind of field from the same untrusted object.
+      const eid  = safeId(en.eid) || uid();
       const note = (typeof en.prescription?.note === 'string' && en.prescription.note.trim())
         ? en.prescription.note.trim().slice(0, 200) : null;
       // Superset markers arrive as untrusted strings like everything else: a
       // group id is only kept if it survives sanitizeGroups() below, and an
       // entry whose group didn't survive is stripped back to ungrouped rather
       // than left pointing at nothing.
-      const ss = (typeof en.ss === 'string' && /^[A-Za-z0-9_-]+$/.test(en.ss)) ? en.ss : null;
-      const grp = ss ? { ss, ssMem: (typeof en.ssMem === 'string' && /^[A-Za-z0-9_-]+$/.test(en.ssMem)) ? en.ssMem : eid,
+      // Same safeId() the ids above now use — this rule started here, and
+      // routing it through the shared helper is what stops the two from
+      // drifting apart again (they already had, which is how the id/eid
+      // hole survived: the standard existed three lines away).
+      const ss = safeId(en.ss);
+      const grp = ss ? { ss, ssMem: safeId(en.ssMem) || eid,
                          ...(en.ssWu === true ? { ssWu: true } : {}) } : {};
       if (en.exId) {
         const localId = idMap[en.exId] || (D.exercises.some(e => e.id === en.exId) ? en.exId : null);
         return localId ? { eid, exId: localId, ...grp, ...(note ? { prescription: { note } } : {}) } : null;
       }
-      return (typeof en.movement === 'string' && MOVEMENTS[en.movement])
+      return hasKey(MOVEMENTS, en.movement)
         ? { eid, exId: null, movement: en.movement, ...grp, ...(note ? { prescription: { note } } : {}) } : null;
     }).filter(Boolean);
   } else {
@@ -5365,7 +5499,11 @@ function applyImportedPlan(data, sharedFrom) {
   // anything, and its member order is rebuilt from those entries so a
   // hand-edited order can't name members this import never created.
   const cleanGroups = pruneGroups(entries, sanitizeGroups(data.groups));
-  D.plans.push({ id: uid(), name: data.name || 'Plano importado', exercises: entries, rests,
+  // Typed and capped like every other string off the wire — an object here
+  // used to survive and later render as "[object Object]".
+  const planName = (typeof data.name === 'string' && data.name.trim())
+    ? data.name.trim().slice(0, 120) : 'Plano importado';
+  D.plans.push({ id: uid(), name: planName, exercises: entries, rests,
     ...(cleanGroups ? { groups: cleanGroups } : {}), updatedAt: Date.now() });
   persist(); render();
 }
@@ -5381,7 +5519,7 @@ function openSharePlan(planId) {
     <input id="share-email" type="email" inputmode="email" placeholder="pessoa@exemplo.com"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
     <div id="share-msg" style="font-size:12px;color:${DM};margin-bottom:10px;display:none"></div>
-    ${B(CG,TX,'Enviar',`doSendPlanShare('${p.id}')`)}
+    ${B(CG,TX,'Enviar',`doSendPlanShare('${escJs(p.id)}')`)}
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
 }
 
@@ -5446,7 +5584,7 @@ function buildWeight() {
         <div style="font-size:13px;color:${DM};margin-top:2px">${fmt(w.date)}</div>
       </div>
       ${ds}
-      <button onclick="delWeight('${w.id}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1">×</button>
+      <button onclick="delWeight('${escJs(w.id)}')" style="background:none;border:none;color:${DM};font-size:22px;cursor:pointer;padding:4px;line-height:1">×</button>
     </div>`;
   }).join('');
 
@@ -5636,7 +5774,7 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
     <div style="font-size:11px;color:${DM};margin-bottom:6px">Nenhuma marcada = disponível em todas.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:20px">
       ${D.gyms.map(gm =>
-        `<button id="gav-${gm.id}" onclick="exF('gymav','${gm.id}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newGyms.includes(gm.id)?'#0a2e24':BG3};color:${_newGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
+        `<button id="gav-${esc(gm.id)}" onclick="exF('gymav','${escJs(gm.id)}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_newGyms.includes(gm.id)?'#0a2e24':BG3};color:${_newGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
       ).join('')}
     </div>` : ''}
     <label style="font-size:12px;color:${DM};margin-bottom:2px;display:block">Descanso deste exercício (opcional, segundos)</label>
@@ -5776,7 +5914,7 @@ function openEditEx(id) {
   _newTracking = trackingOf(ex);
   _newUnilateral = !!ex.unilateral;
   _newRest = { wuwu: ex.rest?.wuwu ?? '', wuw: ex.rest?.wuw ?? '', ww: ex.rest?.ww ?? '' };
-  showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${ex.id}">`));
+  showModal(exModalBody('Editar exercício', ex.name, 'saveEditEx()', `<input type="hidden" id="edit-ex-id" value="${esc(ex.id)}">`));
 }
 // Normalized name key for duplicate detection: case-, accent- and
 // whitespace-insensitive, so "Rosca direta", "rosca  direta" and "Rosca
@@ -5992,12 +6130,12 @@ function aExRow(ex) {
   // machine-picker ✎ precedent): the row picks, the star toggles ★.
   return `
     <div style="display:flex;gap:6px;margin-bottom:7px;align-items:stretch">
-      <button onclick="pickEx('${ex.id}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer${unavail?';opacity:.55':''}">
+      <button onclick="pickEx('${escJs(ex.id)}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer${unavail?';opacity:.55':''}">
         <span style="flex:1;font-weight:500;font-size:14px;text-align:left">${esc(ex.name)}</span>
         <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${ex.regime?regimePill(ex.regime):''}${musclePill(ex.mainMuscle,ex.movementPattern)}</div>
         <span style="color:${DM};font-size:12px">→</span>
       </button>
-      <button onclick="toggleFavStar('${ex.id}')" title="Favorita" style="flex-shrink:0;width:38px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${ex.favorite?'#e6c84a':DM};font-size:15px;cursor:pointer;font-family:inherit">${ex.favorite?'★':'☆'}</button>
+      <button onclick="toggleFavStar('${escJs(ex.id)}')" title="Favorita" style="flex-shrink:0;width:38px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${ex.favorite?'#e6c84a':DM};font-size:15px;cursor:pointer;font-family:inherit">${ex.favorite?'★':'☆'}</button>
     </div>`;
 }
 
@@ -6044,7 +6182,7 @@ function aFamilyRow(path, movs, showAnchor) {
   const label = path[path.length-1];
   const vars = movs.reduce((a,m) => a + m.count, 0);
   return `
-    <button onclick="openPickFamily('${esc(path.join(' / '))}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
+    <button onclick="openPickFamily('${escJs(path.join(' / '))}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:11px 14px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:7px">
       <span style="flex:1;min-width:0;text-align:left">
         <span style="font-weight:600;font-size:14px;display:block">${esc(label)}</span>
         <span style="font-size:11px;color:${DM}">${movs.length} ${movs.length===1?'movimento':'movimentos'}</span>
@@ -6327,7 +6465,7 @@ function pickEx(id) {
       <button id="pr-bw" onclick="setPickRegime('bodyweight')" style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isBW?CG:BG3};color:${isBW?TX:DM}">BW</button>
       <button id="pr-bwp" onclick="setPickRegime('${REGIME_BW_PLUS}')" title="Peso corporal + carga adicional" style="flex:1;padding:10px;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;font-family:inherit;background:${isBWP?'#0a2438':BG3};color:${isBWP?'#7fb8e0':DM}">BW+</button>
     </div>
-    ${B(CG,TX,'Adicionar',`addPickedEx('${id}')`)}
+    ${B(CG,TX,'Adicionar',`addPickedEx('${escJs(id)}')`)}
     ${B(BG3,TX,'Voltar','showAddEx()',';margin-bottom:0')}`);
 }
 
@@ -6726,7 +6864,7 @@ function openMachinePicker(i) {
       : 'registra com o que você fez o movimento (barra reta, W, trap…). A progressão continua uma só — isto é descritivo.'}</div>
     ${list.length ? list.map(m => `
       <div style="display:flex;gap:6px;margin-bottom:6px;align-items:stretch">
-        <button onclick="selectMachine(${i},'${m.id}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:10px 12px;background:${ex.instanceId===m.id?'#0a2e2e':BG3};border:1px solid ${ex.instanceId===m.id?'#14484a':BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;text-align:left">
+        <button onclick="selectMachine(${i},'${escJs(m.id)}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:10px 12px;background:${ex.instanceId===m.id?'#0a2e2e':BG3};border:1px solid ${ex.instanceId===m.id?'#14484a':BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;text-align:left">
           <span style="flex:1;min-width:0">
             <span style="font-weight:600;font-size:13px;display:block">${esc(m.name)}</span>
             ${detail(m) ? `<span style="font-size:11px;color:${DM};display:block">${esc(detail(m))}</span>` : ''}
@@ -6735,7 +6873,7 @@ function openMachinePicker(i) {
           </span>
           ${ex.instanceId===m.id ? `<span style="color:#4dd0c4;font-weight:700">✓</span>` : ''}
         </button>
-        <button onclick="openMachineEditor('${m.id}', ${i})" title="Editar equipamento" style="flex-shrink:0;width:40px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${DM};font-size:14px;cursor:pointer;font-family:inherit">✎</button>
+        <button onclick="openMachineEditor('${escJs(m.id)}', ${i})" title="Editar equipamento" style="flex-shrink:0;width:40px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${DM};font-size:14px;cursor:pointer;font-family:inherit">✎</button>
       </div>`).join('')
     : `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma máquina cadastrada para este exercício ainda.</div>`}
     ${ex.instanceId ? B(BG3,DM,'Sem equipamento neste treino',`clearMachine(${i})`) : ''}
@@ -6921,12 +7059,12 @@ function openMachineEditor(mid, fromBlock) {
     <div style="font-size:11px;color:${DM};margin-bottom:6px">Ordena o seletor — as da academia atual aparecem primeiro.</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
       ${D.gyms.map(gm =>
-        `<button id="meg-${gm.id}" onclick="meGymToggle('${gm.id}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_meGyms.includes(gm.id)?'#0a2e24':BG3};color:${_meGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
+        `<button id="meg-${esc(gm.id)}" onclick="meGymToggle('${escJs(gm.id)}')" style="padding:6px 10px;border:none;border-radius:8px;font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${_meGyms.includes(gm.id)?'#0a2e24':BG3};color:${_meGyms.includes(gm.id)?'#6fcf97':DM}">${esc(gm.name)}</button>`
       ).join('')}
     </div>` : ''}
-    ${B(CG,TX,'Salvar',`saveMachineEdit('${m.id}', ${fromArg})`)}
-    ${B('#2d1010','#e57373','Excluir equipamento',`delMachine('${m.id}', ${fromArg})`)}
-    ${B(BG3,DM,'Cancelar',`machineEditorReturn('${m.exId}', ${fromArg})`,';margin-bottom:0')}`);
+    ${B(CG,TX,'Salvar',`saveMachineEdit('${escJs(m.id)}', ${fromArg})`)}
+    ${B('#2d1010','#e57373','Excluir equipamento',`delMachine('${escJs(m.id)}', ${fromArg})`)}
+    ${B(BG3,DM,'Cancelar',`machineEditorReturn('${escJs(m.exId)}', ${fromArg})`,';margin-bottom:0')}`);
 }
 
 // Gym availability multi-toggle — same in-place restyle pattern as exF('gymav').
@@ -7176,7 +7314,7 @@ function resolveSlot(i) {
       const isRem = e.id === remembered;
       return `
       <div style="display:flex;gap:6px;margin-bottom:6px;align-items:stretch">
-        <button onclick="resolveSlotTo(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;text-align:left${unavail?';opacity:.55':''}">
+        <button onclick="resolveSlotTo(${i},'${escJs(e.id)}')" style="display:flex;align-items:center;gap:8px;flex:1;min-width:0;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;text-align:left${unavail?';opacity:.55':''}">
           <span style="flex:1;min-width:0">
             <span style="font-weight:600;font-size:13px;display:block">${e.favorite?'★ ':''}${esc(e.name)}</span>
             <span style="display:flex;gap:4px;flex-wrap:wrap;margin-top:3px">
@@ -7186,8 +7324,8 @@ function resolveSlot(i) {
             </span>
           </span>
         </button>
-        <button onclick="toggleFavorite('${e.id}');resolveSlot(${i})" title="Favorita" style="flex-shrink:0;width:38px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${e.favorite?'#e6c84a':DM};font-size:15px;cursor:pointer;font-family:inherit">${e.favorite?'★':'☆'}</button>
-        <button onclick="slotRemember(${i},'${e.id}')" title="Lembrar nesta academia" style="flex-shrink:0;width:38px;background:${isRem?'#0a2e2e':BG3};border:1px solid ${isRem?'#14484a':BD};border-radius:8px;color:${isRem?'#4dd0c4':DM};font-size:14px;cursor:pointer;font-family:inherit">📌</button>
+        <button onclick="toggleFavorite('${escJs(e.id)}');resolveSlot(${i})" title="Favorita" style="flex-shrink:0;width:38px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${e.favorite?'#e6c84a':DM};font-size:15px;cursor:pointer;font-family:inherit">${e.favorite?'★':'☆'}</button>
+        <button onclick="slotRemember(${i},'${escJs(e.id)}')" title="Lembrar nesta academia" style="flex-shrink:0;width:38px;background:${isRem?'#0a2e2e':BG3};border:1px solid ${isRem?'#14484a':BD};border-radius:8px;color:${isRem?'#4dd0c4':DM};font-size:14px;cursor:pointer;font-family:inherit">📌</button>
       </div>`;
     }).join('') : `<div style="font-size:13px;color:${DM};margin-bottom:8px">Nenhuma variação deste movimento na biblioteca ainda — crie uma no seletor de exercícios ou na Biblioteca.</div>`}
     ${B(BG3,TX,'Fechar','closeModal()',';margin-bottom:0')}`);
@@ -7449,7 +7587,7 @@ function openPlanFromSession(sessId) {
     <label style="font-size:12px;color:${DM};margin-bottom:5px;display:block">Nome do plano</label>
     <input id="pfs-name" type="text" value="${esc(suggested)}"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
-    ${B(CG,TX,'Criar plano',`doPlanFromSession('${s.id}')`)}
+    ${B(CG,TX,'Criar plano',`doPlanFromSession('${escJs(s.id)}')`)}
     ${B(BG3,TX,'Cancelar','closeModal()',';margin-bottom:0')}`);
 }
 
@@ -8457,7 +8595,7 @@ function openSsBuilder(gid) {
     const ex = S.exercises[i];
     return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:.5px solid ${BD}">
       <span style="flex:1;min-width:0;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ex.exName)}</span>
-      <button onclick="toggleMemberWu(${i});openSsBuilder('${gid}')" title="Aquecimento junto com as rodadas" style="flex-shrink:0;padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:10px;cursor:pointer;font-family:inherit;background:${ex.ssWu?CB:BG3};color:${ex.ssWu?TX:DM}">WU nas rodadas</button>
+      <button onclick="toggleMemberWu(${i});openSsBuilder('${escJs(gid)}')" title="Aquecimento junto com as rodadas" style="flex-shrink:0;padding:4px 9px;border-radius:99px;border:none;font-weight:700;font-size:10px;cursor:pointer;font-family:inherit;background:${ex.ssWu?CB:BG3};color:${ex.ssWu?TX:DM}">WU nas rodadas</button>
       <button onclick="removeFromSuperset(${i})" style="flex-shrink:0;background:none;border:none;color:${DM};font-size:19px;cursor:pointer;padding:2px 4px;line-height:1">×</button>
     </div>`;
   }).join('') : pickable.map(({ ex, i }) => {
@@ -8482,8 +8620,8 @@ function openSsBuilder(gid) {
     ${editing ? `
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">AQUECIMENTO</div>
     <div style="display:flex;gap:6px;margin-bottom:8px">
-      <button onclick="setGroupWu('${gid}',false)" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${!wuInRounds?CB:BG3};color:${!wuInRounds?TX:DM}">Antes, por exercício</button>
-      <button onclick="setGroupWu('${gid}',true)"  style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${wuInRounds?CB:BG3};color:${wuInRounds?TX:DM}">Nas rodadas</button>
+      <button onclick="setGroupWu('${escJs(gid)}',false)" style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${!wuInRounds?CB:BG3};color:${!wuInRounds?TX:DM}">Antes, por exercício</button>
+      <button onclick="setGroupWu('${escJs(gid)}',true)"  style="flex:1;padding:8px;border:none;border-radius:8px;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${wuInRounds?CB:BG3};color:${wuInRounds?TX:DM}">Nas rodadas</button>
     </div>
     <div style="font-size:11px;color:${DM};margin-bottom:12px">${wuInRounds
       ? 'As séries de aquecimento entram como rodadas, junto com os outros exercícios.'
@@ -8494,17 +8632,17 @@ function openSsBuilder(gid) {
       ${numField('ss-nwu', wuInRounds ? 'Rodadas de aquec.' : 'Aquec. (soltas)', nWu, 1)}
       ${numField('ss-nw','Rodadas de trabalho', nW, 1)}
     </div>
-    ${Bs(BG3,TX,'Aplicar',`setRoundCounts('${gid}',+document.getElementById('ss-nwu').value,+document.getElementById('ss-nw').value);openSsBuilder('${gid}')`,';width:100%;justify-content:center;margin-bottom:14px')}` : ''}
+    ${Bs(BG3,TX,'Aplicar',`setRoundCounts('${escJs(gid)}',+document.getElementById('ss-nwu').value,+document.getElementById('ss-nw').value);openSsBuilder('${escJs(gid)}')`,';width:100%;justify-content:center;margin-bottom:14px')}` : ''}
 
     <div style="font-size:11px;color:${DM};font-weight:700;margin-bottom:6px">DESCANSO PADRÃO</div>
     <div style="display:flex;gap:8px;margin-bottom:14px">
-      ${numField('ss-between','Entre exercícios (s)', cfg.rest?.between ?? 0, 5, editing ? `setSsRestDefault('${gid}','between',this.value)` : '')}
-      ${numField('ss-round','Após a rodada (s)', cfg.rest?.round ?? 120, 5, editing ? `setSsRestDefault('${gid}','round',this.value)` : '')}
+      ${numField('ss-between','Entre exercícios (s)', cfg.rest?.between ?? 0, 5, editing ? `setSsRestDefault('${escJs(gid)}','between',this.value)` : '')}
+      ${numField('ss-round','Após a rodada (s)', cfg.rest?.round ?? 120, 5, editing ? `setSsRestDefault('${escJs(gid)}','round',this.value)` : '')}
     </div>
     <div style="font-size:11px;color:${DM};margin-bottom:14px">Cada intervalo pode ser ajustado individualmente depois, tocando na linha de descanso dentro da rodada.</div>
 
     ${editing
-      ? B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupSuperset('${gid}')`)
+      ? B(BG3,TX,'Desagrupar (separar exercícios)',`ungroupSuperset('${escJs(gid)}')`)
         + B(BG3,DM,'Fechar','closeModal()',';margin-bottom:0')
       : B(_ssPick.length>=2?CG:'#333',TX,`Criar superset${_ssPick.length?` (${_ssPick.length})`:''}`,'doCreateSuperset()')
         + B(BG3,DM,'Cancelar','closeSsBuilder()',';margin-bottom:0')}`);
@@ -8560,7 +8698,7 @@ function openSsMember(i) {
     ${ctx.isBarbell ? Bs(BG3,TX,'⚖ Como digitar a carga', `closeModal();toggleLoadSetup(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px') : ''}
     ${Bs(BG3,TX,'📝 Observação de hoje', `closeModal();toggleExNote(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
     ${Bs(BG3,TX,'⇄ Trocar exercício', `closeModal();openSwapEx(${i})`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
-    ${Bs(BG3,TX,'ℹ Ver dicas e detalhes', `closeModal();openExerciseDetail('${ex.exId}')`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
+    ${Bs(BG3,TX,'ℹ Ver dicas e detalhes', `closeModal();openExerciseDetail('${escJs(ex.exId)}')`, ';width:100%;justify-content:flex-start;margin-bottom:8px')}
 
     <div style="font-size:11px;color:${DM};margin:14px 0 10px">O descanso deste exercício é definido pelo superset, não pelo ⏱ individual.</div>
     ${B(BG3,TX,'Remover do superset',`removeFromSuperset(${i})`)}
@@ -8575,8 +8713,8 @@ function openGapRest(gid, r, slot) {
     <div style="font-size:12px;color:${DM};margin-bottom:14px">Rodada ${r + 1}. Use 0 para não descansar aqui.</div>
     <input id="gap-secs" type="number" inputmode="numeric" min="0" step="5" value="${cur}"
       style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:16px;padding:11px 10px;text-align:center;outline:none;box-sizing:border-box;margin-bottom:14px">
-    ${B(CG,TX,'Só nesta rodada',`setGapRest('${gid}',${r},'${slot}',document.getElementById('gap-secs').value,false)`)}
-    ${B(BG3,TX,'Aplicar a todas as rodadas',`setGapRest('${gid}',${r},'${slot}',document.getElementById('gap-secs').value,true)`)}
+    ${B(CG,TX,'Só nesta rodada',`setGapRest('${escJs(gid)}',${r},'${escJs(slot)}',document.getElementById('gap-secs').value,false)`)}
+    ${B(BG3,TX,'Aplicar a todas as rodadas',`setGapRest('${escJs(gid)}',${r},'${escJs(slot)}',document.getElementById('gap-secs').value,true)`)}
     ${B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
 }
 
@@ -8686,7 +8824,7 @@ function swRefreshList(i, search) {
   const ex = S.exercises[i];
   const tiers = swapCandidates(ex, search);
   const row = ({ e, unavail }) => `
-    <button onclick="doSwapEx(${i},'${e.id}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;${unavail?'opacity:.5':''}">
+    <button onclick="doSwapEx(${i},'${escJs(e.id)}')" style="display:flex;align-items:center;gap:8px;width:100%;padding:10px 12px;background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-family:inherit;cursor:pointer;margin-bottom:6px;${unavail?'opacity:.5':''}">
       <span style="flex:1;font-weight:500;font-size:13px;text-align:left">${esc(e.name)}</span>
       <div style="display:flex;gap:4px;flex-shrink:0">${unavail?`<span style="display:inline-flex;padding:1px 7px;border-radius:99px;font-size:10px;font-weight:700;background:#1e1a00;color:#e6c84a">indisponível</span>`:''}${e.regime?regimePill(e.regime):''}${musclePill(e.mainMuscle,e.movementPattern)}</div>
     </button>`;
@@ -8840,9 +8978,9 @@ function openSwapChoice(i, newId) {
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">${esc(old.exName)} → ${esc(ne.name)}</div>
     <div style="font-size:13px;color:${DM};margin-bottom:14px">Este bloco já tem séries preenchidas. O que fazer com elas?</div>
     ${warn.length ? `<div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:8px;padding:9px 11px;margin-bottom:14px;font-size:12px;color:#e6c84a">Atenção: ${warn.join('; ')}.</div>` : ''}
-    ${B(CG,TX,'Manter as séries',`doSwapEx(${i},'${ne.id}','keep')`)}
+    ${B(CG,TX,'Manter as séries',`doSwapEx(${i},'${escJs(ne.id)}','keep')`)}
     <div style="font-size:11px;color:${DM};margin:-4px 0 12px">Use quando o treino foi este — só o exercício estava registrado errado.</div>
-    ${B(BG3,TX,'Limpar e recomeçar',`doSwapEx(${i},'${ne.id}','reset')`)}
+    ${B(BG3,TX,'Limpar e recomeçar',`doSwapEx(${i},'${escJs(ne.id)}','reset')`)}
     <div style="font-size:11px;color:${DM};margin:-4px 0 12px">Use quando você vai fazer o outro exercício de verdade.</div>
     ${B(BG3,DM,'Cancelar','closeModal()',';margin-bottom:0')}`);
 }
@@ -9207,12 +9345,66 @@ function applyData(p) {
   if (!D.tombstones.gyms) D.tombstones.gyms = {};
   if (!D.tombstones.machines) D.tombstones.machines = {};
   D.lastModified = p.lastModified || 0;
+  // Untrusted-input pass. A backup is a FILE — "restaura esse backup, tem o
+  // treino que fizemos" is as plausible a message as "importa esse plano",
+  // and until this existed the two doors were held to opposite standards:
+  // the plan import validates every field, while this one assigned verbatim.
+  // It is also the WIDER door — a plan carries entries and definitions, a
+  // backup replaces exercises AND sessions AND machines AND gyms AND
+  // tombstones.
+  //
+  // Deliberately NOT routed through normalizeExerciseDef(): that returns an
+  // explicit whitelist which omits `gyms` (availability tags) and
+  // `favorite`, so running it here would silently delete those from a
+  // LEGITIMATE restore. Hardening must not cost the honest user their data.
+  // The sink layer (escJs) already makes hostile strings inert at render, so
+  // what is left to defend is the two things that damage data SILENTLY.
+  sanitizeHydratedData();
   // An older backup predates muscle-group classification entirely — same
   // backfill loadData() runs on its own local-cache load.
   backfillExerciseClassification(); backfillPlanEntries(); normalizeExerciseOrigin();
   // And the same for set scaffolding in sessions saved before the
   // saveSession() metadata strip — see scrubSessionSetMetadata() (section 2).
   scrubSessionSetMetadata();
+}
+
+// Clamps the two things a hand-edited backup can use to destroy data
+// silently, and enforces the collection shapes applyData() used to assume.
+// Runs on the restore paths only (backup import, snapshot restore) — the
+// remote merge has its own per-item discipline.
+//
+//   · TIMESTAMPS ARE CLAMPED TO NOW. `updatedAt: Number.MAX_SAFE_INTEGER`
+//     wins per-item LWW against every genuine future edit, forever — the
+//     user could never correct the record again. A tombstone dated in the
+//     far future is worse: mergeCollection() deletes any item older than its
+//     tombstone, so it silently removes real data on EVERY device at their
+//     next pull, and no ordinary edit can outrank it.
+//   · TOMBSTONE KEYS MUST BE REAL IDS. They are pure destruction with no
+//     data value, so an unrecognizable key is dropped rather than honored.
+//     Every id this app mints passes safeId, so nothing legitimate is lost.
+//
+// Items themselves are kept even if their id looks odd: the escJs sink layer
+// makes a hostile id inert at render, whereas dropping items would risk
+// deleting a real workout over a shape this code failed to anticipate. When
+// the two risks are data loss and inert weirdness, prefer inert weirdness.
+function sanitizeHydratedData() {
+  const now = Date.now();
+  const clampTs = v => {
+    const n = Number(v);
+    return (Number.isFinite(n) && n > 0) ? Math.min(n, now) : 0;
+  };
+  ['exercises','plans','sessions','weights','gyms','machines'].forEach(k => {
+    if (!Array.isArray(D[k])) { D[k] = []; return; }   // gyms/machines were never even type-checked
+    D[k].forEach(it => { if (it && typeof it === 'object') it.updatedAt = clampTs(it.updatedAt); });
+  });
+  const clean = { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} };
+  Object.keys(clean).forEach(coll => {
+    const src = D.tombstones && D.tombstones[coll];
+    if (!src || typeof src !== 'object') return;
+    Object.keys(src).forEach(id => { if (safeId(id)) clean[coll][id] = clampTs(src[id]); });
+  });
+  D.tombstones = clean;
+  D.lastModified = clampTs(D.lastModified);
 }
 
 // ── Factory reset ─────────────────────────────────────────────────────────────
@@ -9277,6 +9469,12 @@ function importBackup() {
   try {
     const p=JSON.parse(json);
     if(!Array.isArray(p.exercises)||!Array.isArray(p.plans)||!Array.isArray(p.sessions)||!Array.isArray(p.weights)) throw new Error();
+    // Confirm FIRST, and say what is at stake. This path replaces every
+    // collection and then pushes the result to the account — it is strictly
+    // more destructive than a snapshot restore, which has always confirmed.
+    // The weaker gate sat on the more dangerous door.
+    const counts = `${p.sessions.length} treinos · ${p.plans.length} planos · ${p.exercises.length} exercícios`;
+    if (!confirm(`Substituir TODOS os dados deste aparelho pelo backup (${counts})?\n\nO que está aqui agora será trocado e a mudança sobe para a nuvem. Uma cópia de segurança do estado atual fica guardada em "antes da última restauração".`)) return;
     // Same pre-replacement safety copy a snapshot restore takes — a wrong
     // import is undoable from the "antes da última restauração" slot.
     stashPreRestore();

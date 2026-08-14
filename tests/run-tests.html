@@ -68,6 +68,30 @@
   };
   const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
+  // ── SAFETY GATE — must come before anything destructive ───────────────────
+  //
+  // This page's first act is to wipe the ORIGIN's storage, and GitHub Pages
+  // serves the whole repo: until this gate existed, the suite was reachable
+  // at pbbabreu.github.io/gym-tracker/tests/run-tests.html and wiping it was
+  // one tapped link away — a friend opening it, or the owner on the wrong
+  // tab, would lose gym:data, all seven daily snapshots, the pre-restore
+  // slot, an in-progress workout, the Supabase session, and (on a legacy
+  // install) the Gist PAT. For someone who never signed in — a supported
+  // way to use this app — that is total, unrecoverable loss.
+  //
+  // The convention "run it over a local server, never the live origin" was
+  // written in the README and enforced by nothing. A comment is not a guard.
+  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
+  if (!LOCAL_HOSTS.includes(location.hostname)) {
+    sumEl.className = 'bad';
+    sumEl.textContent = 'Recusado: esta suite apaga TODOS os dados desta origem e so pode rodar em um servidor local.';
+    resEl.insertAdjacentHTML('beforeend',
+      `<div class="t bad">host "${String(location.hostname).replace(/</g,'&lt;')}" nao e local — nada foi apagado</div>` +
+      `<div class="detail">Rode: python -m http.server, depois abra http://localhost:8000/tests/run-tests.html</div>`);
+    document.title = 'bloqueado — test runner';
+    return;
+  }
+
   // ── boot: wipe origin storage, load the real app in an iframe ─────────────
   g('boot');
   try {
@@ -141,6 +165,10 @@
     DEFAULT_ALERTS, gainForVolume, shouldFireNotification,
     // Unilateral flag + isolation warm-up correction (2026-08-13)
     memKey, WU_REPS, buildWarmupSets, getRecentWorkHistory, lastModesFor,
+    // Injection hardening (2026-08-13). escJs is the handler-argument
+    // escaper, safeId the id validator at the trust boundary, hasKey the
+    // own-property test for untrusted enum keys. NOTE - still no backticks.
+    escJs, safeId, hasKey,
     get newUnilateral() { return _newUnilateral; }, set newUnilateral(v) { _newUnilateral = v; },
     get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
     get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
@@ -344,6 +372,181 @@
     T.D.plans = T.D.plans.filter(p => !/^T[1-5]$/.test(p.name));
     T.D.exercises = T.D.exercises.filter(e => e.id !== 'evil-1' && e.id !== bar.id);
     t('cleanup restored counts', T.D.exercises.length === exCount && T.D.plans.length === planCount);
+  }
+
+  // ── injection hardening (the 2026-08-13 stored-XSS fix) ────────────────────
+  //
+  // A plan arrives from another user (a file over WhatsApp, or an in-app
+  // share). Its `id` and `eid` were copied verbatim into onclick="fn('...')"
+  // attributes, so a payload that closed the attribute injected markup that
+  // ran on sight — no tap needed. Reproduced end to end before fixing.
+  //
+  // Two independent layers, tested separately on purpose: the SOURCE
+  // (safeId rejects anything outside the minted-id charset) and the SINK
+  // (escJs survives HTML-decode-then-JS-parse). The sink layer is what
+  // protects data that never passed the boundary — mergeCollection() unions
+  // whatever the remote holds, including a row poisoned before the fix.
+  g('injection hardening');
+  {
+    const XSS_ID  = 'zz\'"><img src=x onerror="window.__T_XSS=1">';
+    const XSS_EID = 'zz\'); window.__T_XSS2=1; (\'';
+
+    // — source layer —
+    t('safeId accepts a minted uid', !!T.safeId('mss8k6fyqnves'));
+    t('safeId accepts a catalog slug', T.safeId('bench-press') === 'bench-press');
+    t('safeId accepts the u_ namespace', T.safeId('u_mss8k6fyqnves') === 'u_mss8k6fyqnves');
+    t('safeId rejects quote/angle payload', T.safeId(XSS_ID) === null);
+    t('safeId rejects a space', T.safeId('bench press') === null);
+    t('safeId rejects over-long ids', T.safeId('a'.repeat(65)) === null);
+    t('safeId rejects non-strings', T.safeId(7) === null && T.safeId(null) === null && T.safeId({}) === null);
+    t('safeId rejects prototype keys', T.safeId('__proto__') === null && T.safeId('constructor') === null);
+
+    // — sink layer —
+    const out = T.escJs(XSS_ID);
+    t('escJs neutralizes the JS-string quote', out.indexOf('\\\'') !== -1);
+    t('escJs HTML-escapes the attribute quote', out.indexOf('&quot;') !== -1 && out.indexOf('"') === -1);
+    t('escJs HTML-escapes angle brackets', out.indexOf('<') === -1 && out.indexOf('&lt;') !== -1);
+    t('escJs escapes backslashes before quotes', T.escJs('a\\b') === 'a\\\\b');
+    t('escJs leaves a clean id untouched', T.escJs('bench-press') === 'bench-press');
+    t('escJs escapes CR/LF (a raw newline is a JS syntax error)',
+      T.escJs('a\nb') === 'a\\nb' && T.escJs('a\r\nb') === 'a\\r\\nb');
+
+    // The property the whole sink layer depends on: the handler must receive
+    // the ORIGINAL string back. If escaping did not round-trip, every handler
+    // would silently stop matching state for any id carrying a special char —
+    // a legacy poisoned row would become un-clickable AND un-deletable, so the
+    // user could never clean it up. Asserted by really clicking a real button.
+    {
+      const host = W.document.createElement('div');
+      W.document.body.appendChild(host);
+      W.__T_GOT = null;
+      W.__T_probe = v => { W.__T_GOT = v; };
+      const cases = ['bench-press', "a'b", 'a"b', 'a\\b', 'a\nb', 'a<b>&c', XSS_ID];
+      let ok = 0, inert = 0;
+      cases.forEach(c => {
+        host.innerHTML = '<button onclick="__T_probe(\'' + T.escJs(c) + '\')">x</button>';
+        W.__T_GOT = null;
+        host.querySelector('button').click();
+        if (W.__T_GOT === c) ok++;
+        if (host.querySelectorAll('img,svg,script').length === 0) inert++;
+      });
+      host.remove(); delete W.__T_probe; delete W.__T_GOT;
+      t('escJs round-trips the original value to the handler', ok === cases.length);
+      t('...and injects nothing while doing it', inert === cases.length);
+    }
+
+    // — untrusted enum keys —
+    t('hasKey rejects inherited keys', T.hasKey({}, 'toString') === false && T.hasKey({}, '__proto__') === false);
+    t('hasKey accepts a real own key', T.hasKey({ chest: 'Peito' }, 'chest') === true);
+    t('isKnownGlobalId immune to prototype keys', T.isKnownGlobalId('constructor') === false);
+
+    // — end to end through the real import pipeline —
+    const exBefore = T.D.exercises.length, planBefore = T.D.plans.length;
+    W.applyImportedPlan({
+      type: 'gym-tracker-plan', name: 'XSSPLAN',
+      exercises: [{ id: XSS_ID, name: 'Hostile Import Probe 9911' }],
+      entries:   [{ eid: XSS_EID, exId: XSS_ID }],
+    });
+    const probe = T.D.exercises.find(e => e.name === 'Hostile Import Probe 9911');
+    const xplan = T.D.plans.find(p => p.name === 'XSSPLAN');
+    t('hostile exercise id is not stored', !!probe && probe.id !== XSS_ID);
+    t('rejected id falls back to the u_ namespace', !!probe && probe.id.slice(0, 2) === 'u_');
+    t('hostile eid is not stored', !!xplan && xplan.exercises[0].eid !== XSS_EID);
+    t('entry still resolves to the imported exercise', !!xplan && xplan.exercises[0].exId === probe.id);
+    t('plan still imported (rejection is not a drop)', !!xplan && xplan.exercises.length === 1);
+
+    // The rendered library row must contain no live markup even though the
+    // id was hostile — this asserts the SINK, by rendering with a poisoned
+    // id planted directly in state (the merge-reintroduces-it case).
+    const planted = { id: XSS_ID, name: 'Planted Sink Probe 9911', type: 'hypertrophy', compound: true,
+                      regime: 'weighted', mainMuscle: 'chest', movementPattern: 'press',
+                      accessoryMuscles: [], origin: 'user', updatedAt: Date.now() };
+    T.D.exercises.push(planted);
+    W.__T_XSS = 0;
+    const html = W.buildLibrary();
+    const probeDoc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
+    t('poisoned id renders no injected element', probeDoc.querySelectorAll('img[src="x"]').length === 0);
+    t('poisoned id did not execute during render', !W.__T_XSS);
+
+    // — the sibling-gap regression (found reviewing the first fix) —
+    //
+    // The first sweep escaped the variables it recognised as "ids" and missed
+    // the ones sitting beside them: ssMem next to ss, m.exId next to m.id,
+    // id= next to onclick=. Same shape as the original bug — a rule applied
+    // to one field and not to its neighbour. Pinned so it cannot come back.
+    {
+      const src = W.document.documentElement.outerHTML;
+      const rawInHandler = [];
+      const hRe = /on(?:click|change|input|focus|blur)="([^"]*)"/g;
+      let m;
+      while ((m = hRe.exec(src))) {
+        (m[1].match(/'\$\{[^}]*\}'/g) || []).forEach(a => { if (!a.includes('escJs(')) rawInHandler.push(a); });
+      }
+      // The live DOM is already rendered, so this asserts the OUTPUT: no
+      // handler argument may contain a quote that escaped its string.
+      const brokenOut = [...W.document.querySelectorAll('[onclick],[onchange]')]
+        .map(el => el.getAttribute('onclick') || el.getAttribute('onchange'))
+        .filter(a => a && !/^[a-zA-Z_$][\w$]*\((?:[^'"]|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")*\)\s*;?\s*$/.test(a));
+      t('no rendered handler has a broken argument list', brokenOut.length === 0, brokenOut.slice(0,3).join(' | '));
+    }
+
+    // — sanitizeHydratedData: the backup-restore trust boundary —
+    //
+    // applyData() used to assign a pasted JSON verbatim, which is the wider
+    // door than plan import (it replaces sessions, machines, gyms AND
+    // tombstones) and had none of its validation. These assert the two things
+    // a hostile backup can use to destroy data SILENTLY.
+    {
+      const keepEx = T.D.exercises, keepSess = T.D.sessions, keepGyms = T.D.gyms,
+            keepMach = T.D.machines, keepTomb = T.D.tombstones, keepLM = T.D.lastModified;
+      const FUTURE = 9999999999999;
+      T.D.exercises = [{ id:'bench-press', name:'x', updatedAt: FUTURE }];
+      T.D.sessions  = [{ id:'s1', date:'2026-01-01', exercises:[], updatedAt: Number.MAX_SAFE_INTEGER }];
+      T.D.gyms      = 'not-an-array';
+      T.D.machines  = null;
+      T.D.tombstones = { exercises:{ 'bench-press': FUTURE, "ev'il<x>": 1, '__proto__': FUTURE },
+                         plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} };
+      T.D.lastModified = FUTURE;
+      W.sanitizeHydratedData();
+      const now = Date.now();
+      t('future updatedAt clamped (else it wins LWW forever)', T.D.exercises[0].updatedAt <= now && T.D.exercises[0].updatedAt > 0);
+      t('MAX_SAFE_INTEGER updatedAt clamped', T.D.sessions[0].updatedAt <= now);
+      t('future tombstone clamped (else it deletes real data on every device)', T.D.tombstones.exercises['bench-press'] <= now);
+      t('tombstone key that is not a real id is dropped', !Object.keys(T.D.tombstones.exercises).includes("ev'il<x>"));
+      t('prototype tombstone key is dropped', !Object.keys(T.D.tombstones.exercises).includes('__proto__'));
+      t('non-array collections coerced, not trusted', Array.isArray(T.D.gyms) && Array.isArray(T.D.machines));
+      t('Object.prototype not polluted by the restore', ({}).polluted === undefined);
+      T.D.exercises = keepEx; T.D.sessions = keepSess; T.D.gyms = keepGyms;
+      T.D.machines = keepMach; T.D.tombstones = keepTomb; T.D.lastModified = keepLM;
+    }
+
+    // — backfill must not crash on a prototype-shaped id —
+    // SEED_CLASSIFICATION['toString'] inherits a truthy FUNCTION, which then
+    // reached [...seed[2]] and threw inside a backfill that runs on every
+    // load: a blank app on every device the row reached.
+    {
+      const keep = T.D.exercises;
+      T.D.exercises = [{ id: 'toString', name: 'proto probe' }];
+      let threw = false;
+      try { W.backfillExerciseClassification(); } catch (e) { threw = true; }
+      t('backfill survives an id of "toString"', !threw);
+      t('...and classifies it as undefined rather than a native function',
+        T.D.exercises[0].mainMuscle === 'undefined');
+      T.D.exercises = keep;
+    }
+
+    // — untrusted string caps —
+    W.applyImportedPlan({ type: 'gym-tracker-plan', name: 'x'.repeat(500),
+      exercises: [{ id: 'cap-probe-1', name: 'y'.repeat(500) }] });
+    const capped = T.D.exercises.find(e => e.id === 'cap-probe-1');
+    const capPlan = T.D.plans.find(p => p.name.length === 120);
+    t('imported exercise name is capped', !!capped && capped.name.length === 120);
+    t('imported plan name is capped', !!capPlan);
+
+    // cleanup
+    T.D.exercises = T.D.exercises.filter(e => e.id !== probe.id && e.id !== XSS_ID && e.id !== 'cap-probe-1');
+    T.D.plans = T.D.plans.filter(p => p.name !== 'XSSPLAN' && p.name.length !== 120);
+    t('cleanup restored counts', T.D.exercises.length === exBefore && T.D.plans.length === planBefore);
   }
 
   // ── merge engine (the 2026-07-22 LWW fix) ──────────────────────────────────
