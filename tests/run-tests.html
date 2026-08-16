@@ -550,6 +550,70 @@
   }
 
   // ── merge engine (the 2026-07-22 LWW fix) ──────────────────────────────────
+  g('cache ownership (shared device)');
+  {
+    // The bug this guards: the local cache never recorded WHOSE it was, so
+    // A signing out and B signing in on the same browser merged A's items
+    // into B's account and pushed them there. RLS is blind to it — the
+    // client volunteers A's rows using B's credentials. Reproduced before
+    // the fix: A's exercise, session AND bodyweight reached B's payload.
+    const keepD = T.D, keepSession = T.sbSession;
+    const LSkeys = ['gym:data','gym:owner','gym:live-session','gym:currentGym','gym:snapshot:3','gym:config','gym:timers'];
+    const saved = {}; LSkeys.forEach(k => saved[k] = W.localStorage.getItem(k));
+
+    const seed = () => {
+      T.D = { exercises:[{ id:'u_a1', name:'SO DO A', origin:'user', updatedAt: Date.now() }],
+              plans:[], sessions:[{ id:'sess_a1', date:'2026-08-10', exercises:[], updatedAt: Date.now() }],
+              weights:[{ id:'w_a1', date:'2026-08-10', kg:91, updatedAt: Date.now() }],
+              gyms:[], machines:[],
+              tombstones:{ exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} },
+              lastModified: Date.now() };
+      W.localStorage.setItem('gym:data', JSON.stringify(T.D));
+      W.localStorage.setItem('gym:snapshot:3', JSON.stringify({ date:'2026-08-10', data:T.D }));
+      W.localStorage.setItem('gym:live-session', JSON.stringify({ v:1, S:{exercises:[]}, savedAt:Date.now() }));
+      W.localStorage.setItem('gym:config', JSON.stringify({ token:'ghp_PAT_DO_A', gistId:'gistA', driver:'gist' }));
+      W.localStorage.setItem('gym:timers', JSON.stringify({ preset:'custom' }));
+    };
+
+    // same account — the ordinary case, every load: nothing may be touched
+    seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = { user:{ id:'user-A' } };
+    const w1 = W.enforceCacheOwner();
+    t('same account: no wipe, data untouched', w1 === false && T.D.exercises.length === 1);
+
+    // different account — the bug
+    seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = { user:{ id:'user-B' } };
+    const w2 = W.enforceCacheOwner();
+    t('different account: wipes', w2 === true);
+    t('...in memory too (what buildRemotePayload would upload)',
+      T.D.exercises.length === 0 && T.D.sessions.length === 0 && T.D.weights.length === 0);
+    t('...the previous account never reaches the push payload',
+      !JSON.stringify(W.buildRemotePayload()).includes('SO DO A'));
+    t('...snapshots go (else "Restaurar" walks back into their history)',
+      !W.localStorage.getItem('gym:snapshot:3'));
+    t('...the live-session mirror goes', !W.localStorage.getItem('gym:live-session'));
+    t('...the previous user\'s Gist PAT goes',
+      !(W.localStorage.getItem('gym:config')||'').includes('ghp_PAT_DO_A'));
+    t('...but per-device timer prefs stay (they describe the phone, not the person)',
+      !!W.localStorage.getItem('gym:timers'));
+    t('...and the cache is restamped to the new owner',
+      W.localStorage.getItem('gym:owner') === 'user-B');
+
+    // NO stamp — a local-first user signing in for the first time.
+    // Getting this wrong would delete the history of everyone who used the
+    // app without an account, which is a supported way to use it.
+    seed(); W.localStorage.removeItem('gym:owner'); T.sbSession = { user:{ id:'user-C' } };
+    const w3 = W.enforceCacheOwner();
+    t('first sign-in with no stamp ADOPTS, never wipes', w3 === false && T.D.exercises.length === 1);
+    t('...and stamps the cache from then on', W.localStorage.getItem('gym:owner') === 'user-C');
+
+    // logged out / gist-only: nothing to enforce against
+    seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = null;
+    t('logged out: no-op', W.enforceCacheOwner() === false && T.D.exercises.length === 1);
+
+    T.D = keepD; T.sbSession = keepSession;
+    LSkeys.forEach(k => saved[k] === null ? W.localStorage.removeItem(k) : W.localStorage.setItem(k, saved[k]));
+  }
+
   g('merge engine');
   {
     const M = W.mergeCollection;

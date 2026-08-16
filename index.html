@@ -1317,7 +1317,7 @@ const SCHEMA_VERSION = 6;
 // the test suite (see CLAUDE.md). Date of the push plus a letter when the
 // same day ships more than once. A stale value here is worse than no value,
 // because it answers the deploy question wrongly with confidence.
-const APP_VERSION = '2026-08-13b';
+const APP_VERSION = '2026-08-16';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -1386,6 +1386,12 @@ if (window.supabase && SUPABASE_URL) {
     // fine: the sync queue serializes the network legs, and pull-first +
     // union/LWW make any interleaving converge to the same state (a pull
     // is idempotent; nothing here can blank or clobber either side).
+    // A DIFFERENT account signing in on this device must not find the
+    // previous one's data still resident — connectSupabaseSync() below
+    // pulls and then pushes, and the push would carry it into the new
+    // account. Runs on every auth event, not just SIGNED_IN: the check is
+    // a cheap string compare when nothing changed.
+    if (enforceCacheOwner()) render();
     if (event === 'SIGNED_IN' && syncDriver() === 'supabase') connectSupabaseSync();
     updateSyncBanner();
   });
@@ -1520,6 +1526,82 @@ function restoreSnapshot(slot) {
   persist();
   closeModal();
   render();
+}
+
+// ── Cache ownership — WHICH ACCOUNT does the local cache belong to? ──────────
+//
+// The local cache has always been anonymous: gym:data, the seven snapshots
+// and the live-session mirror recorded WHAT was trained, never WHOSE it was.
+// On a single-owner device that is invisible. On a shared one — the phone
+// handed over, the family tablet, which is this app's own onboarding story —
+// it is a silent leak in the worst possible direction:
+//
+//   A signs in and syncs → A taps "Sair", which clears the SDK session and
+//   NOTHING else → B signs in on the same browser → connectSupabaseSync()
+//   pulls B's account and merges it against A's still-resident local items
+//   (union by id; A's ids are unique and carry no tombstone, so every one
+//   survives) → the push writes that union into B's user_blobs, and it fans
+//   out to every device B owns.
+//
+// RLS cannot catch this and never could: the client volunteers A's rows
+// using B's own credentials, which is precisely the class of bug a
+// server-side authorization boundary is blind to. Reproduced end to end
+// before this fix — A's custom exercise, A's session and A's BODYWEIGHT LOG
+// all landed in the payload bound for B's account. The bodyweight is the
+// one that shows why this is more than untidy: actualLoad() reads the
+// latest weight entry, so B's assisted and bodyweight loads would silently
+// be computed from A's body.
+//
+// The rule: the cache is stamped with the account that owns it, and a
+// DIFFERENT account arriving wipes it before any merge or push can read it.
+const OWNER_KEY = 'gym:owner';
+
+// Returns true when it actually wiped, so callers can tell the user.
+//
+// An ABSENT stamp means adopt, and that is deliberate rather than lazy.
+// Using the app without an account is a supported path (signing in buys
+// remote backup and sharing, nothing else), so someone who trained locally
+// for months and then signs up must KEEP their history — wiping there would
+// destroy exactly the data the sign-in was meant to start protecting. The
+// residual edge is real and narrow, and worth stating plainly: an unstamped
+// device whose local data belongs to someone who never signed in, handed to
+// someone who does, adopts rather than wipes. Every signed-in device stamps
+// itself on its next load, so that window closes on its own and cannot
+// reopen.
+function enforceCacheOwner() {
+  const uid = sbSession?.user?.id;
+  if (!uid) return false;             // logged out, or gist-only: nothing to enforce against
+  const prev = LS.get(OWNER_KEY);
+  if (prev === uid) return false;     // same person — the ordinary case, every load
+  if (prev) { wipeCacheForNewOwner(); LS.set(OWNER_KEY, uid); return true; }
+  LS.set(OWNER_KEY, uid);             // first stamp: adopt what is already here
+  return false;
+}
+
+function wipeCacheForNewOwner() {
+  // IN-MEMORY FIRST. By the time this runs loadData() has already hydrated
+  // D from the cache, and it is the in-memory copy that buildRemotePayload()
+  // uploads — clearing only localStorage would leave the leak fully intact.
+  D = { exercises: [], plans: [], sessions: [], weights: [], gyms: [], machines: [],
+        tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} },
+        lastModified: 0 };
+  S = null; _restTimer = null; EXP = null;
+  LS.set('gym:data', '');
+  LS.set('gym:live-session', '');            // the previous person's workout in progress
+  LS.set('gym:currentGym', ''); _currentGymId = null;
+  // The snapshots are the previous person's data too — leaving them would
+  // hand the new user a one-tap "Restaurar" back into someone else's history.
+  for (let i = 0; i < 7; i++) LS.set(SNAPSHOT_PREFIX + i, '');
+  LS.set(SNAPSHOT_PREFIX + 'prerestore', '');
+  // The Gist config holds the PREVIOUS user's GitHub PAT and gist id. Left
+  // in place it would push this person's data into that person's gist — the
+  // same leak through the legacy driver — while also handing them a
+  // credential they should never hold.
+  CFG.token = ''; CFG.gistId = ''; CFG.driver = 'supabase';
+  saveConfig();   // localStorage write is synchronous inside; the await is only the sandbox mirror
+  // Rest-timer preferences (gym:timers) deliberately SURVIVE: they are
+  // per-device by design, hold no personal data, and describe the phone
+  // rather than the person holding it.
 }
 
 // ── Gist helpers ──────────────────────────────────────────────────────────────
@@ -2063,6 +2145,11 @@ async function loadData() {
   // SDK reads its stored session from localStorage asynchronously, and the
   // supabase driver counts as configured only once that session exists.
   if (sb) { try { const { data } = await sb.auth.getSession(); sbSession = data?.session || null; } catch(e) {} }
+  // Now that we know WHO is signed in, check the cache belongs to them —
+  // before the pull below can merge it and the push at the end can upload
+  // it. This is the whole point of the placement: one line later and the
+  // previous user's data is already inside the payload.
+  if (enforceCacheOwner()) { render(); }
   if (!syncConfigured()) return;
 
   // Step 3 — background remote fetch (whichever driver is active). Goes
