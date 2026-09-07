@@ -1049,6 +1049,13 @@ const escJs   = s  => esc(String(s ?? '')
 // history).
 const numOut  = (v, empty = '') => {
   if (v === '' || v == null) return empty;
+  // Only numbers and numeric strings coerce. Without this guard Number()
+  // happily turns [] into 0, [7] into 7 and true into 1, so a corrupt row
+  // would render a PLAUSIBLE WRONG number instead of admitting it has
+  // nothing — worse than blank, because the user believes it. It also stops
+  // Number() from invoking a hostile valueOf/Symbol and THROWING inside
+  // render(), which would blank the whole app.
+  if (typeof v !== 'number' && typeof v !== 'string') return empty;
   const n = Number(v);
   return Number.isFinite(n) ? String(n) : empty;
 };

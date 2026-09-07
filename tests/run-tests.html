@@ -180,7 +180,7 @@
     // Injection hardening (2026-08-13). escJs is the handler-argument
     // escaper, safeId the id validator at the trust boundary, hasKey the
     // own-property test for untrusted enum keys. NOTE - still no backticks.
-    escJs, safeId, hasKey,
+    escJs, safeId, hasKey, numOut,
     get newUnilateral() { return _newUnilateral; }, set newUnilateral(v) { _newUnilateral = v; },
     get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
     get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
@@ -420,6 +420,30 @@
     t('escJs HTML-escapes angle brackets', out.indexOf('<') === -1 && out.indexOf('&lt;') !== -1);
     t('escJs escapes backslashes before quotes', T.escJs('a\\b') === 'a\\\\b');
     t('escJs leaves a clean id untouched', T.escJs('bench-press') === 'bench-press');
+    // numOut() — the coerce-don't-escape helper for numeric fields.
+    // Three properties, and the second is the one that is easy to get wrong.
+    t('numOut keeps a real 0 (esc() would blank it — 0 kg is full graduation)',
+      T.numOut(0) === '0' && T.esc(0) === '');
+    t('numOut keeps decimals and negatives and numeric strings',
+      T.numOut(2.5) === '2.5' && T.numOut(-5) === '-5' && T.numOut('42.5') === '42.5');
+    t('numOut renders the given empty marker for blank/null',
+      T.numOut('') === '' && T.numOut(null) === '' && T.numOut('', '-') === '-');
+    t('numOut neutralises a hostile string rather than printing it',
+      T.numOut('<img src=x onerror=alert(1)>') === '' && T.numOut('1" onmouseover="x') === '');
+    // Corrupt data must render BLANK, not a plausible wrong number: Number()
+    // alone turns [] into 0, [7] into 7 and true into 1, and the user would
+    // believe those.
+    t('numOut refuses to guess a number out of an array or a boolean',
+      T.numOut([]) === '' && T.numOut([7]) === '' && T.numOut(true) === '' && T.numOut({}) === '');
+    // And it must never THROW: this runs inside render(), so an exception
+    // here blanks the whole app.
+    {
+      let threw = false;
+      try { T.numOut(Symbol('s')); T.numOut({ valueOf() { throw new Error('x'); } }); }
+      catch (e) { threw = true; }
+      t('numOut cannot throw inside render()', !threw);
+    }
+
     t('escJs escapes CR/LF (a raw newline is a JS syntax error)',
       T.escJs('a\nb') === 'a\\nb' && T.escJs('a\r\nb') === 'a\\r\\nb');
 
