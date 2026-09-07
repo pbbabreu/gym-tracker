@@ -1047,6 +1047,16 @@ const escJs   = s  => esc(String(s ?? '')
 // and 0 reps is a logged failed attempt. `empty` is what a genuinely blank
 // field renders as, which differs per call site ('' in an input, '–' in
 // history).
+// Date strings, defensively. Every "newest first" reader in this file sorts
+// with localeCompare, which THROWS on a non-string — and one of those sorts
+// runs inside mergeRemote(), so a single session whose `date` arrived as a
+// number (a hand-edited backup, a poisoned sync row) does not merely fail to
+// render: it kills every future sync on that device, silently, until a
+// reload. Nothing validated the field, so this makes the readers safe rather
+// than trusting the writers.
+const dstr = v => (typeof v === 'string') ? v : '';
+const byDateDesc = (a, b) => dstr(b && b.date).localeCompare(dstr(a && a.date));
+const byDateAsc  = (a, b) => dstr(a && a.date).localeCompare(dstr(b && b.date));
 const numOut  = (v, empty = '') => {
   if (v === '' || v == null) return empty;
   // Only numbers and numeric strings coerce. Without this guard Number()
@@ -1529,7 +1539,7 @@ function listSnapshots() {
       if (p?.date && p?.data) out.push({ slot, date: p.date, data: p.data });
     } catch(e) {}
   });
-  return out.sort((a,b) => b.date.localeCompare(a.date));
+  return out.sort(byDateDesc);
 }
 
 // Stashes the CURRENT state into the prerestore slot. Called before
@@ -2006,8 +2016,21 @@ function mergeCollection(local, remote, localTombstones, remoteTombstones) {
   });
 
   const tombstones = { ...localTombstones };
+  // Remote tombstones are clamped and type-checked on arrival, for the same
+  // reason sanitizeHydratedData() clamps them on a restore — and this is the
+  // path that was left open. A tombstone carrying Number.MAX_SAFE_INTEGER
+  // beats the `item.updatedAt <= deletedAt` test below forever, so the item
+  // is deleted on EVERY device and no ordinary edit can ever outrank it: a
+  // silent, permanent, cross-device deletion. An id outside the minted
+  // charset is dropped outright — a tombstone is pure destruction with no
+  // data value, so an unrecognizable one has nothing to lose.
+  const nowTs = Date.now();
   Object.entries(remoteTombstones||{}).forEach(([id, deletedAt]) => {
-    if (!tombstones[id] || deletedAt > tombstones[id]) tombstones[id] = deletedAt;
+    if (!safeId(id)) return;
+    const n = Number(deletedAt);
+    if (!Number.isFinite(n) || n <= 0) return;
+    const at = Math.min(n, nowTs);
+    if (!tombstones[id] || at > tombstones[id]) tombstones[id] = at;
   });
 
   Object.entries(tombstones).forEach(([id, deletedAt]) => {
@@ -2032,7 +2055,7 @@ function mergeRemote(remote) {
 
   if (remote.sessions?.sessions) {
     const { items, tombstones } = mergeCollection(D.sessions, remote.sessions.sessions, D.tombstones.sessions, remote.sessions.tombstones);
-    D.sessions = items.sort((a,b) => b.date.localeCompare(a.date));
+    D.sessions = items.sort(byDateDesc);
     D.tombstones.sessions = tombstones;
     // A remote device running an app version older than the saveSession()
     // metadata strip can push sets still carrying chip/dim scaffolding —
@@ -2387,7 +2410,7 @@ function lastModesFor(exId) {
 // bumped on edit) breaks the tie with actual save-time chronology. Every
 // "what happened last time" reader must go through this.
 const sessionsNewestFirst = () =>
-  [...D.sessions].sort((a,b) => b.date.localeCompare(a.date) || (b.updatedAt||0) - (a.updatedAt||0));
+  [...D.sessions].sort((a,b) => byDateDesc(a,b) || (b.updatedAt||0) - (a.updatedAt||0));
 
 // ── Machine (equipment instance) helpers ─────────────────────────────────────
 
@@ -2743,12 +2766,12 @@ function buildSetsFromMemory(ex) {
 
 function currentBW() {
   if (!D.weights?.length) return null;
-  return [...D.weights].sort((a,b) => b.date.localeCompare(a.date))[0].kg;
+  return [...D.weights].sort(byDateDesc)[0].kg;
 }
 
 function bwIsStale() {
   if (!D.weights?.length) return true;
-  const last = [...D.weights].sort((a,b) => b.date.localeCompare(a.date))[0].date;
+  const last = [...D.weights].sort(byDateDesc)[0].date;
   return (new Date(today()) - new Date(last)) / 86400000 > 7;
 }
 
@@ -2942,7 +2965,7 @@ const fmtPrVal = (kind, v) => kind === 'secs' ? fmtSecs(Number(v)||0) : kind ===
 // as the machine dropdown's counterpart to `regimes`/`regime`.
 function exerciseProgress(exId, cap = 24, regime = null, instance = null) {
   const lib = D.exercises.find(e => e.id === exId);
-  const sorted = [...D.sessions].sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = [...D.sessions].sort(byDateAsc);
   const regimes = [];
   for (let k = sorted.length - 1; k >= 0; k--) {
     (sorted[k].exercises || []).forEach(e => {
@@ -3084,7 +3107,7 @@ const Bs = (bg,col,txt,oc,x='') => `<button onclick="${oc}" style="display:inlin
 const numField = (id, label, val, step, onchange = '') => `
   <div style="flex:1">
     <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${label}</div>
-    <input id="${id}" type="number" inputmode="numeric" min="0" step="${step}" value="${val}"
+    <input id="${id}" type="number" inputmode="numeric" min="0" step="${step}" value="${numOut(val)}"
       ${onchange ? `onchange="${onchange}"` : ''}
       style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
   </div>`;
@@ -3857,9 +3880,16 @@ function exRowCtx(ex, i) {
   // CONVERTED to the block's input units — a chip must read in the same
   // currency the field expects, or "▲ 8 × 100" over a per-side column misleads.
   // A timed row's count is a DURATION, so it reads "1:00".
-  const cntLbl  = r => isTm ? fmtSecs(r) : `${r ?? '–'} reps`;
+  // numOut on every number here, and it is load-bearing rather than tidy:
+  // these chips render lastReps/lastKg, which getRecentWorkHistory() and
+  // buildSetsFromMemory() copy VERBATIM out of D.sessions — so a poisoned
+  // historical set reaches this markup untouched, and the chip renders on a
+  // normal workout render with no tap at all. dispKg is not a safe wrapper
+  // either: loadToDisplay() returns its argument unchanged whenever the
+  // block has no loadMode, which is the default for everything but a barbell.
+  const cntLbl  = r => isTm ? fmtSecs(Number(r)||0) : `${numOut(r,'–')} reps`;
   const fmtPair = (r,k) => isBW ? cntLbl(r)
-    : `${isTm ? fmtSecs(r) : (r ?? '–')} × ${k==null?'–':dispKg(k)} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
+    : `${isTm ? fmtSecs(Number(r)||0) : numOut(r,'–')} × ${k==null?'–':numOut(dispKg(k),'–')} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
   return { ex, i, isAs, isBW, isBWP, isTm, libEx, isBarbell, plateMode, gridCols, kgHeader, dispKg, cntLbl, fmtPair, bw: currentBW() };
 }
 
@@ -4131,7 +4161,7 @@ function buildExBlock(ex, i) {
           if (!bar) return '';
           const vals = [...new Set(ex.sets.filter(hasKg).map(s => Number(s.kg)))].filter(v => v >= bar).sort((a,b) => a-b);
           if (!vals.length) return '';
-          return `<div style="font-size:11px;color:${DM};margin-top:8px">Barra ${bar} kg → por lado: ${vals.map(v => `<strong style="color:${TX}">${v}</strong> kg = ${round((v - bar) / 2, 0.25)}`).join(' · ')}</div>`;
+          return `<div style="font-size:11px;color:${DM};margin-top:8px">Barra ${bar} kg → por lado: ${vals.map(v => `<strong style="color:${TX}">${numOut(v)}</strong> kg = ${round((v - bar) / 2, 0.25)}`).join(' · ')}</div>`;
         })()}
         ${B(BG3,TX,'+ Série',`addSet(${i})`,';margin-bottom:0;margin-top:4px')}
       </div>
@@ -4158,7 +4188,7 @@ function buildHistory() {
   if (!D.sessions.length)
     return bkp + `<div style="text-align:center;color:${DM};padding:40px;font-size:14px">Nenhum treino salvo ainda.</div>`;
 
-  const sorted = [...D.sessions].sort((a,b) => b.date.localeCompare(a.date));
+  const sorted = [...D.sessions].sort(byDateDesc);
   return bkp + `<div style="font-size:18px;font-weight:700;margin-bottom:16px">Histórico</div>` + sorted.map(s => {
     // `ex.tracking` is snapshotted on the session entry (like type/regime),
     // so a timed exercise stays excluded from the volume-load total even
@@ -4545,13 +4575,13 @@ function progressBodyHTML(exId, regime, instance) {
   const bestE = P.some(p => p.e1rm != null) ? Math.max(...P.map(p => p.e1rm || 0)) : null;
   const stat = (lbl, val) => `<div style="flex:1;background:${BG3};border-radius:8px;padding:8px 10px;text-align:center">
     <div style="font-size:10px;color:${DM};text-transform:uppercase;letter-spacing:.04em">${lbl}</div>
-    <div style="font-size:16px;font-weight:700;margin-top:2px">${val}</div>
+    <div style="font-size:16px;font-weight:700;margin-top:2px">${esc(val)}</div>
   </div>`;
   return `
     ${instSelect}
     <div style="display:flex;gap:8px;margin-bottom:12px">
-      ${stat('Último', `${last.metric} ${unit}`)}
-      ${stat(prog.regime === 'assisted' ? 'Melhor (menor)' : 'Melhor', `${best} ${unit}`)}
+      ${stat('Último', `${numOut(last.metric,'–')} ${unit}`)}
+      ${stat(prog.regime === 'assisted' ? 'Melhor (menor)' : 'Melhor', `${numOut(best,'–')} ${unit}`)}
       ${bestE ? stat('1RM est.', `${round(bestE, 0.5)} kg`) : stat('Treinos', P.length)}
     </div>
     ${P.length >= 2 ? progressChartSVG(prog) : `<div style="text-align:center;color:${DM};padding:14px 0;font-size:12px">Registre mais um treino neste regime para ver o gráfico.</div>`}
@@ -5142,7 +5172,7 @@ function refreshPlanExList() {
         ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']].map(([k,lbl]) => `
         <div>
           <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
-          <input type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${_planRests[en.eid]?.[k] ?? ''}"
+          <input type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${numOut(_planRests[en.eid]?.[k])}"
             onchange="setPlanRest('${escJs(en.eid)}','${k}',this.value)"
             style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:7px 4px;text-align:center;outline:none;box-sizing:border-box">
         </div>`).join('')}
@@ -5745,7 +5775,7 @@ async function dismissShare(id) {
 // ╚══════════════════════════════════════════════════════════════════════════════
 
 function buildWeight() {
-  const sorted = [...D.weights].sort((a,b) => b.date.localeCompare(a.date));
+  const sorted = [...D.weights].sort(byDateDesc);
   const rows   = sorted.map((w,i) => {
     const prev  = sorted[i+1];
     const delta = prev ? w.kg - prev.kg : null;
@@ -5958,7 +5988,7 @@ function exModalBody(title, nameVal, saveFn, hidden='') {
       ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']].map(([k,lbl]) => `
       <div>
         <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
-        <input id="ex-rest-${k}" type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${_newRest[k]}"
+        <input id="ex-rest-${k}" type="number" inputmode="numeric" min="0" step="5" placeholder="padrão" value="${numOut(_newRest[k])}"
           style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
       </div>`).join('')}
     </div>
@@ -8222,7 +8252,7 @@ function openTimerSettings() {
   const cfg = timerCfg();
   const alerts = cfg.alerts || DEFAULT_ALERTS;
   const presetPill = (key, label) => `<button onclick="applyTimerPreset('${key}')" style="padding:6px 13px;border-radius:99px;border:none;font-weight:600;font-size:12px;cursor:pointer;font-family:inherit;background:${cfg.preset === key ? CG : BG3};color:${cfg.preset === key ? TX : DM}">${label}</button>`;
-  const num = (id, val) => `<input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${val}"
+  const num = (id, val) => `<input id="${id}" type="number" inputmode="numeric" min="0" step="5" value="${numOut(val)}"
     style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 6px;text-align:center;outline:none;box-sizing:border-box">`;
   const grid = (title, p, v) => `
     <div style="font-size:12px;font-weight:700;margin:12px 0 6px">${title}</div>
@@ -8411,7 +8441,7 @@ function openExRest(i) {
       ${[['wuwu','Aquec.→Aquec.'],['wuw','Aquec.→Trab.'],['ww','Trab.→Trab.']].map(([k,lbl]) => `
       <div>
         <div style="font-size:10px;color:${DM};text-align:center;margin-bottom:3px">${lbl}</div>
-        <input id="sxr-${k}" type="number" inputmode="numeric" min="0" step="5" placeholder="${cfg[k]}" value="${ex.rest?.[k] ?? ''}"
+        <input id="sxr-${k}" type="number" inputmode="numeric" min="0" step="5" placeholder="${numOut(cfg[k])}" value="${numOut(ex.rest?.[k])}"
           style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:14px;padding:8px 4px;text-align:center;outline:none;box-sizing:border-box">
       </div>`).join('')}
     </div>
@@ -8888,7 +8918,7 @@ function openGapRest(gid, r, slot) {
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">${isEnd ? 'Descanso após a rodada' : 'Descanso entre exercícios'}</div>
     <div style="font-size:12px;color:${DM};margin-bottom:14px">Rodada ${r + 1}. Use 0 para não descansar aqui.</div>
-    <input id="gap-secs" type="number" inputmode="numeric" min="0" step="5" value="${cur}"
+    <input id="gap-secs" type="number" inputmode="numeric" min="0" step="5" value="${numOut(cur)}"
       style="width:100%;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:16px;padding:11px 10px;text-align:center;outline:none;box-sizing:border-box;margin-bottom:14px">
     ${B(CG,TX,'Só nesta rodada',`setGapRest('${escJs(gid)}',${r},'${escJs(slot)}',document.getElementById('gap-secs').value,false)`)}
     ${B(BG3,TX,'Aplicar a todas as rodadas',`setGapRest('${escJs(gid)}',${r},'${escJs(slot)}',document.getElementById('gap-secs').value,true)`)}

@@ -573,8 +573,16 @@
       // which are design tokens and computed counts; an allowlist that long
       // gets rubber-stamped, and a gate nobody reads is worse than no gate.
       const rawOther = new Set();
-      const DATA_ROOT = /\b(ex|set|s|w|m|gm|pr|p|d|en|it)\.[A-Za-z_$]|(^|\W)(S|D)\.[A-Za-z_$]/;
-      const SAFE_WRAP = /\b(esc|escJs|numOut|fmt[A-Za-z]*|Math\.|typePill|regimePill|musclePill|compPill)\s*\(/;
+      // Dotted data roots PLUS the dotless local aliases the render layer
+      // uses for the same values. That omission was not theoretical: a
+      // straight revert of the value= and <option value=> sinks that shipped
+      // as live stored-XSS landed GREEN, because rv and r carry no dot and
+      // so failed the old pattern.
+      const DATA_ROOT = /\b(ex|set|s|w|m|gm|pr|p|d|en|it)\.[A-Za-z_$]|(^|\W)(S|D)\.[A-Za-z_$]|^(rv|kv|dv|val|cur|r|v)$/;
+      // NOT a fmt* wildcard: it granted trust by name prefix to fmtPair(),
+      // which rendered raw reps/kg, and to fmtN(), which returns HTML.
+      // musclePill is off the list too — it emits its label unescaped.
+      const SAFE_WRAP = /\b(esc|escJs|numOut|fmt|fmtSecs|fmtRest|fmtPrVal|typePill|Math\.)\s*\(/;
       for (const [re, ctx] of [[/="\$\{([^}]*)\}"/g, 'attr'], [/>\$\{([^}]*)\}</g, 'text']]) {
         while ((m = re.exec(src))) {
           const e = m[1].trim();
