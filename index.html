@@ -1066,6 +1066,12 @@ const numOut  = (v, empty = '') => {
   // Number() from invoking a hostile valueOf/Symbol and THROWING inside
   // render(), which would blank the whole app.
   if (typeof v !== 'number' && typeof v !== 'string') return empty;
+  // A string must LOOK like a plain decimal number. Number() alone accepts
+  // '0x10' as 16, '1e3' as 1000 and whitespace as 0, so a corrupt row still
+  // rendered a confident wrong figure — and 0 is a meaningful value in this
+  // app, which makes a silent 0 the worst possible guess. (An earlier commit
+  // message claimed this was already handled; it was not. It is now.)
+  if (typeof v === 'string' && !/^-?\d+(\.\d+)?$/.test(v.trim())) return empty;
   const n = Number(v);
   return Number.isFinite(n) ? String(n) : empty;
 };
@@ -1617,13 +1623,31 @@ function stampOwner(uid) { LS.set(OWNER_KEY, uid); }
 // someone who does, adopts rather than wipes. Every signed-in device stamps
 // itself on its next load, so that window closes on its own and cannot
 // reopen.
+// Which account THIS TAB last enforced against. Per-tab on purpose, and it is
+// what makes the guard survive the case that defeated the first version:
+// supabase-js re-broadcasts SIGNED_IN to every other tab over a
+// BroadcastChannel, but OWNER_KEY is one shared localStorage value, so exactly
+// one tab wins the stamp. The others then saw `prev === uid`, returned early,
+// and kept the PREVIOUS account's D sitting in memory — after which the same
+// listener ran connectSupabaseSync(), merged the new account's remote into it
+// and pushed the union back. That is the original leak, resurrected through
+// the very multi-tab setup this app treats as ordinary (a magic link opens
+// the mail client in a second tab).
+let _tabOwner = null;
+
 function enforceCacheOwner() {
   const uid = sbSession?.user?.id;
   if (!uid) return false;             // logged out, or gist-only: nothing to enforce against
   const prev = LS.get(OWNER_KEY);
-  if (prev === uid) return false;     // same person — the ordinary case, every load
-  if (prev) { wipeCacheForNewOwner(); stampOwner(uid); return true; }
-  stampOwner(uid);                    // first stamp: adopt what is already here
+  // Wipe when EITHER view of ownership disagrees: the shared stamp (a
+  // different account owned this device) or this tab's own memory (another
+  // tab switched accounts underneath us). A null _tabOwner means this tab
+  // just loaded, so the shared stamp alone decides — that is the ordinary
+  // cold start, and it must not wipe.
+  const changed = (_tabOwner !== null && _tabOwner !== uid) || (!!prev && prev !== uid);
+  _tabOwner = uid;
+  if (changed) { wipeCacheForNewOwner(); stampOwner(uid); return true; }
+  stampOwner(uid);                    // first stamp / same owner: adopt what is here
   return false;
 }
 
@@ -2250,7 +2274,16 @@ async function loadData() {
   // before the pull below can merge it and the push at the end can upload
   // it. This is the whole point of the placement: one line later and the
   // previous user's data is already inside the payload.
-  if (enforceCacheOwner()) { render(); }
+  if (enforceCacheOwner()) {
+    // The wipe emptied D.exercises, and the seed/refresh steps above have
+    // already run for this page load — so without this the new account lands
+    // on an EMPTY Biblioteca with nothing to add to a workout, and then
+    // pushes that empty library collection to their account. Re-seed here
+    // rather than reordering the steps: the library must keep loading before
+    // the login check, since it deliberately requires no account.
+    if (!D.exercises.length) await seedStarterLibrary();
+    render();
+  }
   if (!syncConfigured()) return;
 
   // Step 3 — background remote fetch (whichever driver is active). Goes
@@ -2949,7 +2982,7 @@ const PR_KIND_LABELS = { kg: 'carga', e1rm: '1RM est.', reps: 'reps', secs: 'tem
 // numOut, not raw: a PR record is stored ON the session and so arrives from
 // the same untrusted paths (remote merge, backup restore) as the sets it was
 // computed from.
-const fmtPrVal = (kind, v) => kind === 'secs' ? fmtSecs(Number(v)||0) : kind === 'reps' ? numOut(v,'–') : `${numOut(v,'–')} kg`;
+const fmtPrVal = (kind, v) => kind === 'secs' ? fmtSecs(v) : kind === 'reps' ? numOut(v,'–') : `${numOut(v,'–')} kg`;
 
 // Per-session progress points for one exercise, oldest → newest (charts
 // read left-to-right in time), capped to the most recent `cap` sessions.
@@ -3887,9 +3920,9 @@ function exRowCtx(ex, i) {
   // normal workout render with no tap at all. dispKg is not a safe wrapper
   // either: loadToDisplay() returns its argument unchanged whenever the
   // block has no loadMode, which is the default for everything but a barbell.
-  const cntLbl  = r => isTm ? fmtSecs(Number(r)||0) : `${numOut(r,'–')} reps`;
+  const cntLbl  = r => isTm ? fmtSecs(r) : `${numOut(r,'–')} reps`;
   const fmtPair = (r,k) => isBW ? cntLbl(r)
-    : `${isTm ? fmtSecs(Number(r)||0) : numOut(r,'–')} × ${k==null?'–':numOut(dispKg(k),'–')} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
+    : `${isTm ? fmtSecs(r) : numOut(r,'–')} × ${k==null?'–':numOut(dispKg(k),'–')} ${plateMode==='side'?'/lado':plateMode==='plates'?'anilhas':(isAs?'assist.':'kg')}`;
   return { ex, i, isAs, isBW, isBWP, isTm, libEx, isBarbell, plateMode, gridCols, kgHeader, dispKg, cntLbl, fmtPair, bw: currentBW() };
 }
 
@@ -3953,7 +3986,7 @@ function setRowHTML(ctx, s, j, opts = {}) {
         oninput="setVal(${i},${j},'reps',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
         style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
       ${isBW
-        ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
+        ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?numOut(bw)+'kg':'BW'}</div>`
         : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${plateMode==='side'?'Por lado':plateMode==='plates'?'Anilhas':(ctx.isAs?'Assist.':'Kg')}" step="0.5" value="${numOut(dispKg(kv))}"
              oninput="setVal(${i},${j},'kg',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
              style="background:${BG3};border:1px solid ${ctx.isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
@@ -4112,7 +4145,7 @@ function buildExBlock(ex, i) {
                readable mid-set), empty = a quiet invitation to identify. -->
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px">
             <button onclick="openMachinePicker(${i})" title="Equipamento específico" style="padding:4px 9px;border-radius:99px;border:1px solid ${ex.instanceId?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${ex.instanceId?'#0a2e2e':BG3};color:${ex.instanceId?'#4dd0c4':DM};max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">🔧 ${ex.instanceName?esc(ex.instanceName):equipChipLabel(ex.exId)}</button>
-            ${isBarbell && !ex._loadSetup ? `<button onclick="toggleLoadSetup(${i})" title="Como digitar a carga" style="padding:4px 9px;border-radius:99px;border:1px solid ${plateMode?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${plateMode?'#0a2e2e':BG3};color:${plateMode?'#4dd0c4':DM};white-space:nowrap">⚖ ${plateMode==='side'?`por lado · barra ${ex.barKg||0} kg`:plateMode==='plates'?`anilhas · barra ${ex.barKg||0} kg`:'total'}</button>` : ''}
+            ${isBarbell && !ex._loadSetup ? `<button onclick="toggleLoadSetup(${i})" title="Como digitar a carga" style="padding:4px 9px;border-radius:99px;border:1px solid ${plateMode?'#14484a':BD};font-weight:600;font-size:11px;cursor:pointer;font-family:inherit;background:${plateMode?'#0a2e2e':BG3};color:${plateMode?'#4dd0c4':DM};white-space:nowrap">⚖ ${plateMode==='side'?`por lado · barra ${numOut(ex.barKg,'0')} kg`:plateMode==='plates'?`anilhas · barra ${ex.barKg||0} kg`:'total'}</button>` : ''}
             ${(() => { const m = ex.instanceId && D.machines.find(mm => mm.id === ex.instanceId); if (!m) return '';
               const bits = [m.barKg && !isBarbell ? `barra ${m.barKg} kg` : null, m.note].filter(Boolean);
               return bits.length ? `<span style="font-size:11px;color:${DM}">${esc(bits.join(' · '))}</span>` : ''; })()}
@@ -4221,7 +4254,7 @@ function buildHistory() {
             : `${kgN} kg`;
           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid ${BD};font-size:14px">
             <span style="background:${set.intent==='work'?CG:'#555'};color:#fff;padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700;min-width:34px;text-align:center">${lbl}</span>
-            <span>${isTimed(ex) ? `${fmtSecs(Number(set.reps)||0)} × ${kgLbl}` : `${numOut(set.reps,'–')} reps × ${kgLbl}`}</span>
+            <span>${isTimed(ex) ? `${fmtSecs(set.reps)} × ${kgLbl}` : `${numOut(set.reps,'–')} reps × ${kgLbl}`}</span>
           </div>`;
         }).join('');
         return `<div style="margin-bottom:14px">
@@ -9608,7 +9641,20 @@ function sanitizeHydratedData() {
   Object.keys(clean).forEach(coll => {
     const src = D.tombstones && D.tombstones[coll];
     if (!src || typeof src !== 'object') return;
-    Object.keys(src).forEach(id => { if (safeId(id)) clean[coll][id] = clampTs(src[id]); });
+    // A bad VALUE drops the entry, exactly as a bad key does — it must not be
+    // rewritten to 0. clampTs maps garbage to 0, and the catalog baseline is
+    // literally 0, so mergeCollection's `(item.updatedAt||0) <= deletedAt`
+    // becomes `0 <= 0` and DELETES every catalog exercise on every device.
+    // That is data loss manufactured inside the function whose stated policy
+    // is to prefer inert weirdness over losing data. The remote-tombstone
+    // guard in mergeCollection already drops on non-finite; this is the same
+    // rule, applied to the sibling path it was missing from.
+    Object.keys(src).forEach(id => {
+      if (!safeId(id)) return;
+      const n = Number(src[id]);
+      if (!Number.isFinite(n) || n <= 0) return;
+      clean[coll][id] = Math.min(n, now);
+    });
   });
   D.tombstones = clean;
   D.lastModified = clampTs(D.lastModified);

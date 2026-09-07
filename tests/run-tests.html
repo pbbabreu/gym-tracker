@@ -181,6 +181,7 @@
     // escaper, safeId the id validator at the trust boundary, hasKey the
     // own-property test for untrusted enum keys. NOTE - still no backticks.
     escJs, safeId, hasKey, numOut,
+    get tabOwner() { return _tabOwner; }, set tabOwner(v) { _tabOwner = v; },
     get newUnilateral() { return _newUnilateral; }, set newUnilateral(v) { _newUnilateral = v; },
     get syncFailStreak() { return _syncFailStreak; }, set syncFailStreak(v) { _syncFailStreak = v; },
     get syncStatusVar() { return _syncStatus; }, set syncStatusVar(v) { _syncStatus = v; },
@@ -578,7 +579,9 @@
       // straight revert of the value= and <option value=> sinks that shipped
       // as live stored-XSS landed GREEN, because rv and r carry no dot and
       // so failed the old pattern.
-      const DATA_ROOT = /\b(ex|set|s|w|m|gm|pr|p|d|en|it)\.[A-Za-z_$]|(^|\W)(S|D)\.[A-Za-z_$]|^(rv|kv|dv|val|cur|r|v)$/;
+      // Aliases matched ANYWHERE in the expression, not just at its start:
+      // dispKg(kv) hid behind the leading function name until this changed.
+      const DATA_ROOT = /\b(ex|set|s|w|m|gm|pr|p|d|en|it)\.[A-Za-z_$]|(^|\W)(S|D)\.[A-Za-z_$]|\b(rv|kv|dv|val|cur|bw|r|v)\b/;
       // NOT a fmt* wildcard: it granted trust by name prefix to fmtPair(),
       // which rendered raw reps/kg, and to fmtN(), which returns HTML.
       // musclePill is off the list too — it emits its label unescaped.
@@ -587,18 +590,23 @@
         while ((m = re.exec(src))) {
           const e = m[1].trim();
           if (!DATA_ROOT.test(e) || SAFE_WRAP.test(e)) continue;
-          // a ternary that only ever yields string literals renders no data
-          if (/\?[^?]*'[^']*'[^?]*:[^?]*'[^']*'/.test(e)) continue;
+          // Skipped only when BOTH branches are pure string literals. The old
+          // rule accepted bw?bw+'kg':'BW', whose first branch renders DATA —
+          // which is how that sink stayed invisible for a whole round.
+          if (/^[^?]*\?\s*'[^']*'\s*:\s*'[^']*'\s*$/.test(e)) continue;
           rawOther.add(ctx + ': ' + e);
         }
       }
       // Checked by hand: rest values are sanitizeRest()'d integers, the chart
       // coordinate is arithmetic, and the count is a number.
+      // Each verified by hand: chart arithmetic, a count, and the timer-preset
+      // helper num(), whose own value is numOut()'d inside it.
       const OK_OTHER = new Set([
-        "attr: _planRests[en.eid]?.[k] ?? ''",
-        "attr: ex.rest?.[k] ?? ''",
         'attr: y(p.metric)',
         'text: D.exercises.length',
+        "text: num(p + '-wuwu', v.wuwu)",
+        "text: num(p + '-wuw', v.wuw)",
+        "text: num(p + '-ww', v.ww)",
       ]);
       const unexpectedOther = [...rawOther].filter(e => !OK_OTHER.has(e));
       t('no NEW unescaped value reaches an attribute or text node',
@@ -698,12 +706,12 @@
     };
 
     // same account — the ordinary case, every load: nothing may be touched
-    seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = { user:{ id:'user-A' } };
+    seed(); T.tabOwner = null; W.localStorage.setItem('gym:owner','user-A'); T.sbSession = { user:{ id:'user-A' } };
     const w1 = W.enforceCacheOwner();
     t('same account: no wipe, data untouched', w1 === false && T.D.exercises.length === 1);
 
     // different account — the bug
-    seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = { user:{ id:'user-B' } };
+    seed(); T.tabOwner = null; W.localStorage.setItem('gym:owner','user-A'); T.sbSession = { user:{ id:'user-B' } };
     const w2 = W.enforceCacheOwner();
     t('different account: wipes', w2 === true);
     t('...in memory too (what buildRemotePayload would upload)',
@@ -723,13 +731,27 @@
     // NO stamp — a local-first user signing in for the first time.
     // Getting this wrong would delete the history of everyone who used the
     // app without an account, which is a supported way to use it.
-    seed(); W.localStorage.removeItem('gym:owner'); T.sbSession = { user:{ id:'user-C' } };
+    // THE SECOND-TAB CASE. supabase-js re-broadcasts SIGNED_IN to every other
+    // tab, but OWNER_KEY is one shared localStorage value, so exactly one tab
+    // wins the stamp. Before the per-tab marker the losing tab saw
+    // prev === uid, returned early, kept the PREVIOUS account's D in memory,
+    // and the same listener then pushed it into the new account. Simulated
+    // here as: this tab already enforced against A, and the stamp now says B
+    // because another tab just switched.
+    seed(); T.tabOwner = 'user-A';
+    W.localStorage.setItem('gym:owner', 'user-B');
+    T.sbSession = { user: { id: 'user-B' } };
+    t('a sibling tab switching accounts still wipes THIS tab', W.enforceCacheOwner() === true);
+    t('...so the previous account cannot be pushed into the new one',
+      T.D.exercises.length === 0 && !JSON.stringify(W.buildRemotePayload()).includes('SO DO A'));
+
+    seed(); T.tabOwner = null; W.localStorage.removeItem('gym:owner'); T.sbSession = { user:{ id:'user-C' } };
     const w3 = W.enforceCacheOwner();
     t('first sign-in with no stamp ADOPTS, never wipes', w3 === false && T.D.exercises.length === 1);
     t('...and stamps the cache from then on', W.localStorage.getItem('gym:owner') === 'user-C');
 
     // logged out / gist-only: nothing to enforce against
-    seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = null;
+    seed(); T.tabOwner = null; W.localStorage.setItem('gym:owner','user-A'); T.sbSession = null;
     t('logged out: no-op', W.enforceCacheOwner() === false && T.D.exercises.length === 1);
 
     T.D = keepD; T.sbSession = keepSession; T.CFG = keepCFG;
