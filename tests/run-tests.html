@@ -2873,7 +2873,36 @@
     stash = JSON.parse(W.localStorage.getItem('gym:live-session') || 'null');
     t('keystrokes reach the stash without a render', stash.S.exercises[0].sets[0].reps === 7);
 
+    // A SECOND TAB MUST NOT ERASE THIS TAB'S WORKOUT.
+    //
+    // The bug this pins cost the owner a real training session (2026-08-16,
+    // reproduced): stashLiveSession() used to CLEAR the mirror whenever S was
+    // null. But S is per-tab and localStorage is per-origin, so an old tab
+    // parked on the start screen wiped the mirror of the workout running in
+    // another tab the moment anything made it render — a tab switch, a
+    // background sync finishing, any tap. The refresh got the blame; the
+    // mirror was already gone. Easy to hit: this app is used in a browser tab
+    // by design, and a home-screen shortcut opens a second one.
+    {
+      const live = W.localStorage.getItem('gym:live-session');   // a workout is in progress
+      const keepS = T.S;
+      T.S = null;              // …this is the OTHER tab's state
+      W.stashLiveSession();    // …and it renders
+      t('a tab with no session cannot erase another tab\'s live workout',
+        W.localStorage.getItem('gym:live-session') === live);
+      T.S = keepS;
+    }
+
+    // The other half: ending the session genuinely MUST still clear it, or the
+    // app resurrects a phantom workout on the next open.
+    {
+      W.localStorage.setItem('gym:live-session', 'x');
+      W.clearLiveSession();
+      t('clearLiveSession() is what erases the mirror', !W.localStorage.getItem('gym:live-session'));
+    }
+
     // Restore round-trip: killing the page loses S but not the stash.
+    W.render();                                        // re-mirror after the probes above
     const savedStash = W.localStorage.getItem('gym:live-session');
     T.S = null; T.restTimer = null;                    // simulate the death directly (no render — a real death doesn't render either)
     W.localStorage.setItem('gym:live-session', savedStash);
@@ -2896,13 +2925,21 @@
     // mid-loadData, S still null) must NOT clear the stash before the boot
     // restore has read it — that was the one ordering that could still lose
     // a workout on exactly the reopen path the stash exists for.
+    //
+    // NOTE (2026-08-16): this pair used to assert the OPPOSITE on its second
+    // half — that once unlatched, a render with no session *clears* the stash.
+    // That encoded the bug that cost a real workout (see the second-tab test
+    // above): render() is no longer allowed to erase anything, latched or not.
+    // The latch now only gates WRITES, so its protection is narrower — and the
+    // clearing it used to guard against simply doesn't exist any more.
     T.S = null; T.liveRestoreDone = false;
     W.localStorage.setItem('gym:live-session', savedStash);
     W.render();
-    t('latched: a pre-restore render cannot clear the stash', !!W.localStorage.getItem('gym:live-session'));
+    t('latched: a pre-restore render cannot touch the stash', !!W.localStorage.getItem('gym:live-session'));
     T.liveRestoreDone = true;
     W.render();
-    t('unlatched: a post-restore render with no session clears it', !W.localStorage.getItem('gym:live-session'));
+    t('unlatched: a render with no session STILL cannot clear it', !!W.localStorage.getItem('gym:live-session'));
+    W.clearLiveSession();   // only the explicit end-of-session path may
 
     // Cancelar now guards a session holding real input — and clears the stash on accept.
     W.localStorage.setItem('gym:live-session', savedStash);

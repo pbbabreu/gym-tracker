@@ -1587,7 +1587,7 @@ function wipeCacheForNewOwner() {
         lastModified: 0 };
   S = null; _restTimer = null; EXP = null;
   LS.set('gym:data', '');
-  LS.set('gym:live-session', '');            // the previous person's workout in progress
+  clearLiveSession();                        // the previous person's workout in progress
   LS.set('gym:currentGym', ''); _currentGymId = null;
   // The snapshots are the previous person's data too — leaving them would
   // hand the new user a one-tap "Restaurar" back into someone else's history.
@@ -2049,12 +2049,34 @@ async function persist() {
 // touch the stash until the boot restore has run.
 let _liveRestoreDone = false;
 
+// WRITE-ONLY, deliberately. This used to also CLEAR the mirror whenever S was
+// null — and that lost a real workout (owner report, 2026-08-16; reproduced).
+//
+// The bug: `S` is per-TAB, localStorage is per-ORIGIN. A second tab sitting on
+// the start screen has its own S === null, so the moment anything made it
+// render — switching to it, a background sync finishing, any tap — it happily
+// erased the mirror of the workout running in the *other* tab. The refresh the
+// owner blamed wasn't the cause; it was just when the loss became visible.
+// That second tab is easy to have: this app is used in a browser tab by
+// design, and a home-screen shortcut opens another one.
+//
+// Clearing now belongs ONLY to the genuine end-of-session paths (save, cancel,
+// factory reset, account switch), which is what [[Current State]] always
+// claimed the rule was — the implementation simply over-reached.
+//
+// The asymmetry justifies the change on its own: a stale mirror restores a
+// session the user can just cancel, while a wiped mirror loses a workout that
+// cannot be recovered. When in doubt, keep the data.
 function stashLiveSession() {
   if (!_liveRestoreDone) return;
-  // Clearing uses the same LS.set(k,'') idiom as gym:currentGym — the reader
-  // treats a falsy value as "no stash".
   if (S) LS.set('gym:live-session', JSON.stringify({ v: 1, S, restTimer: _restTimer, savedAt: Date.now() }));
-  else LS.set('gym:live-session', '');
+}
+
+// The session genuinely ended — saved, cancelled, reset, or the device changed
+// hands. This is the ONLY thing allowed to erase the mirror; see the comment
+// on stashLiveSession() for the workout that was lost when render() could.
+function clearLiveSession() {
+  LS.set('gym:live-session', '');
 }
 
 // Called once from loadData(), before the first render. Restoring drops the
@@ -6784,7 +6806,7 @@ function cancelSession() {
   // with zero friction.
   const hasData = S && S.exercises.some(ex => (ex.sets||[]).some(s => s.completed === true || s.repsEdited || s.kgEdited));
   if (hasData && !confirm('Descartar este treino?\n\nAs séries preenchidas serão perdidas.')) return;
-  S=null; _restTimer=null; _machineNudgeDone=false; render();
+  S=null; _restTimer=null; _machineNudgeDone=false; clearLiveSession(); render();
 }
 
 // ── Saving a session vs. its plan ─────────────────────────────────────────────
@@ -7627,7 +7649,7 @@ function doSaveSession(mode) {
   if (prs.length) rec.prs = prs;
   if (S._editId) { const i=D.sessions.findIndex(s=>s.id===S._editId); if(i>=0)D.sessions[i]=rec; }
   else D.sessions.push(rec);
-  persist(); S=null; _restTimer=null; _machineNudgeDone=false; TAB='history'; render();
+  persist(); S=null; _restTimer=null; _machineNudgeDone=false; clearLiveSession(); TAB='history'; render();
 }
 
 function editSess(id) {
@@ -9538,7 +9560,7 @@ async function factoryReset() {
   D.exercises = [];
 
   // Live UI state that could still reference deleted data
-  S = null; EXP = null; _restTimer = null; _receivedShares = [];
+  S = null; EXP = null; _restTimer = null; _receivedShares = []; clearLiveSession();
   _currentGymId = null; LS.set('gym:currentGym', '');
   D.lastModified = now;
 
