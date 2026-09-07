@@ -81,8 +81,20 @@
   //
   // The convention "run it over a local server, never the live origin" was
   // written in the README and enforced by nothing. A comment is not a guard.
-  const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
-  if (!LOCAL_HOSTS.includes(location.hostname)) {
+  // Private/LAN addresses count as local on purpose: the documented routine
+  // is to test on a REAL phone, which means serving the dev box on its LAN IP
+  // (192.168.x / 10.x / 172.16-31.x). A gate that only knew "localhost" would
+  // block the project's own instructions while adding no safety — the address
+  // this exists to refuse is the public origin, not the other side of a
+  // router.
+  const isLocalHost = h =>
+    ['localhost', '127.0.0.1', '[::1]', '::1'].includes(h) ||
+    /^127\./.test(h) ||
+    /^10\./.test(h) ||
+    /^192\.168\./.test(h) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(h) ||
+    /\.local$/.test(h);
+  if (!isLocalHost(location.hostname)) {
     sumEl.className = 'bad';
     sumEl.textContent = 'Recusado: esta suite apaga TODOS os dados desta origem e so pode rodar em um servidor local.';
     resEl.insertAdjacentHTML('beforeend',
@@ -475,19 +487,91 @@
     // id= next to onclick=. Same shape as the original bug — a rule applied
     // to one field and not to its neighbour. Pinned so it cannot come back.
     {
-      const src = W.document.documentElement.outerHTML;
-      const rawInHandler = [];
-      const hRe = /on(?:click|change|input|focus|blur)="([^"]*)"/g;
+      // THE SWEEP THAT ACTUALLY PINS IT.
+      //
+      // The previous version of this block built a list of raw sinks and then
+      // never asserted on it — and it read the RENDERED DOM, where `${...}`
+      // is already substituted, so it could not have matched anything even if
+      // it had. A comment promising "pinned so it cannot come back" with
+      // nothing pinning it is this project's signature failure mode, and it
+      // is precisely why a raw `exportPlan('+p.id+')` survived the last
+      // review sitting one line below three escaped siblings.
+      //
+      // This reads the SOURCE and covers BOTH shapes a handler argument gets
+      // built in. The concatenation form is the one that hid the bug, because
+      // no template-literal regex can see it.
+      // Guarded: this block sits inside the suite's single async IIFE, so an
+      // unhandled rejection here (dev-server hiccup, offline) would abort the
+      // WHOLE run mid-way and leave the summary frozen — the same silent-stop
+      // failure the backtick trap produces. Fail this one check instead.
+      let src = '';
+      try {
+        src = await (await fetch('../index.html?sweep=' + Date.now(), { cache: 'reload' })).text();
+      } catch (e) { t('sink sweep could fetch the app source', false, e); }
+      if (src) {
+      const raw = new Set();
       let m;
-      while ((m = hRe.exec(src))) {
-        (m[1].match(/'\$\{[^}]*\}'/g) || []).forEach(a => { if (!a.includes('escJs(')) rawInHandler.push(a); });
+      const tpl = /'\$\{([^}]*)\}'/g;                                   // `fn('${expr}')`
+      while ((m = tpl.exec(src))) { const e = m[1].trim(); if (!e.includes('escJs(')) raw.add(e); }
+      // ...' + expr + '...  — a quote CLOSES the string literal, then the
+      // value is concatenated in, then a quote opens the next one. Getting
+      // this pattern wrong is not hypothetical: the first version of this
+      // line looked for \' immediately before the +, missed the quote that
+      // sits between them, and was therefore still blind to the exact bug it
+      // was written to catch. Verified both ways before landing — it flags
+      // `exportPlan(\''+p.id+'\')` and stays silent on the real source.
+      const cat = /'\s*\+\s*([A-Za-z_$][\w$.]*)\s*\+\s*'/g;
+      while ((m = cat.exec(src))) { const e = m[1].trim(); if (!e.includes('escJs(')) raw.add(e); }
+
+      // Every name below was checked by hand and is an APP CONSTANT — never
+      // user- or peer-controlled: tab ids from a literal array, enum keys,
+      // generator-validated movement slugs, a filename already stripped by a
+      // whitelist regex, and a snapshot slot that is a digit or 'prerestore'.
+      // Anything NEW showing up here is a raw sink until proven otherwise:
+      // add it to this list only after checking where its value comes from.
+      const ALLOWED = new Set(['k','key','REGIME_BW_PLUS','TRACK_REPS','TRACK_TIME',
+                               'm.slug','slug','fn','id','s.slot']);
+      const unexpected = [...raw].filter(e => !ALLOWED.has(e));
+      t('no NEW unescaped value reaches a handler argument', unexpected.length === 0, unexpected.join(' | '));
+
+      // THE SECOND SINK CLASS — the one the handler sweep was blind to.
+      //
+      // Round three of the same mistake: the id fix scoped itself to handler
+      // arguments, so `value="${rv}"`, `<option value="${r}">` and
+      // `>${set.reps}<` stayed raw and were live stored-XSS from a pasted
+      // backup. The lesson is that a sweep is only as wide as the sink class
+      // its author had in mind, so this one covers the other two contexts:
+      // a value sitting in a double-quoted attribute, and a value sitting in
+      // a text node between > and <.
+      // Scoped to expressions that reach into PERSISTED data — the only
+      // values a pasted backup or a poisoned sync row can control. A sweep
+      // that flags every interpolation instead flags ~115 of them, 111 of
+      // which are design tokens and computed counts; an allowlist that long
+      // gets rubber-stamped, and a gate nobody reads is worse than no gate.
+      const rawOther = new Set();
+      const DATA_ROOT = /\b(ex|set|s|w|m|gm|pr|p|d|en|it)\.[A-Za-z_$]|(^|\W)(S|D)\.[A-Za-z_$]/;
+      const SAFE_WRAP = /\b(esc|escJs|numOut|fmt[A-Za-z]*|Math\.|typePill|regimePill|musclePill|compPill)\s*\(/;
+      for (const [re, ctx] of [[/="\$\{([^}]*)\}"/g, 'attr'], [/>\$\{([^}]*)\}</g, 'text']]) {
+        while ((m = re.exec(src))) {
+          const e = m[1].trim();
+          if (!DATA_ROOT.test(e) || SAFE_WRAP.test(e)) continue;
+          // a ternary that only ever yields string literals renders no data
+          if (/\?[^?]*'[^']*'[^?]*:[^?]*'[^']*'/.test(e)) continue;
+          rawOther.add(ctx + ': ' + e);
+        }
       }
-      // The live DOM is already rendered, so this asserts the OUTPUT: no
-      // handler argument may contain a quote that escaped its string.
-      const brokenOut = [...W.document.querySelectorAll('[onclick],[onchange]')]
-        .map(el => el.getAttribute('onclick') || el.getAttribute('onchange'))
-        .filter(a => a && !/^[a-zA-Z_$][\w$]*\((?:[^'"]|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")*\)\s*;?\s*$/.test(a));
-      t('no rendered handler has a broken argument list', brokenOut.length === 0, brokenOut.slice(0,3).join(' | '));
+      // Checked by hand: rest values are sanitizeRest()'d integers, the chart
+      // coordinate is arithmetic, and the count is a number.
+      const OK_OTHER = new Set([
+        "attr: _planRests[en.eid]?.[k] ?? ''",
+        "attr: ex.rest?.[k] ?? ''",
+        'attr: y(p.metric)',
+        'text: D.exercises.length',
+      ]);
+      const unexpectedOther = [...rawOther].filter(e => !OK_OTHER.has(e));
+      t('no NEW unescaped value reaches an attribute or text node',
+        unexpectedOther.length === 0, unexpectedOther.slice(0, 12).join(' | '));
+      }   // end if(src)
     }
 
     // — sanitizeHydratedData: the backup-restore trust boundary —
@@ -557,8 +641,14 @@
     // into B's account and pushed them there. RLS is blind to it — the
     // client volunteers A's rows using B's credentials. Reproduced before
     // the fix: A's exercise, session AND bodyweight reached B's payload.
-    const keepD = T.D, keepSession = T.sbSession;
-    const LSkeys = ['gym:data','gym:owner','gym:live-session','gym:currentGym','gym:snapshot:3','gym:config','gym:timers'];
+    // CFG is restored too: wipeCacheForNewOwner() rewrites it to
+    // {token:'',gistId:'',driver:'supabase'}, and the later sync-drivers group
+    // snapshots CFG expecting it untouched — it would capture the clobbered
+    // value and "restore" that. Same for the snapshot slots the wipe clears.
+    const keepD = T.D, keepSession = T.sbSession, keepCFG = { ...T.CFG };
+    const LSkeys = ['gym:data','gym:owner','gym:live-session','gym:currentGym','gym:config','gym:timers',
+                    'gym:snapshot:0','gym:snapshot:1','gym:snapshot:2','gym:snapshot:3',
+                    'gym:snapshot:4','gym:snapshot:5','gym:snapshot:6','gym:snapshot:prerestore'];
     const saved = {}; LSkeys.forEach(k => saved[k] = W.localStorage.getItem(k));
 
     const seed = () => {
@@ -610,7 +700,7 @@
     seed(); W.localStorage.setItem('gym:owner','user-A'); T.sbSession = null;
     t('logged out: no-op', W.enforceCacheOwner() === false && T.D.exercises.length === 1);
 
-    T.D = keepD; T.sbSession = keepSession;
+    T.D = keepD; T.sbSession = keepSession; T.CFG = keepCFG;
     LSkeys.forEach(k => saved[k] === null ? W.localStorage.removeItem(k) : W.localStorage.setItem(k, saved[k]));
   }
 

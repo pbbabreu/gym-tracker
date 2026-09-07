@@ -648,7 +648,7 @@ function syncGlobalLibrary(catalog) {
   (catalog || []).forEach(e => {
     if (!e || typeof e.id !== 'string' || typeof e.name !== 'string') return;
     if (have.has(e.id)) return;
-    if (e.id in (D.tombstones.exercises || {})) return;   // deleted on purpose — stays gone
+    if (hasKey(D.tombstones.exercises || {}, e.id)) return;   // deleted on purpose — stays gone
     D.exercises.push({ ...e, origin: ORIGIN_GLOBAL, updatedAt: CATALOG_BASELINE_AT });
     have.add(e.id);
     added++;
@@ -677,7 +677,7 @@ async function refreshGlobalLibrary() {
 // Kept as a function rather than cached state so it always reflects the
 // current tombstones, including ones that just arrived via a merge.
 function deletedCatalogEntries(catalog) {
-  return (catalog || []).filter(e => e && e.id && (e.id in (D.tombstones.exercises || {})));
+  return (catalog || []).filter(e => e && e.id && hasKey(D.tombstones.exercises || {}, e.id));
 }
 
 // ── Plan-entry backfill (E3, schema 5) ───────────────────────────────────────
@@ -1035,6 +1035,23 @@ const escJs   = s  => esc(String(s ?? '')
 // idMap): `SEED_CLASSIFICATION['constructor']` is truthy for reasons that
 // have nothing to do with the catalog, which would mislabel a user's
 // exercise as official.
+// Numbers on their way into markup. COERCES rather than escapes, because
+// these fields are numeric by contract — reps, kg, bodyweight — so a string
+// sitting in one is corrupt data (a hand-edited backup, a poisoned sync row),
+// never something to render. Coercing kills the injection at the value
+// instead of at each of the dozen places that print it, which is the lesson
+// from having patched this class one sink at a time twice already.
+//
+// Deliberately NOT esc(): `esc(0)` returns '' because esc is `String(s||'')`,
+// and a real 0 must survive — 0 kg is full graduation on an assisted lift,
+// and 0 reps is a logged failed attempt. `empty` is what a genuinely blank
+// field renders as, which differs per call site ('' in an input, '–' in
+// history).
+const numOut  = (v, empty = '') => {
+  if (v === '' || v == null) return empty;
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : empty;
+};
 const ID_RE   = /^[A-Za-z0-9_-]{1,64}$/;
 const PROTO_KEYS = ['__proto__','constructor','prototype'];
 const safeId  = v => (typeof v === 'string' && ID_RE.test(v) && !PROTO_KEYS.includes(v)) ? v : null;
@@ -1317,7 +1334,7 @@ const SCHEMA_VERSION = 6;
 // the test suite (see CLAUDE.md). Date of the push plus a letter when the
 // same day ships more than once. A stale value here is worse than no value,
 // because it answers the deploy question wrongly with confidence.
-const APP_VERSION = '2026-08-16';
+const APP_VERSION = '2026-09-06';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -1554,9 +1571,24 @@ function restoreSnapshot(slot) {
 //
 // The rule: the cache is stamped with the account that owns it, and a
 // DIFFERENT account arriving wipes it before any merge or push can read it.
+// The stamp lives in localStorage only, while the DATA wipe reaches both
+// stores — an asymmetry worth stating rather than leaving to be re-derived.
+// If localStorage were unavailable (the sandbox window.storage exists for),
+// LS.get would read null every load and this guard would adopt forever while
+// data persisted in the other store. That hole is unreachable: the same
+// environment blocks the fetch the account backend needs, so sbSession is
+// null and enforceCacheOwner() returns before the stamp is ever consulted.
+// An in-memory mirror was tried and removed — it made the stamp sticky
+// across a legitimate site-data clear, buying nothing for a case that
+// cannot occur.
 const OWNER_KEY = 'gym:owner';
+function stampOwner(uid) { LS.set(OWNER_KEY, uid); }
 
-// Returns true when it actually wiped, so callers can tell the user.
+// Returns true when it actually wiped, so a caller can re-render. NOTE: the
+// wipe is currently SILENT — no caller tells the user their local data was
+// dropped. Defensible (the data belongs to the previous account and, if that
+// account synced, still exists in it) but it is an unbuilt nicety, not a
+// decision: see [[Backlog]].
 //
 // An ABSENT stamp means adopt, and that is deliberate rather than lazy.
 // Using the app without an account is a supported path (signing in buys
@@ -1573,8 +1605,8 @@ function enforceCacheOwner() {
   if (!uid) return false;             // logged out, or gist-only: nothing to enforce against
   const prev = LS.get(OWNER_KEY);
   if (prev === uid) return false;     // same person — the ordinary case, every load
-  if (prev) { wipeCacheForNewOwner(); LS.set(OWNER_KEY, uid); return true; }
-  LS.set(OWNER_KEY, uid);             // first stamp: adopt what is already here
+  if (prev) { wipeCacheForNewOwner(); stampOwner(uid); return true; }
+  stampOwner(uid);                    // first stamp: adopt what is already here
   return false;
 }
 
@@ -1585,8 +1617,21 @@ function wipeCacheForNewOwner() {
   D = { exercises: [], plans: [], sessions: [], weights: [], gyms: [], machines: [],
         tombstones: { exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} },
         lastModified: 0 };
-  S = null; _restTimer = null; EXP = null;
-  LS.set('gym:data', '');
+  // _receivedShares too: it holds the PREVIOUS account's plan-share inbox,
+  // including a third party's e-mail address, and the render() that follows
+  // this wipe would paint it for the new user. Leaving it out was a
+  // cross-account leak inside the very function written to stop one —
+  // factoryReset() already clears it on the same kind of boundary.
+  S = null; _restTimer = null; EXP = null; _receivedShares = [];
+  // persistLocal(), not LS.set('gym:data',''): there are TWO local stores and
+  // loadLocalData() falls back to the second one. Clearing only localStorage
+  // left the previous account's data sitting in window.storage, where the
+  // next boot read it straight back — and by then OWNER_KEY already named the
+  // new user, so no second wipe fired and the resurrected data was pushed
+  // into their account. That is precisely the leak this function exists to
+  // stop, so the wipe has to reach both stores. Its localStorage write is
+  // synchronous before the first await, so not awaiting here is safe.
+  persistLocal();
   clearLiveSession();                        // the previous person's workout in progress
   LS.set('gym:currentGym', ''); _currentGymId = null;
   // The snapshots are the previous person's data too — leaving them would
@@ -2041,12 +2086,16 @@ async function persist() {
 // which deliberately don't render) and restored on the next app open. The
 // rest timer rides along so a still-running countdown survives the reload.
 //
-// The _liveRestoreDone latch exists for a boot-ordering hazard: the Supabase
-// auth listener (and anything else async) can call render() while loadData()
-// is still mid-startup — with S still null, an unlatched stash write would
-// CLEAR the stash before restoreLiveSession() ever read it, losing the
-// workout on exactly the reopen path this feature exists for. Nothing may
-// touch the stash until the boot restore has run.
+// The _liveRestoreDone latch gates WRITES only, and its job is now narrower
+// than the hazard it was born for. It originally existed because an early
+// render() (the Supabase auth listener firing mid-loadData, S still null)
+// would CLEAR the stash before restoreLiveSession() read it. That clear no
+// longer exists — stashLiveSession() is write-only, so with S null it does
+// nothing, latch or no latch. What remains is keeping a pre-restore write
+// from landing before the boot restore has read what is there. Kept because
+// it is cheap and the ordering guarantee is still worth stating; it is close
+// to vestigial, and a future reader should know that rather than infer a
+// protection that has already moved elsewhere.
 let _liveRestoreDone = false;
 
 // WRITE-ONLY, deliberately. This used to also CLEAR the mirror whenever S was
@@ -2867,7 +2916,10 @@ function computeSessionPRs(rec) {
 
 // PT labels for the PR kinds, shared by Histórico's summary line.
 const PR_KIND_LABELS = { kg: 'carga', e1rm: '1RM est.', reps: 'reps', secs: 'tempo', assist: 'assistência' };
-const fmtPrVal = (kind, v) => kind === 'secs' ? fmtSecs(v) : kind === 'reps' ? `${v}` : `${v} kg`;
+// numOut, not raw: a PR record is stored ON the session and so arrives from
+// the same untrusted paths (remote merge, backup restore) as the sets it was
+// computed from.
+const fmtPrVal = (kind, v) => kind === 'secs' ? fmtSecs(Number(v)||0) : kind === 'reps' ? numOut(v,'–') : `${numOut(v,'–')} kg`;
 
 // Per-session progress points for one exercise, oldest → newest (charts
 // read left-to-right in time), capped to the most recent `cap` sessions.
@@ -3495,7 +3547,7 @@ function buildLogSession() {
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
       <div style="flex:1;min-width:0">
         <div style="font-weight:700;font-size:17px;margin-bottom:4px">${esc(S.planName||(isEdit?'Editar treino':'Treino livre'))}${S.gymName?` <span style="font-weight:400;font-size:12px;color:${DM}">· ${esc(S.gymName)}</span>`:''}</div>
-        <input type="date" value="${S.date}" onchange="S.date=this.value"
+        <input type="date" value="${esc(S.date)}" onchange="S.date=this.value"
           style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:6px 10px;outline:none;width:auto">
       </div>
       <div style="display:flex;gap:6px;margin-left:8px;flex-shrink:0">
@@ -3850,7 +3902,7 @@ function setRowHTML(ctx, s, j, opts = {}) {
   const dv = dispKg(s.kg);
   const totalCell = !plateMode ? '' : (kv === ''
     ? `<div style="text-align:center;font-size:12px;color:${DM}">–</div>`
-    : `<div style="text-align:center;line-height:1.2"><span style="font-size:13px;color:${TX}">${kv}</span>${dv === 0 ? `<div style="font-size:9px;color:${DM}">barra vazia</div>` : ''}</div>`);
+    : `<div style="text-align:center;line-height:1.2"><span style="font-size:13px;color:${TX}">${numOut(kv)}</span>${dv === 0 ? `<div style="font-size:9px;color:${DM}">barra vazia</div>` : ''}</div>`);
 
   return `<div style="margin-bottom:8px">
     ${opts.nameHTML || ''}
@@ -3860,12 +3912,12 @@ function setRowHTML(ctx, s, j, opts = {}) {
       <button onclick="toggleIntent(${i},${j})" style="padding:10px 0;border:none;border-radius:7px;
         background:${isWork?CG:'#555'};color:#fff;font-weight:700;font-size:11px;cursor:pointer;
         font-family:inherit;text-align:center;width:100%">${isWork?'W':'WU'}</button>
-      <input id="s-reps-${i}-${j}" type="number" inputmode="decimal" placeholder="${s.phReps||'Reps'}" value="${rv}"
+      <input id="s-reps-${i}-${j}" type="number" inputmode="decimal" placeholder="${esc(s.phReps||'Reps')}" value="${numOut(rv)}"
         oninput="setVal(${i},${j},'reps',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
         style="background:${BG3};border:1px solid ${BD};border-radius:7px;color:${repsColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">
       ${isBW
         ? `<div style="text-align:center;font-size:12px;color:${DM};padding:4px">${bw?bw+'kg':'BW'}</div>`
-        : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${plateMode==='side'?'Por lado':plateMode==='plates'?'Anilhas':(ctx.isAs?'Assist.':'Kg')}" step="0.5" value="${dispKg(kv)}"
+        : `<input id="s-kg-${i}-${j}" type="number" inputmode="decimal" placeholder="${plateMode==='side'?'Por lado':plateMode==='plates'?'Anilhas':(ctx.isAs?'Assist.':'Kg')}" step="0.5" value="${numOut(dispKg(kv))}"
              oninput="setVal(${i},${j},'kg',this.value)" onfocus="focusVal(this)" onblur="blurVal(this)"
              style="background:${BG3};border:1px solid ${ctx.isAs?CA:BD};border-radius:7px;color:${kgColor};font-size:15px;padding:10px 4px;text-align:center;outline:none;width:100%;box-sizing:border-box">`}
       ${totalCell}
@@ -4036,7 +4088,7 @@ function buildExBlock(ex, i) {
                how the fields read. -->
           <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:6px;padding:8px 10px;background:${BG3};border:1px solid ${BD};border-radius:8px">
             <span style="font-size:11px;color:${DM}">Barra</span>
-            <input id="lb-bar-${i}" type="number" inputmode="decimal" step="0.5" min="0" value="${ex.barKg??''}" placeholder="kg"
+            <input id="lb-bar-${i}" type="number" inputmode="decimal" step="0.5" min="0" value="${numOut(ex.barKg)}" placeholder="kg"
               onchange="setBlockBarKg(${i}, this.value)"
               style="width:58px;background:${BG2};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:13px;padding:6px 6px;text-align:center;outline:none">
             <span style="font-size:11px;color:${DM}">· digitar em:</span>
@@ -4122,13 +4174,17 @@ function buildHistory() {
           // hasKg (shared, section 4), not a truthy check — a genuinely-
           // entered 0kg set (full graduation for assisted; a deliberate
           // 0kg entry for weighted) must show "0", not "–" as if untouched.
-          const kgLbl = ex.regime==='bodyweight' ? (bw?`${bw}kg (BW)`:'BW')
-            : ex.regime===REGIME_BW_PLUS ? (bw ? `+${hasKg(set)?set.kg:0} kg (${bw+(hasKg(set)?Number(set.kg):0)}kg real)` : `+${hasKg(set)?set.kg:'–'} kg`)
-            : ex.regime==='assisted' ? (bw ? `${hasKg(set)?set.kg:'–'} assist. (${bw&&hasKg(set)?Math.max(0,bw-Number(set.kg)):'-'}kg real)` : `${hasKg(set)?set.kg:'–'} assist.`)
-            : `${hasKg(set)?set.kg:'–'} kg`;
+          // numOut on every printed number: a saved set's reps/kg are numeric
+          // by contract, but this block renders straight from D.sessions,
+          // which merge/backup-restore fill from untrusted JSON.
+          const kgN = hasKg(set) ? numOut(set.kg, '–') : '–';
+          const kgLbl = ex.regime==='bodyweight' ? (bw?`${numOut(bw)}kg (BW)`:'BW')
+            : ex.regime===REGIME_BW_PLUS ? (bw ? `+${hasKg(set)?numOut(set.kg,'0'):0} kg (${numOut(bw+(hasKg(set)?Number(set.kg)||0:0))}kg real)` : `+${kgN} kg`)
+            : ex.regime==='assisted' ? (bw ? `${kgN} assist. (${bw&&hasKg(set)?numOut(Math.max(0,bw-(Number(set.kg)||0))):'-'}kg real)` : `${kgN} assist.`)
+            : `${kgN} kg`;
           return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:.5px solid ${BD};font-size:14px">
             <span style="background:${set.intent==='work'?CG:'#555'};color:#fff;padding:2px 7px;border-radius:5px;font-size:11px;font-weight:700;min-width:34px;text-align:center">${lbl}</span>
-            <span>${isTimed(ex) ? `${fmtSecs(set.reps)} × ${kgLbl}` : `${set.reps||'–'} reps × ${kgLbl}`}</span>
+            <span>${isTimed(ex) ? `${fmtSecs(Number(set.reps)||0)} × ${kgLbl}` : `${numOut(set.reps,'–')} reps × ${kgLbl}`}</span>
           </div>`;
         }).join('');
         return `<div style="margin-bottom:14px">
@@ -4166,7 +4222,7 @@ function buildHistory() {
       const prBlock = (s.prs||[]).length ? `
         <div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:10px;padding:10px 12px;margin-bottom:14px">
           <div style="font-size:12px;font-weight:700;color:#e6c84a;margin-bottom:4px">🏆 Recordes deste treino</div>
-          ${s.prs.map(pr => `<div style="font-size:12px;color:${TX};padding:2px 0">${esc(pr.exName)} — ${PR_KIND_LABELS[pr.kind]||pr.kind}: <span style="color:${DM}">${fmtPrVal(pr.kind, pr.prev)}</span> → <strong style="color:#e6c84a">${fmtPrVal(pr.kind, pr.value)}</strong></div>`).join('')}
+          ${s.prs.map(pr => `<div style="font-size:12px;color:${TX};padding:2px 0">${esc(pr.exName)} — ${esc(hasKey(PR_KIND_LABELS, pr.kind) ? PR_KIND_LABELS[pr.kind] : pr.kind)}: <span style="color:${DM}">${fmtPrVal(pr.kind, pr.prev)}</span> → <strong style="color:#e6c84a">${fmtPrVal(pr.kind, pr.value)}</strong></div>`).join('')}
         </div>` : '';
 
       detail = `<div style="border-top:1px solid ${BD};padding:14px 16px">${prBlock}${exRowsHTML}
@@ -4508,7 +4564,7 @@ function openProgress(exId) {
   const regimeSelect = prog.regimes.length > 1 ? `
     <select onchange="progSwitch('${escJs(ex.id)}', this.value)"
       style="margin-left:auto;background:${BG3};border:1px solid ${BD};border-radius:7px;color:${TX};font-size:12px;padding:5px 8px;outline:none">
-      ${prog.regimes.map(r => `<option value="${r}" ${r === prog.regime ? 'selected' : ''}>${REGIME_LABELS[r] || r}</option>`).join('')}
+      ${prog.regimes.map(r => `<option value="${esc(r)}" ${r === prog.regime ? 'selected' : ''}>${esc(hasKey(REGIME_LABELS, r) ? REGIME_LABELS[r] : r)}</option>`).join('')}
     </select>` : '';
   showModal(`
     <div style="font-size:17px;font-weight:700;margin-bottom:4px">Progresso — ${esc(ex.name)}</div>
@@ -4662,7 +4718,10 @@ function seedRefreshChanges(map) {
     // so outright, which also covers a `shared` exercise whose sender
     // happened to build it on a catalog id.
     if (!isGlobalEx(ex)) return;
-    const s = map[ex.id]; if (!s) return;
+    // hasKey: ex.id is untrusted (merge/restore), and a bare lookup on an id
+    // of 'constructor' returns a native function that this then treats as a
+    // catalog row — ⟳ Nomes would rename the exercise to "Object".
+    const s = hasKey(map, ex.id) ? map[ex.id] : null; if (!s) return;
     const differs = SEED_REFRESH_FIELDS.some(f => JSON.stringify(s[f] ?? null) !== JSON.stringify(ex[f] ?? null));
     if (!differs) return;
     ((s.name && s.name !== ex.name) ? renames : contentOnly).push({ ex, s });
@@ -4940,7 +4999,7 @@ function buildPlans() {
               <span style="font-weight:700;font-size:16px">${esc(p.name)}</span>
               <div style="display:flex;gap:8px">
                 ${hasList && sb && sbSession ? Bs(BG3,TX,'✉',`openSharePlan('${escJs(p.id)}')`) : ''}
-                ${hasList ? Bs(BG3,TX,'⬇','exportPlan(\''+p.id+'\')') : ''}
+                ${hasList ? Bs(BG3,TX,'⬇',`exportPlan('${escJs(p.id)}')`) : ''}
                 ${Bs(BG3,TX,'Editar',`openEditPlan('${escJs(p.id)}')`)}
                 ${Bs(BG3,CR,'×',`delPlan('${escJs(p.id)}')`)}
               </div>
@@ -5689,7 +5748,7 @@ function buildWeight() {
       :             `<span style="color:#e57373;font-size:12px">▲ ${delta.toFixed(1)}kg</span>`;
     return `<div style="background:${BG2};border:1px solid ${BD};border-radius:10px;margin-bottom:7px;padding:12px 16px;display:flex;align-items:center;gap:10px">
       <div style="flex:1">
-        <div style="font-weight:600;font-size:15px">${w.kg} kg</div>
+        <div style="font-weight:600;font-size:15px">${numOut(w.kg,'–')} kg</div>
         <div style="font-size:13px;color:${DM};margin-top:2px">${fmt(w.date)}</div>
       </div>
       ${ds}
@@ -5700,7 +5759,7 @@ function buildWeight() {
   return `
     <div style="font-size:20px;font-weight:700;margin-bottom:4px">Peso Corporal</div>
     ${sorted.length
-      ? `<div style="font-size:13px;color:${DM};margin-bottom:16px">Atual: <strong style="color:${TX}">${sorted[0].kg} kg</strong> · ${fmt(sorted[0].date)}</div>`
+      ? `<div style="font-size:13px;color:${DM};margin-bottom:16px">Atual: <strong style="color:${TX}">${numOut(sorted[0].kg,'–')} kg</strong> · ${fmt(sorted[0].date)}</div>`
       : `<div style="font-size:13px;color:${DM};margin-bottom:16px">Nenhum registro ainda.</div>`}
     ${bwIsStale() ? `<div style="background:#1e1a00;border:1px solid #5a4a00;border-radius:10px;padding:11px 14px;margin-bottom:14px;font-size:13px;color:#e6c84a">
       ${!D.weights.length?'Registre seu peso para cálculos de carga em exercícios assistidos e corporais.':'Último registro há mais de 7 dias — atualize seu peso.'}
@@ -6467,7 +6526,7 @@ function aVariantViewHTML(slug) {
   const m = MOVEMENTS[slug];
   const vars = D.exercises.filter(e => e.movement === slug);
   const byEquip = {};
-  vars.forEach(e => { const k = e.equipment && EQUIPMENT_LABELS[e.equipment] ? e.equipment : '_none'; (byEquip[k] = byEquip[k]||[]).push(e); });
+  vars.forEach(e => { const k = hasKey(EQUIPMENT_LABELS, e.equipment) ? e.equipment : '_none'; (byEquip[k] = byEquip[k]||[]).push(e); });
   const groups = [...Object.keys(EQUIPMENT_LABELS).filter(k => byEquip[k]), ...(byEquip._none ? ['_none'] : [])];
   return `
     <button onclick="closePickMovement()" style="background:none;border:none;color:${DM};font-size:13px;cursor:pointer;font-family:inherit;padding:0;margin-bottom:8px">← ${_aFamily ? esc(_aFamily[_aFamily.length-1]) : 'Movimentos'}</button>
@@ -6800,7 +6859,9 @@ function startPlan(id) {
 function startFree()     { const gm=currentGym(); S={ planId:null, planName:null, date:today(), startedAt:Date.now(), gymId:gm?.id||null, gymName:gm?.name||null, exercises:[] }; _restTimer=null; _machineNudgeDone=false; render(); }
 function cancelSession() {
   // Guard the wipe when the session holds real input — Cancelar discards S
-  // AND its live-session stash (render() clears the mirror once S is null),
+  // AND its live-session stash (the explicit clearLiveSession() below;
+  // render() is no longer allowed to erase the mirror, which is what once
+  // let a second tab destroy a live workout),
   // so a mis-tap here would be the one remaining way to lose a workout
   // outright. An untouched session (no typing, no checks) still cancels
   // with zero friction.
@@ -7157,7 +7218,7 @@ function openMachineEditor(mid, fromBlock) {
     <input id="me-name" type="text" value="${esc(m.name)}"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:14px;padding:10px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">
     ${isBarbell ? `
-    <input id="me-barkg" type="number" inputmode="decimal" step="0.5" min="0" placeholder="Peso da barra em kg (ex.: 20)" value="${m.barKg ?? ''}"
+    <input id="me-barkg" type="number" inputmode="decimal" step="0.5" min="0" placeholder="Peso da barra em kg (ex.: 20)" value="${numOut(m.barKg)}"
       style="background:${BG3};border:1px solid ${BD};border-radius:8px;color:${TX};font-size:13px;padding:9px 12px;width:100%;outline:none;margin-bottom:8px;box-sizing:border-box">` : ''}
     ${inp('me-note', 'Ajustes (ex.: banco 7, pegada aberta) — opcional', m.note)}
     ${inp('me-maker', 'Marca (ex.: Technogym)', m.maker)}
