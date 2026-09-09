@@ -1357,7 +1357,7 @@ const SCHEMA_VERSION = 6;
 // the test suite (see CLAUDE.md). Date of the push plus a letter when the
 // same day ships more than once. A stale value here is worse than no value,
 // because it answers the deploy question wrongly with confidence.
-const APP_VERSION = '2026-09-06';
+const APP_VERSION = '2026-09-09';
 // Set when a fetched Gist file is stamped newer than SCHEMA_VERSION; while
 // true, mergeRemote() refuses to merge and remoteSave() refuses to push.
 // Cleared only by a fresh page load (which, post-service-worker-v3, always
@@ -2119,6 +2119,13 @@ function mergeRemote(remote) {
     D.machines = items;
     D.tombstones.machines = tombstones;
   }
+  // Door 2 of 3, and the one that was missing. mergeCollection() unions
+  // whatever the remote holds VERBATIM — that is the deliberate LWW design —
+  // so a poisoned row from another device (or from a compromised account)
+  // landed in D with no type check at all, and every defence downstream was a
+  // render-time one. Normalising here means the merge cannot introduce a
+  // wrong-typed field in the first place.
+  normalizeFieldTypes();
   return true;
 }
 
@@ -2246,6 +2253,12 @@ async function loadData() {
     // Same idea for sessions saved before the set-metadata strip existed —
     // see scrubSessionSetMetadata() (section 2). Also a no-op once clean.
     scrubSessionSetMetadata();
+    // Door 3 of 3. The local cache is not "trusted input" either: it is
+    // whatever a previous merge or restore left behind, and on a shared
+    // origin any other page can write it. A no-op on healthy data, so it
+    // costs one pass over the collections and closes the last way a
+    // wrong-typed field can be in memory without having been normalised.
+    normalizeFieldTypes();
     // First load of the day → stash the as-loaded state (pre-any-merge)
     // into today's weekday snapshot slot. See writeDailySnapshot().
     writeDailySnapshot();
@@ -9627,6 +9640,113 @@ function applyData(p) {
 // makes a hostile id inert at render, whereas dropping items would risk
 // deleting a real workout over a shape this code failed to anticipate. When
 // the two risks are data loss and inert weirdness, prefer inert weirdness.
+// ── Field-type normalisation at the boundary ────────────────────────────────
+//
+// The structural answer to five rounds of the same bug. Untrusted data enters
+// D through three doors — a pasted backup, a snapshot restore, a remote merge
+// — and each door used to decide for itself what to check. That is why the
+// same class kept reappearing at RENDER time: a string sitting in a numeric
+// field is only dangerous because something eventually prints it, so we spent
+// five rounds hardening print sites one at a time and every round found the
+// next one. Rounds 4 and 5 found the miss inside the gate that was supposed
+// to catch it.
+//
+// This coerces the field TYPES where they enter instead. Afterwards a
+// reps/kg/date/enum field cannot hold a wrong type, which makes every render
+// site safe by construction rather than by remembering to escape it. The
+// escaping layer stays as the second line — free-text names and notes are
+// still its job, and the reviews verified that half is complete.
+//
+// Three rules, each one learned by getting it wrong first:
+//   · NEVER DROP AN ITEM. An odd id is inert (the sink layer handles it);
+//     dropping the row would lose a real workout over a shape we failed to
+//     anticipate.
+//   · PREFER BLANK OVER A GUESS. A corrupt number becomes '' and never 0 —
+//     '' means "not entered", and 0 is a real value here (full graduation on
+//     an assisted lift, a logged failed attempt). Writing 0 would be a lie
+//     the user believes.
+//   · ONLY TOUCH KEYS THAT EXIST, and only write when the value changes.
+//     Adding or removing fields would alter the JSON shapes that plan-drift
+//     detection compares, and legitimate data must come out byte-identical —
+//     which is asserted by test, not assumed.
+function normalizeFieldTypes() {
+  const now = Date.now();
+  const REGIMES  = ['weighted', 'assisted', 'bodyweight', REGIME_BW_PLUS];
+  const TYPES    = ['strength', 'hypertrophy'];
+  const TRACKS   = [TRACK_TIME, TRACK_REPS];
+  const INTENTS  = ['work', 'warmup'];
+
+  const num = v => {
+    if (v === '' || v == null) return '';
+    if (typeof v === 'number') return Number.isFinite(v) ? v : '';
+    // A string must LOOK like a plain decimal: Number() alone reads '0x10' as
+    // 16 and whitespace as 0, which is exactly the confident-wrong-number
+    // failure this function exists to prevent.
+    if (typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim())) return Number(v.trim());
+    return '';
+  };
+  const set = (o, k, v) => { if (o[k] !== v) o[k] = v; };
+  const fixNum  = (o, k) => { if (o && typeof o === 'object' && k in o) set(o, k, num(o[k])); };
+  const fixTs   = (o, k) => {
+    if (!o || typeof o !== 'object' || !(k in o)) return;
+    const raw = o[k];
+    const n = (typeof raw === 'number' || typeof raw === 'string') ? Number(raw) : NaN;
+    set(o, k, (Number.isFinite(n) && n > 0) ? Math.min(n, now) : 0);
+  };
+  const fixDate = (o, k) => {
+    if (!o || typeof o !== 'object' || !(k in o)) return;
+    if (!(typeof o[k] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o[k]))) o[k] = '';
+  };
+  const fixEnum = (o, k, allowed, fallback) => {
+    if (o && typeof o === 'object' && k in o && !allowed.includes(o[k])) o[k] = fallback;
+  };
+  const fixRest = o => {
+    if (!o || typeof o !== 'object' || !('rest' in o)) return;
+    const r = sanitizeRest(o.rest);
+    if (r) o.rest = r; else delete o.rest;   // all values corrupt = no override
+  };
+  const each = (arr, fn) => { if (Array.isArray(arr)) arr.forEach(it => { if (it && typeof it === 'object') fn(it); }); };
+
+  each(D.sessions, s => {
+    fixDate(s, 'date'); fixTs(s, 'startedAt'); fixTs(s, 'endedAt'); fixTs(s, 'updatedAt');
+    each(s.exercises, ex => {
+      fixEnum(ex, 'regime', REGIMES, 'weighted');
+      fixEnum(ex, 'type', TYPES, 'hypertrophy');
+      fixEnum(ex, 'tracking', TRACKS, TRACK_REPS);
+      fixNum(ex, 'barKg'); fixRest(ex);
+      each(ex.sets, st => {
+        fixEnum(st, 'intent', INTENTS, 'work');
+        fixNum(st, 'reps'); fixNum(st, 'kg');
+        // completed is deliberately THREE-state (absent / true / false), and
+        // isCountedWork reads `completed !== false` — so a string here would
+        // silently count as performed work. Anything not a real boolean goes
+        // back to the neutral absent state.
+        if ('completed' in st && typeof st.completed !== 'boolean') delete st.completed;
+      });
+    });
+    each(s.prs, pr => { fixNum(pr, 'value'); fixNum(pr, 'prev'); });
+  });
+
+  each(D.weights,  w  => { fixDate(w, 'date'); fixNum(w, 'kg'); fixTs(w, 'updatedAt'); });
+  each(D.gyms,     gm => { fixTs(gm, 'updatedAt'); });
+  each(D.machines, m  => { fixNum(m, 'barKg'); fixTs(m, 'updatedAt'); });
+  each(D.exercises, ex => {
+    fixEnum(ex, 'regime', REGIMES, 'weighted');
+    fixEnum(ex, 'type', TYPES, 'hypertrophy');
+    fixEnum(ex, 'tracking', TRACKS, TRACK_REPS);
+    fixRest(ex); fixTs(ex, 'updatedAt');
+  });
+  each(D.plans, p => {
+    fixTs(p, 'updatedAt');
+    if (p.rests && typeof p.rests === 'object') {
+      Object.keys(p.rests).forEach(eid => {
+        const r = sanitizeRest(p.rests[eid]);
+        if (r) p.rests[eid] = r; else delete p.rests[eid];
+      });
+    }
+  });
+}
+
 function sanitizeHydratedData() {
   const now = Date.now();
   const clampTs = v => {
@@ -9658,6 +9778,7 @@ function sanitizeHydratedData() {
   });
   D.tombstones = clean;
   D.lastModified = clampTs(D.lastModified);
+  normalizeFieldTypes();   // door 1 of 3: a pasted backup / a snapshot restore
 }
 
 // ── Factory reset ─────────────────────────────────────────────────────────────

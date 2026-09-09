@@ -674,6 +674,66 @@
   }
 
   // ── merge engine (the 2026-07-22 LWW fix) ──────────────────────────────────
+  g('field-type normalisation at the boundary');
+  {
+    // The structural answer to five rounds of render-time whack-a-mole: coerce
+    // the field TYPES where untrusted data ENTERS D, so a wrong type cannot be
+    // in memory to be printed later. Three doors call it — backup/snapshot
+    // restore, remote merge, and the local-cache load.
+    const keep = T.D;
+
+    // PROPERTY 1, the one that would corrupt real data if wrong: legitimate
+    // values come out byte-identical. Note the three traps deliberately in
+    // here — a real 0, a real '', and completed:false — each of which a naive
+    // coercion destroys.
+    T.D = { exercises: [], plans: [{ id:'p1', name:'A', exercises:[], rests:{ e1:{ ww:150 } }, updatedAt: 1 }],
+      sessions: [{ id:'s1', date:'2026-09-01', updatedAt: 1757003600000,
+        startedAt: 1757000000000, endedAt: 1757003600000,
+        prs: [{ exName:'S', kind:'kg', value: 82.5, prev: 80 }],
+        exercises: [{ exId:'bench-press', exName:'S', type:'hypertrophy', regime:'weighted',
+          barKg: 20, rest:{ wuwu:60, wuw:180, ww:180 },
+          sets: [ {intent:'warmup', reps:10, kg:20},
+                  {intent:'work', reps:8, kg:82.5, completed:true},
+                  {intent:'work', reps:0, kg:0, completed:false},
+                  {intent:'work', reps:'', kg:''} ] }] }],
+      weights: [{ id:'w1', date:'2026-09-01', kg:80.4, updatedAt: 1 }],
+      gyms: [], machines: [{ id:'m1', name:'M', exId:'bench-press', gymIds:[], barKg:20, updatedAt: 1 }],
+      tombstones:{ exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} }, lastModified: 1 };
+    const before = JSON.stringify(T.D);
+    W.normalizeFieldTypes();
+    t('legitimate data survives normalisation byte-identical', JSON.stringify(T.D) === before);
+    const st = T.D.sessions[0].exercises[0].sets;
+    t('...including a real 0, a real empty, and completed:false',
+      st[2].reps === 0 && st[2].kg === 0 && st[3].reps === '' && st[2].completed === false);
+
+    // PROPERTY 2: every wrong type is coerced, and nothing hostile survives.
+    const X = '<img src=x onerror=alert(1)>';
+    T.D = { exercises: [], plans: [{ id:'p2', name:'B', exercises:[], rests:{ e9:{ ww: X } }, updatedAt: 1 }],
+      sessions: [{ id:'s2', date: 20260901, startedAt:'x', endedAt:{}, updatedAt: Number.MAX_SAFE_INTEGER,
+        prs: [{ exName:'a', kind:'kg', value: X, prev: '0x10' }],
+        exercises: [{ exId:'bench-press', exName:'S', type:'nope', regime:'evil', tracking:'weird',
+          barKg: X, rest:{ ww: X, wuw:'abc' },
+          sets: [ { intent:'sneaky', reps: X, kg:'1e3', completed:'yes' },
+                  { intent:'work', reps:[7], kg:true } ] }] }],
+      weights: [{ id:'w2', date:'nope', kg: X, updatedAt: -5 }],
+      gyms: [], machines: [{ id:'m2', name:'M', exId:'bench-press', barKg:' ', updatedAt:'x' }],
+      tombstones:{ exercises:{}, plans:{}, sessions:{}, weights:{}, gyms:{}, machines:{} }, lastModified: 1 };
+    W.normalizeFieldTypes();
+    const s2 = T.D.sessions[0], e2 = s2.exercises[0];
+    t('an invalid date becomes empty rather than throwing every sort', s2.date === '');
+    t('future/garbage timestamps are clamped', s2.updatedAt <= Date.now() && s2.startedAt === 0);
+    t('enums fall back to their safe value', e2.type === 'hypertrophy' && e2.regime === 'weighted' && e2.tracking === 'reps');
+    t('numbers refuse arrays, booleans, hex and exponent strings',
+      e2.sets[1].reps === '' && e2.sets[1].kg === '' && e2.sets[0].kg === '' && e2.barKg === '');
+    t('a corrupt rest override is dropped, not half-kept', !('rest' in e2));
+    t('a non-boolean completed goes back to the neutral absent state', !('completed' in e2.sets[0]));
+    t('PR values and bodyweight are coerced too',
+      s2.prs[0].value === '' && T.D.weights[0].kg === '' && T.D.weights[0].date === '');
+    t('NOTHING hostile survives anywhere in D', !JSON.stringify(T.D).includes('onerror'));
+
+    T.D = keep;
+  }
+
   g('cache ownership (shared device)');
   {
     // The bug this guards: the local cache never recorded WHOSE it was, so
